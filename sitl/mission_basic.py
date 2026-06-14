@@ -113,7 +113,7 @@ def goto(north, east, down):
 
 
 if __name__ == "__main__":
-    ALT = 10
+    ALT = 30
 
     # ── PALIER 1 : valide d'abord ceci SEUL (carré commenté) ──
     set_mode('GUIDED')
@@ -122,7 +122,7 @@ if __name__ == "__main__":
 
     # Le carré de 5 m de côté, à 10 m d'altitude (z = -ALT).
     # Coins en (north, east). z reste négatif partout (on garde l'altitude).
-    SQUARE = [(5, 0), (5, 5), (0, 5), (0, 0)]
+    SQUARE = [(50, 0), (50, -150), (-100, -100), (-80, -20), (0, 0)]
     for north, east in SQUARE:
         print(f"→ coin ({north}, {east})")
         goto(north, east, -ALT)
