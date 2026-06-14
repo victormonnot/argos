@@ -52,25 +52,38 @@ def arm():
     print("Moteurs armés")
 
 
-def takeoff(alt):
+def takeoff(alt, timeout=60):
     """COMMAND_LONG NAV_TAKEOFF, PUIS on boucle jusqu'à atteindre l'altitude.
 
     >>> C'EST TON EXEMPLE DE RÉFÉRENCE <<<
     Le motif "envoyer une consigne, puis lire la télémétrie en boucle
     jusqu'à ce que la réalité rejoigne la consigne" est EXACTEMENT celui
     que tu vas réécrire toi-même dans goto(). Lis-le bien.
+
+    timeout : garde-fou. Si l'altitude n'est pas atteinte à temps (batterie
+    à plat, failsafe, drone bloqué...), on lève TimeoutError au lieu de
+    boucler à l'infini.
     """
     master.mav.command_long_send(
         master.target_system, master.target_component,
         mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
         0, 0, 0, 0, 0, 0, 0, alt)                  # param7 = altitude
+    start = time.time()
+    current = 0.0
     while True:
-        msg = master.recv_match(type='GLOBAL_POSITION_INT', blocking=True)
-        current = msg.relative_alt / 1000.0        # mm → m
-        print(f"  altitude {current:.1f} m")
-        if current >= alt * 0.95:
-            print("Altitude atteinte")
-            break
+        # timeout=1 sur recv_match : si aucun message n'arrive, la boucle
+        # reprend la main et peut vérifier le chrono (sinon elle bloquerait).
+        msg = master.recv_match(type='GLOBAL_POSITION_INT', blocking=True, timeout=1)
+        if msg is not None:
+            current = msg.relative_alt / 1000.0    # mm → m
+            print(f"  altitude {current:.1f} m")
+            if current >= alt * 0.95:
+                print("Altitude atteinte")
+                break
+        if time.time() - start > timeout:
+            raise TimeoutError(
+                f"takeoff: {alt} m non atteint en {timeout}s "
+                f"(coincé à {current:.1f} m) — batterie à plat ? failsafe ?")
         time.sleep(0.3)
 
 
@@ -81,10 +94,12 @@ def takeoff(alt):
 # ─────────────────────────────────────────────────────────────────────────
 
 
-def goto(north, east, down):
+def goto(north, east, down, timeout=60):
     """Consigne de position GUIDED, puis attente d'arrivée (boucle fermée).
 
     L'ENVOI t'est donné (les champs sont pénibles). L'ATTENTE est à toi.
+    timeout : même garde-fou que takeoff() — lève TimeoutError si le point
+    n'est pas atteint à temps.
     """
     master.mav.set_position_target_local_ned_send(
         0,                                          # time_boot_ms (0 = ok)
@@ -102,30 +117,43 @@ def goto(north, east, down):
 
     # Attente d'arrivée (boucle fermée) — même motif que takeoff(), mais la
     # "réalité" se lit dans LOCAL_POSITION_NED (.x .y .z en mètres, NED).
+    start = time.time()
+    dist = float('inf')
     while True:
-        pos = master.recv_match(type='LOCAL_POSITION_NED', blocking=True)
-        dist = math.sqrt((pos.x - north) ** 2 + (pos.y - east) ** 2)  # distance horizontale
-        print(f"  distance au point {dist:.1f} m")
-        if dist < 0.5:
-            print("Point atteint")
-            break
+        pos = master.recv_match(type='LOCAL_POSITION_NED', blocking=True, timeout=1)
+        if pos is not None:
+            dist = math.sqrt((pos.x - north) ** 2 + (pos.y - east) ** 2)  # distance horizontale
+            print(f"  distance au point {dist:.1f} m")
+            if dist < 0.5:
+                print("Point atteint")
+                break
+        if time.time() - start > timeout:
+            raise TimeoutError(
+                f"goto({north},{east}): point non atteint en {timeout}s "
+                f"(distance {dist:.1f} m)")
         time.sleep(0.3)
 
 
 if __name__ == "__main__":
     ALT = 30
 
-    # ── PALIER 1 : valide d'abord ceci SEUL (carré commenté) ──
-    set_mode('GUIDED')
-    arm()
-    takeoff(ALT)
-
-    # Le carré de 5 m de côté, à 10 m d'altitude (z = -ALT).
-    # Coins en (north, east). z reste négatif partout (on garde l'altitude).
+    # Trajectoire : liste de coins (north, east). z reste négatif partout
+    # (on garde l'altitude). Modifie librement ces points.
     SQUARE = [(50, 0), (50, -150), (-100, -100), (-80, -20), (0, 0)]
-    for north, east in SQUARE:
-        print(f"→ coin ({north}, {east})")
-        goto(north, east, -ALT)
 
-    set_mode('LAND')
-    print("Mission terminée")
+    # Filet de sécurité global : si une étape lève TimeoutError (cible
+    # inatteignable — batterie morte, failsafe...), on ne se fige pas :
+    # on déclenche un LAND. Réflexe pro : toute panne en vol => action sûre.
+    try:
+        set_mode('GUIDED')
+        arm()
+        takeoff(ALT)
+        for north, east in SQUARE:
+            print(f"→ coin ({north}, {east})")
+            goto(north, east, -ALT)
+        set_mode('LAND')
+        print("Mission terminée")
+    except TimeoutError as e:
+        print(f"\n⚠ ÉCHEC : {e}")
+        print("→ LAND de sécurité")
+        set_mode('LAND')
