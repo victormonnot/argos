@@ -1,0 +1,30 @@
+# --- Privé : ne jamais publier (stratégie de sprint personnelle) ---
+argos-plan-sprint.md
+IDEES_V2.md
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+venv-ardupilot/
+
+# --- Artefacts SITL / ArduPilot (logs de vol, télémétrie, params) ---
+*.tlog
+*.tlog.raw
+*.BIN
+eeprom.bin
+mav.parm
+logs/
+
+# --- Modèles / poids lourds (perception, S2+) ---
+*.engine
+*.onnx
+*.pt
+*.weights
+
+# --- OS / éditeurs ---
+.DS_Store
+.vscode/
+*.swp
