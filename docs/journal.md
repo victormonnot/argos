@@ -69,3 +69,27 @@ memory cement: interview material, build-in-public content, and my own notes.
   launching via `sitl/run_sitl.sh` (`--location Toulouse`). The mission code is
   unchanged: **NED is relative to home**, so the trajectory flies the same wherever
   home is — you just move the scenery under the drone.
+
+### Yaw control (`yaw_demo.py`) — the ARGOS Mode B primitive
+
+- **Commanding *where the drone looks* is Mode B in miniature.**
+  `MAV_CMD_CONDITION_YAW` (COMMAND_LONG) commands a heading; `ATTITUDE` streams the
+  real orientation (yaw in radians → heading 0–360°). Same closed loop as `goto()`:
+  send the setpoint, loop on `ATTITUDE` until real heading meets target. Today the
+  headings are hardcoded; in S5 the heading will come from a video detection.
+- A multirotor **yaws in place** — it rotates about its vertical axis, no
+  translation needed. ArduPilot only executes CONDITION_YAW when **armed & airborne**.
+- **Trust the log, not the eyeball.** `yaw_demo` looked like it did nothing in QGC —
+  but it worked perfectly: `ATT.DesYaw` (commanded) vs `ATT.Yaw` (actual) swept
+  0→90→180→270→0 within ~1°. Two illusions fooled the eye: a *vertical* takeoff
+  doesn't move the icon on the 2D map (looks like "no takeoff"), and a rotation that
+  returns to North is easy to miss. **The DataFlash log is ground truth; the eye is not.**
+
+### Networking — telemetry needs a reachable return address
+
+- The SITL **pushes** UDP telemetry *to the Mac's IP*. A LAN IP (`192.168.x`) breaks
+  the instant you change WiFi → QGC shows "disconnected". A **Tailscale IP** (`100.x`)
+  is stable everywhere, so `run_sitl.sh` now targets that. SSH/terminal kept working
+  the whole time because that's the Mac *connecting to* the fixe (inbound), not the
+  outbound telemetry. **Same addressing problem will hit the real drone link**
+  (DroneBridge WiFi) in S3.
