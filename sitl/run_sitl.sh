@@ -9,7 +9,10 @@
 #   ./sitl/run_sitl.sh -w                     # args en plus passés tels quels (ex: reset params)
 set -euo pipefail
 
-MAC_IP="${MAC_IP:-192.168.1.18}"
+# IP Tailscale du Mac : stable quel que soit le WiFi (≠ l'IP LAN qui change).
+# Pour la retrouver : `tailscale status` ici, ou `tailscale ip -4` sur le Mac.
+# (Ancienne IP LAN de chez toi, si jamais : 192.168.1.18)
+MAC_IP="${MAC_IP:-100.114.183.96}"
 ARDUPILOT_DIR="${ARDUPILOT_DIR:-$HOME/argos-project/ardupilot}"
 
 # garantit que mavproxy.py (dans le venv) est trouvable par sim_vehicle.py
