@@ -129,3 +129,19 @@ memory cement: interview material, build-in-public content, and my own notes.
   from the heading error. Today error = (target_heading − current_heading), simulated;
   in S5 error = the detection's horizontal pixel offset. Same law, same loop — only
   the error source changes. (Velocity setpoints must be streamed — they expire ~3 s.)
+
+## 2026-06-16 — S2 perception: baseline + VisDrone pipeline
+
+- **GPU pipeline proven:** YOLO11n inference on `cuda:0` (RTX 4060 — *not* the 4070
+  the plan says; fix README before publishing benchmark numbers). Dedicated venv at
+  `perception/.venv` (torch 2.12+cu130).
+- **VisDrone → 2 classes (personne/véhicule).** Ultralytics auto-downloads + converts
+  to 10-class YOLO labels under `datasets/VisDrone/labels/{train,val,test}`; a remap
+  pass collapses them (pedestrian+people→0, car/van/truck/bus/motor/tricycles→1,
+  bicycle dropped). 8629 files, 444k boxes kept, 13k dropped.
+- **Verify the pipeline, don't trust exit-0.** First remap touched **0 files** —
+  my glob assumed `labels/*.txt` but the real layout is `labels/val/*.txt` (nested),
+  and the dataset yaml structure differed from my guess. Caught only by *inspecting
+  the actual files* after running. Fix: remap non-destructively (back up the pristine
+  10-class labels once, always remap from the backup) so the class mapping can be
+  changed without re-downloading.
