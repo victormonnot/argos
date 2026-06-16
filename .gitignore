@@ -18,11 +18,14 @@ eeprom.bin
 mav.parm
 logs/
 
-# --- Modèles / poids lourds (perception, S2+) ---
+# --- Modèles / poids lourds + sorties d'entraînement (perception, S2+) ---
 *.engine
 *.onnx
 *.pt
 *.weights
+# sorties Ultralytics (results.csv, plots) + weights_dir (poids téléchargés)
+runs/
+weights/
 
 # --- OS / éditeurs ---
 .DS_Store
