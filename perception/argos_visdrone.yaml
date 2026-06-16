@@ -1,0 +1,8 @@
+# Généré par prepare_data.py — VisDrone remappé en 2 classes.
+path: /home/victorfixe/argos-project/datasets/VisDrone
+train: images/train
+val: images/val
+test: images/test
+names:
+  0: personne
+  1: vehicule

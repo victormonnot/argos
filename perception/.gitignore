@@ -1,0 +1,10 @@
+# venv dédié + artefacts générés (jamais committés)
+.venv/
+runs/
+datasets/
+argos_visdrone.yaml   # généré par prepare_data.py (chemin absolu machine)
+# poids et assets téléchargés
+*.pt
+*.onnx
+*.engine
+bus.jpg

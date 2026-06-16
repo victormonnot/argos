@@ -1,0 +1,4 @@
+# ARGOS perception — détection temps réel sur edge.
+# (onnxruntime-gpu + tensorrt seront ajoutés à l'étape export/benchmark.)
+ultralytics>=8.3
+onnx
