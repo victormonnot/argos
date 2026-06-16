@@ -111,3 +111,21 @@ memory cement: interview material, build-in-public content, and my own notes.
   `GCS update_receive`/`update_send` @400 Hz = **where every MAVLink message I send
   and read enters and leaves the firmware**. My Python closed loop and this table
   are two halves of the same loop.
+
+## 2026-06-16 — S2 start: C++ / MAVSDK guidance
+
+- **MAVSDK is pymavlink's ergonomic layer.** Same MAVLink underneath, but where
+  pymavlink had me craft a raw `COMMAND_LONG`, MAVSDK gives `action.arm()` /
+  `action.takeoff()` / `action.land()`, and reads via a `Telemetry` plugin.
+  Ported `mission_basic.py` → `guidance/src/main.cpp` (connect → arm → takeoff →
+  land), built with CMake against `MAVSDK::mavsdk`.
+- **The guidance law is a pure, unit-tested function.** `yaw_rate_command(error,
+  kp, max_rate)` = a proportional controller with saturation — the heart of Mode B.
+  Isolated in `control_law.hpp`, tested with doctest + CTest (6 assertions green),
+  **no drone needed**. Principle: *prove the control law in unit tests before it
+  ever touches the aircraft* — safety = hiring argument.
+- **Continuous yaw-rate via MAVSDK Offboard** (`yaw_track.cpp`): stream
+  `set_velocity_body({0,0,0, yawspeed})` at 10 Hz, the yaw-rate computed by the law
+  from the heading error. Today error = (target_heading − current_heading), simulated;
+  in S5 error = the detection's horizontal pixel offset. Same law, same loop — only
+  the error source changes. (Velocity setpoints must be streamed — they expire ~3 s.)
