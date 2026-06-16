@@ -93,3 +93,21 @@ memory cement: interview material, build-in-public content, and my own notes.
   the whole time because that's the Mac *connecting to* the fixe (inbound), not the
   outbound telemetry. **Same addressing problem will hit the real drone link**
   (DroneBridge WiFi) in S3.
+
+### ArduPilot architecture — the scheduler *is* the firmware
+
+- A flight controller isn't sequential code, it's a **cooperative real-time
+  scheduler**. The whole firmware = one task table (`ArduCopter/Copter.cpp`
+  `scheduler_tasks[]`), each task = `(function, rate_Hz, max_time_µs, priority)`.
+  A 400 Hz base loop decides each tick which tasks are due and fits them into the
+  remaining time budget.
+- **Two tiers:** `FAST_TASK` = every loop, in order (IMU → rate controllers →
+  motor output → EKF `read_AHRS`) — the inner loop that's never starved.
+  `SCHED_TASK` = rate-limited, run by priority when there's time budget.
+- **`max_time_µs` is the point:** every task has a bounded time, so a slow task
+  can't starve the fast loop. *Real-time = predictable/bounded timing, not "fast".*
+- **ARGOS lives in this table:** `AP_OpticalFlow.update` @200 Hz (the MTF-02P /
+  GPS-denied hover), `read_AHRS` = EKF3 in the fast tier (S3 subject), and
+  `GCS update_receive`/`update_send` @400 Hz = **where every MAVLink message I send
+  and read enters and leaves the firmware**. My Python closed loop and this table
+  are two halves of the same loop.
