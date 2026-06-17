@@ -18,11 +18,11 @@ data:    ## télécharge VisDrone + remap en 2 classes (~2 Go)
 train:   ## fine-tune YOLO11n sur VisDrone (personne / véhicule)
 	$(PY) train.py
 
-eval:    ## mAP@50 sur la validation
-	@echo "TODO S2 : eval mAP"
+eval:    ## mAP@50 du best.pt sur la validation
+	$(PY) -c "from pathlib import Path; from ultralytics import YOLO; p=sorted(Path('../runs').rglob('weights/best.pt'),key=lambda x:x.stat().st_mtime)[-1]; YOLO(str(p)).val(data='argos_visdrone.yaml', imgsz=640, device=0)"
 
 export:  ## export ONNX -> TensorRT FP32 / FP16 / INT8 (PTQ)
-	@echo "TODO S2 : export TensorRT"
+	$(PY) export.py
 
-bench:   ## FPS + latence inference p50/p95 par précision
-	@echo "TODO S2 : benchmark chiffré -> tableau README"
+bench:   ## mAP + FPS + latence p50/p95 par précision -> benchmark.md
+	$(PY) benchmark.py
