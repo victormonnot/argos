@@ -193,3 +193,21 @@ memory cement: interview material, build-in-public content, and my own notes.
   UI. A real continuous aerial clip is essential. Fix: `get_video.py` now downloads a
   real aerial clip (Pexels, free) with the VisDrone-stitch only as a fallback. Good
   operator UX needs footage a human can actually follow, not just data the model likes.
+
+## 2026-06-17 — Mode B: closed-loop visual yaw tracking (SITL)
+
+- Wired the full loop in the console: click a detection → **lock** → **error** (offset from
+  viewport centre) → **proportional law** (same as `control_law.hpp`, ported to Python) →
+  **yaw-rate streamed via MAVLink** (`SET_POSITION_TARGET_LOCAL_NED`, velocity+yaw_rate mask)
+  to the SITL ArduCopter → drone yaws.
+- **Closed the loop with a simulated camera.** SITL has no camera (physics only), so a
+  **viewport** (crop) pans over the recorded video, driven by the drone's heading (`ATTITUDE`).
+  Drone yaws to centre the target → viewport pans → target re-centres → error → 0 → yaw settles.
+  Verified: error +0.12 → ~0 in ~1 s, heading settled in a ~15° band tracking a moving car —
+  vs open-loop (no pan) where it ran away 123° in 3 s.
+- **Why not a 3D sim (Gazebo/AirSim)?** It would give a real rendered camera, but feed the
+  detector **synthetic** images it wasn't trained on (domain gap). The viewport-pan keeps the
+  detector on **real footage** (its domain). The true visual loop (real camera, flying drone)
+  is **S5**. Residual hunting = naive nearest-neighbour tracker + moving target (ByteTrack later).
+- Infra: connected straight to the SITL binary on **tcp:5760** (no MAVProxy headless) → had to
+  `request_data_stream` manually; pre-arm checks disabled (SITL only) for a reliable takeoff.
