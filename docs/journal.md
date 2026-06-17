@@ -174,3 +174,9 @@ memory cement: interview material, build-in-public content, and my own notes.
   - Constraints a multirotor doesn't have: **turn radius** (bank-limited), minimum airspeed.
 - Takeaway: fixed-wing terminal guidance is **approach geometry + energy management**, not
   "position over the target" — the multirotor/fixed-wing split that Black Bird embodies.
+- **C++ port (`guidance/src/plane.cpp`, mirrors `main.cpp`): the SDK abstraction leaks.**
+  MAVSDK `action.takeoff()` works for ArduCopter but is **rejected on ArduPlane** (MAVSDK is
+  PX4-shaped); even a raw `NAV_TAKEOFF` in GUIDED was rejected. Had to drop to **raw MAVLink**
+  (`MavlinkPassthrough`) the ArduPilot way: **takeoff is a MODE, not a command** — arm + switch
+  to mode `TAKEOFF` (13) → auto climb-out; end with mode `RTL` (11) → loiter (verified: alt ~50 m,
+  mode RTL). Lesson: high-level SDKs are vendor-shaped; off the happy path you go back to the protocol.
