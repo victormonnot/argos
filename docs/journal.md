@@ -162,3 +162,15 @@ memory cement: interview material, build-in-public content, and my own notes.
   Conclusion: **FP16 is the deployment choice**; INT8's case is on the Jetson Orin
   (DLA, different compute profile) or batched throughput — an honest S3 line, and a
   stronger interview story than a fake "INT8 ×3".
+
+## 2026-06-17 — ArduPlane: GUIDED Copter vs Plane (Black Bird wink)
+
+- Flew ArduPlane SITL in GUIDED via QGC click-to-go. The differences from Copter:
+  - **No hover.** A plane can't stop — it **orbits** a GUIDED point (the "circles");
+    `goto` on a plane = fly there and loiter around it, not arrive-and-hold.
+  - **Takeoff needs airspeed** (roll / launch), not a vertical `NAV_TAKEOFF`.
+  - **No vertical LAND.** Landing is an **approach sequence** (glide slope, DO_LAND_START);
+    RTL just loiters over home. To end a sim flight: `disarm force`.
+  - Constraints a multirotor doesn't have: **turn radius** (bank-limited), minimum airspeed.
+- Takeaway: fixed-wing terminal guidance is **approach geometry + energy management**, not
+  "position over the target" — the multirotor/fixed-wing split that Black Bird embodies.
