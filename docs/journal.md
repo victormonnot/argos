@@ -132,9 +132,8 @@ memory cement: interview material, build-in-public content, and my own notes.
 
 ## 2026-06-16 — S2 perception: baseline + VisDrone pipeline
 
-- **GPU pipeline proven:** YOLO11n inference on `cuda:0` (RTX 4060 — *not* the 4070
-  the plan says; fix README before publishing benchmark numbers). Dedicated venv at
-  `perception/.venv` (torch 2.12+cu130).
+- **GPU pipeline proven:** YOLO11n inference on `cuda:0` (RTX 4060). Dedicated venv
+  at `perception/.venv` (torch 2.12+cu130).
 - **VisDrone → 2 classes (personne/véhicule).** Ultralytics auto-downloads + converts
   to 10-class YOLO labels under `datasets/VisDrone/labels/{train,val,test}`; a remap
   pass collapses them (pedestrian+people→0, car/van/truck/bus/motor/tricycles→1,
