@@ -2,6 +2,7 @@
 .venv/
 runs/
 datasets/
+assets/        # vidéos de démo (drone.mp4)
 argos_visdrone.yaml   # généré par prepare_data.py (chemin absolu machine)
 # poids et assets téléchargés
 *.pt

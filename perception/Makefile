@@ -2,7 +2,7 @@
 # Usage : make setup, make infer, ... (PY = le python du venv dédié)
 PY = .venv/bin/python
 
-.PHONY: setup infer data train eval export bench
+.PHONY: setup infer data train eval export bench video console
 
 setup:   ## crée le venv dédié + installe les deps
 	/usr/bin/python3 -m venv .venv
@@ -26,3 +26,9 @@ export:  ## export ONNX -> TensorRT FP32 / FP16 / INT8 (PTQ)
 
 bench:   ## mAP + FPS + latence p50/p95 par précision -> benchmark.md
 	$(PY) benchmark.py
+
+video:   ## fabrique assets/drone.mp4 depuis les images VisDrone (vidéo de démo)
+	$(PY) get_video.py
+
+console: ## Mode A : console opérateur web (http://localhost:8088)
+	$(PY) console.py

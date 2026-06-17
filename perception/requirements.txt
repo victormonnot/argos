@@ -1,4 +1,7 @@
 # ARGOS perception — détection temps réel sur edge.
-# (onnxruntime-gpu + tensorrt seront ajoutés à l'étape export/benchmark.)
+# (tensorrt est ajouté à l'étape export/benchmark : pip install tensorrt)
 ultralytics>=8.3
 onnx
+# Mode A — console opérateur web
+fastapi
+uvicorn[standard]
