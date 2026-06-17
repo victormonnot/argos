@@ -1,11 +1,12 @@
-"""console.py — Mode A/B : console opérateur web (détection + lock de cible + loi de guidage).
+"""console.py — Mode A/B : console opérateur web (détection + lock + guidage closed-loop).
 
-Cœur : source vidéo -> inférence TensorRT FP16 -> HUD (OpenCV) -> stream MJPEG.
-Mode B (étape 1) : clique une détection -> cible verrouillée -> erreur (décalage au
-centre) -> loi proportionnelle -> commande yaw, affichées. (Drone + boucle fermée ensuite.)
-Affichage : navigateur (zéro dépendance display). http://localhost:8088
+Cœur : source vidéo -> inférence FP16 -> HUD (OpenCV) -> stream MJPEG.
+Mode B : clique une détection -> erreur (décalage au centre du VIEWPORT) -> loi
+proportionnelle -> yaw-rate streamé au drone SITL. Le viewport (caméra simulée)
+PAN avec le cap du drone -> la cible se recentre -> boucle fermée.
+Affichage : navigateur (zéro display). http://localhost:8088
 
-Lance : make console
+Lance : make console   (+ un binaire ArduCopter SITL sur tcp:5760 pour Mode B)
 """
 import math
 import os
@@ -26,9 +27,13 @@ IMGSZ = 640
 CONF = 0.25
 COLORS = {0: (0, 200, 0), 1: (0, 140, 255)}          # BGR : personne=vert, véhicule=orange
 
-# Loi de guidage en lacet (même proportionnelle que control_law.hpp, en Python).
-KP_YAW = 60.0          # erreur normalisée (-1..1) -> deg/s
-MAX_YAW_DPS = 45.0     # saturation
+# Loi de guidage en lacet (proportionnelle saturée — port de control_law.hpp).
+KP_YAW = 45.0
+MAX_YAW_DPS = 40.0
+
+# Caméra simulée (boucle fermée Mode B)
+VP_FRAC = 0.62          # largeur du viewport / largeur pleine
+FOV_HALF = 22.0         # demi-plage : ±FOV_HALF° de yaw = pan complet du viewport
 
 VIDEOS = {
     "vehicles": ("Trafic · top-down", HERE / "assets" / "vehicles.mp4"),
@@ -40,75 +45,86 @@ DEFAULT = "vehicles"
 _state = {"jpeg": None, "dets": [], "fps": 0.0, "dims": None}
 _sel = {"name": DEFAULT}
 _track = {"locked": False, "cx": 0.0, "cy": 0.0, "error": 0.0, "yaw": 0.0, "has": False}
+_view = {"pan_x": 0, "vp_w": 0}
 _lock = threading.Lock()
 
-# --- Drone (Mode B étape 2) : connexion directe au binaire SITL ArduCopter ---
+# Drone SITL (Mode B)
 DRONE_CONN = "tcp:127.0.0.1:5760"
 TAKEOFF_ALT = 15.0
 _YAW_MASK = 0b0000011111000111            # SET_POSITION_TARGET : vitesse + yaw_rate actifs
-_drone = {"status": "déconnecté", "armed": False, "alt": 0.0, "hdg": 0.0, "flying": False}
+_drone = {"status": "déconnecté", "armed": False, "alt": 0.0, "hdg": 0.0,
+          "flying": False, "href": None}
 _drone_started = {"v": False}
 
 
+def angdiff(a, b):
+    return (a - b + 180) % 360 - 180
+
+
 def yaw_rate_command(error):
-    """Loi proportionnelle saturée — port Python de control_law.hpp."""
     return max(-MAX_YAW_DPS, min(MAX_YAW_DPS, KP_YAW * error))
 
 
-# ─────────────────────────────────────────────────────────────────────────
-#  annotate() — LE CANVAS DE VICTOR. Le look du HUD se règle ici.
-# ─────────────────────────────────────────────────────────────────────────
-def annotate(frame, result, names, fps):
-    h, w = frame.shape[:2]
+def detect(result, names):
     dets = []
     for b in result.boxes:
         cls = int(b.cls)
-        conf = float(b.conf)
         x1, y1, x2, y2 = map(int, b.xyxy[0])
-        color = COLORS.get(cls, (200, 200, 200))
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(frame, f"{names[cls]} {conf:.2f}", (x1, max(12, y1 - 6)),
+        dets.append({"cls": names[cls], "cls_id": cls, "conf": round(float(b.conf), 2),
+                     "box": [x1, y1, x2, y2], "cx": (x1 + x2) / 2, "cy": (y1 + y2) / 2})
+    return dets
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  draw_boxes / track_update — LE CANVAS DE VICTOR (look du HUD).
+#  Tout se dessine sur le VIEWPORT ; les détections sont décalées de -pan_x.
+# ─────────────────────────────────────────────────────────────────────────
+def draw_boxes(view, dets_full, pan_x, fps):
+    h, w = view.shape[:2]
+    n_p = n_v = 0
+    for d in dets_full:
+        x1, y1, x2, y2 = d["box"]
+        vx1, vx2 = x1 - pan_x, x2 - pan_x
+        if vx2 < 0 or vx1 > w:
+            continue
+        color = COLORS.get(d["cls_id"], (200, 200, 200))
+        cv2.rectangle(view, (vx1, y1), (vx2, y2), color, 2)
+        cv2.putText(view, f"{d['cls']} {d['conf']:.2f}", (vx1, max(12, y1 - 6)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
-        dets.append({"cls": names[cls], "conf": round(conf, 2), "box": [x1, y1, x2, y2]})
-
-    n_person = sum(d["cls"] == "personne" for d in dets)
-    n_veh = sum(d["cls"] == "vehicule" for d in dets)
-    cv2.rectangle(frame, (0, 0), (w, 30), (0, 0, 0), -1)
-    cv2.putText(frame,
-                f"ARGOS Mode A   personnes {n_person}   vehicules {n_veh}   {fps:.0f} FPS",
+        n_p += d["cls"] == "personne"
+        n_v += d["cls"] == "vehicule"
+    cv2.rectangle(view, (0, 0), (w, 30), (0, 0, 0), -1)
+    cv2.putText(view, f"ARGOS Mode A/B   personnes {n_p}   vehicules {n_v}   {fps:.0f} FPS",
                 (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
-    return frame, dets
 
 
-def track_update(frame, dets):
-    """Mode B étape 1 : ré-acquiert la cible verrouillée (plus proche détection),
-    calcule l'erreur + la commande yaw, dessine le réticule. Met à jour _track."""
-    h, w = frame.shape[:2]
+def track_update(view, dets_full, pan_x, vp_w):
+    h, w = view.shape[:2]
     with _lock:
         if not _track["locked"]:
+            _track["has"] = False
             return
-        cx, cy = _track["cx"], _track["cy"]
+        cx, cy = _track["cx"], _track["cy"]      # coords PLEINES (stables au pan)
 
-    # ré-acquisition naïve : la détection dont le centre est le plus proche
     best, bestd = None, 1e18
-    for d in dets:
-        x1, y1, x2, y2 = d["box"]
-        bx, by = (x1 + x2) / 2, (y1 + y2) / 2
-        dd = (bx - cx) ** 2 + (by - cy) ** 2
+    for d in dets_full:
+        dd = (d["cx"] - cx) ** 2 + (d["cy"] - cy) ** 2
         if dd < bestd:
-            best, bestd = (bx, by), dd
-    found = best is not None and bestd < (max(w, h) * 0.12) ** 2
+            best, bestd = d, dd
+    found = best is not None and bestd < (vp_w * 0.12) ** 2
     if found:
-        cx, cy = best
+        cx, cy = best["cx"], best["cy"]
 
-    error = (cx - w / 2) / (w / 2)          # -1 gauche .. +1 droite
+    vp_center = pan_x + vp_w / 2
+    error = (cx - vp_center) / (vp_w / 2)         # -1 gauche .. +1 droite (du viewport)
     yaw = yaw_rate_command(error)
 
+    vx, vy = int(cx - pan_x), int(cy)
     col = (255, 180, 80)
-    cv2.line(frame, (w // 2, h // 2), (int(cx), int(cy)), col, 1, cv2.LINE_AA)
-    cv2.circle(frame, (int(cx), int(cy)), 20, (0, 0, 255) if found else (130, 130, 130), 2, cv2.LINE_AA)
-    cv2.drawMarker(frame, (int(cx), int(cy)), (0, 0, 255), cv2.MARKER_CROSS, 28, 1, cv2.LINE_AA)
-    cv2.putText(frame, f"LOCK  err {error:+.2f}  yaw {yaw:+.0f} deg/s",
+    cv2.line(view, (w // 2, h // 2), (vx, vy), col, 1, cv2.LINE_AA)
+    cv2.circle(view, (vx, vy), 20, (0, 0, 255) if found else (130, 130, 130), 2, cv2.LINE_AA)
+    cv2.drawMarker(view, (vx, vy), (0, 0, 255), cv2.MARKER_CROSS, 28, 1, cv2.LINE_AA)
+    cv2.putText(view, f"LOCK  err {error:+.2f}  yaw {yaw:+.0f} deg/s",
                 (10, h - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
 
     with _lock:
@@ -135,40 +151,54 @@ def worker():
             ok, frame = cap.read()
             if not ok:
                 break
+            H_full, W_full = frame.shape[:2]
             result = model.predict(frame, imgsz=IMGSZ, conf=CONF, device=0, verbose=False)[0]
+            dets_full = detect(result, names)
+
+            # viewport = caméra simulée, pan piloté par le cap du drone
+            with _lock:
+                flying, hdg, href = _drone["flying"], _drone["hdg"], _drone["href"]
+            if flying and href is not None:
+                vp_w = int(W_full * VP_FRAC)
+                pan_max = W_full - vp_w
+                dh = angdiff(hdg, href)
+                pan_x = int(max(0, min(pan_max, pan_max * 0.5 * (1 + dh / FOV_HALF))))
+            else:
+                vp_w, pan_x = W_full, 0
+            view = frame[:, pan_x:pan_x + vp_w].copy()
+
             now = time.time()
             fps = 1.0 / max(now - t_prev, 1e-6)
             t_prev = now
-            annotated, dets = annotate(frame, result, names, fps)
-            track_update(annotated, dets)
-            ok2, buf = cv2.imencode(".jpg", annotated)
+            draw_boxes(view, dets_full, pan_x, fps)
+            track_update(view, dets_full, pan_x, vp_w)
+            ok2, buf = cv2.imencode(".jpg", view)
             if ok2:
                 with _lock:
                     _state["jpeg"] = buf.tobytes()
-                    _state["dets"] = dets
+                    _state["dets"] = dets_full
                     _state["fps"] = fps
-                    _state["dims"] = (frame.shape[1], frame.shape[0])
+                    _state["dims"] = (W_full, H_full)
+                    _view.update({"pan_x": pan_x, "vp_w": vp_w})
         cap.release()
 
 
 def _drone_thread():
-    """Connecte le SITL, décolle en GUIDED, puis stream le yaw-rate de la loi
-    tant qu'une cible est verrouillée. Lit la télémétrie au passage."""
+    """Connecte le SITL, décolle en GUIDED, capture le cap de référence, puis
+    stream le yaw-rate de la loi tant qu'une cible est verrouillée."""
     m = mavutil.mavlink_connection(DRONE_CONN)
     if not m.wait_heartbeat(timeout=10):
         with _lock:
             _drone["status"] = "pas de SITL (tcp:5760)"
         _drone_started["v"] = False
         return
-    # sans MAVProxy, il faut DEMANDER les flux télémétrie
     m.mav.request_data_stream_send(m.target_system, m.target_component,
                                    mavutil.mavlink.MAV_DATA_STREAM_ALL, 5, 1)
-    # SITL : on lève les pre-arm checks (sim only) pour un décollage fiable
     m.mav.param_set_send(m.target_system, m.target_component, b"ARMING_CHECK", 0,
                          mavutil.mavlink.MAV_PARAM_TYPE_INT32)
     with _lock:
         _drone["status"] = "connecté · décollage..."
-    time.sleep(3)                                   # laisse l'EKF se poser un peu
+    time.sleep(3)
 
     m.set_mode(m.mode_mapping()["GUIDED"])
     time.sleep(1)
@@ -189,7 +219,6 @@ def _drone_thread():
         _drone["status"] = "EN VOL · Mode B actif"
         _drone["flying"] = True
 
-    # boucle : télémétrie + stream du yaw-rate quand une cible est lockée
     last = 0.0
     while True:
         msg = m.recv_match(type=["ATTITUDE", "GLOBAL_POSITION_INT", "HEARTBEAT"],
@@ -199,12 +228,14 @@ def _drone_thread():
             with _lock:
                 if t == "ATTITUDE":
                     _drone["hdg"] = round(math.degrees(msg.yaw) % 360, 1)
+                    if _drone["href"] is None and _drone["flying"]:
+                        _drone["href"] = _drone["hdg"]      # cap de référence (viewport centré)
                 elif t == "GLOBAL_POSITION_INT":
                     _drone["alt"] = round(msg.relative_alt / 1000.0, 1)
                 elif t == "HEARTBEAT":
                     _drone["armed"] = bool(m.motors_armed())
         now = time.time()
-        if now - last >= 0.2:                        # 5 Hz
+        if now - last >= 0.2:
             last = now
             with _lock:
                 active = _track["locked"] and _track["has"]
@@ -268,20 +299,20 @@ def set_source(name: str):
 def lock(fx: float, fy: float):
     with _lock:
         dets, dims = list(_state["dets"]), _state["dims"]
-    if not dims or not dets:
+        pan_x, vp_w = _view["pan_x"], _view["vp_w"]
+    if not dims or not dets or not vp_w:
         return {"locked": False}
-    w, h = dims
-    tx, ty = fx * w, fy * h
+    _, H_full = dims
+    full_x = pan_x + fx * vp_w          # clic = fraction du VIEWPORT affiché
+    full_y = fy * H_full
     best, bestd = None, 1e18
     for d in dets:
-        x1, y1, x2, y2 = d["box"]
-        bx, by = (x1 + x2) / 2, (y1 + y2) / 2
-        dd = (bx - tx) ** 2 + (by - ty) ** 2
+        dd = (d["cx"] - full_x) ** 2 + (d["cy"] - full_y) ** 2
         if dd < bestd:
-            best, bestd = (bx, by), dd
+            best, bestd = d, dd
     if best:
         with _lock:
-            _track.update({"locked": True, "cx": best[0], "cy": best[1]})
+            _track.update({"locked": True, "cx": best["cx"], "cy": best["cy"]})
     return {"locked": True}
 
 
@@ -318,7 +349,7 @@ HTML = """<!doctype html><html><head><meta charset="utf-8"><title>ARGOS — Mode
   body{margin:0;background:#0b0f14;color:#cdd6e0;font-family:system-ui,sans-serif;display:flex}
   #video{flex:1;display:flex;align-items:center;justify-content:center;background:#000}
   #video img{max-width:100%;max-height:100vh;cursor:crosshair}
-  #panel{width:268px;padding:16px;background:#11161d;border-left:1px solid #1f2733}
+  #panel{width:268px;padding:16px;background:#11161d;border-left:1px solid #1f2733;overflow:auto;max-height:100vh}
   h1{font-size:14px;letter-spacing:.12em;color:#5ec8ff;margin:0 0 14px}
   .lbl{font-size:11px;letter-spacing:.08em;color:#5b6b7c;margin:14px 0 6px}
   .stat{font-size:13px;margin:7px 0;color:#9fb0c0;display:flex;justify-content:space-between}
@@ -328,7 +359,7 @@ HTML = """<!doctype html><html><head><meta charset="utf-8"><title>ARGOS — Mode
   button.src.on{border-color:#5ec8ff;background:#10212e;color:#fff}
   #bar{height:8px;background:#1a2430;border-radius:4px;margin:8px 0;position:relative}
   #barfill{position:absolute;top:-2px;bottom:-2px;width:3px;background:#ff5a4d;border-radius:2px}
-  ul{list-style:none;padding:0;margin:8px 0;font-size:12px;max-height:24vh;overflow:auto}
+  ul{list-style:none;padding:0;margin:8px 0;font-size:12px;max-height:20vh;overflow:auto}
   li{padding:3px 0;color:#7f93a6;border-bottom:1px solid #161d26}
 </style></head><body>
   <div id="video"><img id="cam" src="/stream"></div>
@@ -375,7 +406,7 @@ async function poll(){
     const dets=d.detections||[];
     np.textContent=dets.filter(x=>x.cls==='personne').length;
     nv.textContent=dets.filter(x=>x.cls==='vehicule').length;
-    list.innerHTML=dets.slice(0,24).map(x=>`<li>${x.cls} · ${x.conf}</li>`).join('');
+    list.innerHTML=dets.slice(0,20).map(x=>`<li>${x.cls} · ${x.conf}</li>`).join('');
     const t=await (await fetch('/track')).json();
     lk.textContent=t.locked?(t.has?'ACTIF':'perdu'):'—';
     er.textContent=(t.error??0).toFixed(2);
