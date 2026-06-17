@@ -7,6 +7,7 @@ Affichage : navigateur (zéro dépendance display). http://localhost:8088
 
 Lance : make console
 """
+import math
 import os
 import threading
 import time
@@ -16,6 +17,7 @@ from pathlib import Path
 import cv2
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, StreamingResponse
+from pymavlink import mavutil
 from ultralytics import YOLO
 
 HERE = Path(__file__).resolve().parent
@@ -39,6 +41,13 @@ _state = {"jpeg": None, "dets": [], "fps": 0.0, "dims": None}
 _sel = {"name": DEFAULT}
 _track = {"locked": False, "cx": 0.0, "cy": 0.0, "error": 0.0, "yaw": 0.0, "has": False}
 _lock = threading.Lock()
+
+# --- Drone (Mode B étape 2) : connexion directe au binaire SITL ArduCopter ---
+DRONE_CONN = "tcp:127.0.0.1:5760"
+TAKEOFF_ALT = 15.0
+_YAW_MASK = 0b0000011111000111            # SET_POSITION_TARGET : vitesse + yaw_rate actifs
+_drone = {"status": "déconnecté", "armed": False, "alt": 0.0, "hdg": 0.0, "flying": False}
+_drone_started = {"v": False}
 
 
 def yaw_rate_command(error):
@@ -142,6 +151,71 @@ def worker():
         cap.release()
 
 
+def _drone_thread():
+    """Connecte le SITL, décolle en GUIDED, puis stream le yaw-rate de la loi
+    tant qu'une cible est verrouillée. Lit la télémétrie au passage."""
+    m = mavutil.mavlink_connection(DRONE_CONN)
+    if not m.wait_heartbeat(timeout=10):
+        with _lock:
+            _drone["status"] = "pas de SITL (tcp:5760)"
+        _drone_started["v"] = False
+        return
+    # sans MAVProxy, il faut DEMANDER les flux télémétrie
+    m.mav.request_data_stream_send(m.target_system, m.target_component,
+                                   mavutil.mavlink.MAV_DATA_STREAM_ALL, 5, 1)
+    # SITL : on lève les pre-arm checks (sim only) pour un décollage fiable
+    m.mav.param_set_send(m.target_system, m.target_component, b"ARMING_CHECK", 0,
+                         mavutil.mavlink.MAV_PARAM_TYPE_INT32)
+    with _lock:
+        _drone["status"] = "connecté · décollage..."
+    time.sleep(3)                                   # laisse l'EKF se poser un peu
+
+    m.set_mode(m.mode_mapping()["GUIDED"])
+    time.sleep(1)
+    m.mav.command_long_send(m.target_system, m.target_component,
+                            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1, 0, 0, 0, 0, 0, 0)
+    t0 = time.time()
+    while time.time() - t0 < 15:
+        if m.recv_match(type="HEARTBEAT", blocking=True, timeout=2) and m.motors_armed():
+            break
+    m.mav.command_long_send(m.target_system, m.target_component,
+                            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 0, 0, 0, 0, 0, TAKEOFF_ALT)
+    t0 = time.time()
+    while time.time() - t0 < 30:
+        p = m.recv_match(type="GLOBAL_POSITION_INT", blocking=True, timeout=2)
+        if p and p.relative_alt / 1000.0 >= TAKEOFF_ALT * 0.9:
+            break
+    with _lock:
+        _drone["status"] = "EN VOL · Mode B actif"
+        _drone["flying"] = True
+
+    # boucle : télémétrie + stream du yaw-rate quand une cible est lockée
+    last = 0.0
+    while True:
+        msg = m.recv_match(type=["ATTITUDE", "GLOBAL_POSITION_INT", "HEARTBEAT"],
+                           blocking=True, timeout=0.2)
+        if msg:
+            t = msg.get_type()
+            with _lock:
+                if t == "ATTITUDE":
+                    _drone["hdg"] = round(math.degrees(msg.yaw) % 360, 1)
+                elif t == "GLOBAL_POSITION_INT":
+                    _drone["alt"] = round(msg.relative_alt / 1000.0, 1)
+                elif t == "HEARTBEAT":
+                    _drone["armed"] = bool(m.motors_armed())
+        now = time.time()
+        if now - last >= 0.2:                        # 5 Hz
+            last = now
+            with _lock:
+                active = _track["locked"] and _track["has"]
+                yaw = _track["yaw"]
+            if active:
+                m.mav.set_position_target_local_ned_send(
+                    0, m.target_system, m.target_component,
+                    mavutil.mavlink.MAV_FRAME_LOCAL_NED, _YAW_MASK,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, math.radians(yaw))
+
+
 @asynccontextmanager
 async def lifespan(_app):
     threading.Thread(target=worker, daemon=True).start()
@@ -224,6 +298,21 @@ def track():
         return {k: _track[k] for k in ("locked", "error", "yaw", "has")}
 
 
+@app.get("/drone/takeoff")
+def drone_takeoff():
+    if not _drone_started["v"]:
+        _drone_started["v"] = True
+        threading.Thread(target=_drone_thread, daemon=True).start()
+    with _lock:
+        return dict(_drone)
+
+
+@app.get("/drone/status")
+def drone_status():
+    with _lock:
+        return dict(_drone)
+
+
 HTML = """<!doctype html><html><head><meta charset="utf-8"><title>ARGOS — Mode A/B</title>
 <style>
   body{margin:0;background:#0b0f14;color:#cdd6e0;font-family:system-ui,sans-serif;display:flex}
@@ -253,6 +342,11 @@ HTML = """<!doctype html><html><head><meta charset="utf-8"><title>ARGOS — Mode
     <div class="stat"><span>Yaw cmd</span><b id="yw">0°/s</b></div>
     <div id="bar"><div id="barfill" style="left:50%"></div></div>
     <button class="src" onclick="unlock()">Unlock</button>
+    <div class="lbl">DRONE — Mode B</div>
+    <button class="src" onclick="takeoff()">Décoller + activer Mode B</button>
+    <div class="stat"><span>État</span><b id="dst" style="font-size:11px">déconnecté</b></div>
+    <div class="stat"><span>Cap</span><b id="dhdg">–</b></div>
+    <div class="stat"><span>Alt</span><b id="dalt">–</b></div>
     <div class="lbl">TÉLÉMÉTRIE</div>
     <div class="stat"><span>FPS</span><b id="fps">–</b></div>
     <div class="stat"><span>Personnes</span><b id="np">0</b></div>
@@ -267,6 +361,7 @@ cam.addEventListener('click',async e=>{
   await fetch(`/lock?fx=${fx.toFixed(4)}&fy=${fy.toFixed(4)}`);
 });
 async function unlock(){ await fetch('/unlock'); }
+async function takeoff(){ await fetch('/drone/takeoff'); }
 async function loadMenu(){
   const s=await (await fetch('/sources')).json();
   menu.innerHTML=s.videos.map(v=>
@@ -286,6 +381,8 @@ async function poll(){
     er.textContent=(t.error??0).toFixed(2);
     yw.textContent=(t.yaw??0).toFixed(0)+'°/s';
     barfill.style.left=Math.max(0,Math.min(100,50+(t.yaw||0)/45*50))+'%';
+    const ds=await (await fetch('/drone/status')).json();
+    dst.textContent=ds.status; dhdg.textContent=(ds.hdg??0)+'°'; dalt.textContent=(ds.alt??0)+' m';
   }catch(e){}
   setTimeout(poll,300);
 }
