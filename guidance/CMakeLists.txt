@@ -16,6 +16,10 @@ target_link_libraries(guidance MAVSDK::mavsdk)
 add_executable(yaw_track src/yaw_track.cpp)
 target_link_libraries(yaw_track MAVSDK::mavsdk)
 
+# App 3 : guidage fixed-wing (ArduPlane) — à comparer avec main.cpp (copter).
+add_executable(plane src/plane.cpp)
+target_link_libraries(plane MAVSDK::mavsdk)
+
 # Tests unitaires de la loi de commande (doctest, AUCUN drone requis).
 enable_testing()
 add_executable(test_control_law tests/test_control_law.cpp)
