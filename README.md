@@ -2,7 +2,7 @@
 
 > A miniature, end-to-end ISR drone system: **GPS-denied indoor flight**, **real-time object detection on the edge**, and a **closed detection → guidance loop** that steers the drone toward what it sees. Built simulation-first, then on real hardware — with measured numbers at every stage.
 
-**Status:** Week 1 / 6 — SITL phase (ArduPilot software-in-the-loop). Build-in-public, iterating in the open.
+**Status:** Week 2 / 6 — SITL mission flying; C++/MAVSDK guidance (unit-tested yaw-rate law) + perception quantization benchmark done. Build-in-public, iterating in the open.
 
 ---
 
@@ -28,7 +28,7 @@ Two modes capture the idea: **Mode A** — the ground station shows what the dro
 ## Architecture
 
 ```
-   ┌── GROUND STATION (RTX 4070 → Jetson Orin Nano) ─┐
+   ┌── GROUND STATION (RTX 4060 → Jetson Orin Nano) ─┐
    │ capture → decode → INT8 detector → tracker      │
    │ → yaw control law                               │
    │ Mode A: HUD overlay      Mode B: MAVSDK (C++)   │
@@ -43,10 +43,23 @@ Two modes capture the idea: **Mode A** — the ground station shows what the dro
    └──────────────────────────────────────────────────┘
 ```
 
+## Perception benchmark
+
+YOLO11n fine-tuned on VisDrone (2 classes: person / vehicle), exported to TensorRT at three precisions. Measured on an **RTX 4060**, 640×640, batch 1 — inference-only latency, warmup excluded, p50/p95 over 200 runs.
+
+| Precision | mAP@50 | mAP@50-95 | latency p50 (ms) | p95 (ms) | FPS |
+|---|---|---|---|---|---|
+| PyTorch FP32 | 0.527 | 0.278 | 6.6 | 15.4 | 152 |
+| TensorRT FP32 | 0.526 | 0.278 | 5.5 | 6.6 | 184 |
+| TensorRT FP16 | 0.527 | 0.277 | 5.0 | 6.2 | 198 |
+| TensorRT INT8 | 0.507 | 0.260 | 5.4 | 7.6 | 186 |
+
+**Read:** TensorRT's biggest win is the **p95 tail collapsing 15.4 → 6.6 ms** — predictable latency matters more than peak FPS on edge. **FP16 is the sweet spot** (same accuracy as FP32, fastest). **INT8 isn't worth it at this operating point**: −2 mAP points for no latency gain, because a nano detector at batch-1 is overhead-bound, not compute-bound — INT8's case is the Jetson Orin (DLA, different compute profile) or batched throughput, measured in S3. Reproduce: `make data && make train && make export && make bench`.
+
 ## Roadmap
 
-- **S1 — SITL** *(current)*: ArduPilot SITL + MAVProxy + QGroundControl; first scripted mission in `GUIDED` via pymavlink.
-- **S2 — C++ & perception**: MAVSDK guidance app (continuous yaw-rate control); YOLO → ONNX → TensorRT (FP32/FP16/INT8) with a published mAP / FPS / latency benchmark.
+- **S1 — SITL**: ArduPilot SITL + MAVProxy + QGroundControl; first scripted mission in `GUIDED` via pymavlink.
+- **S2 — C++ & perception** *(current)*: MAVSDK guidance app (continuous yaw-rate control); YOLO → ONNX → TensorRT (FP32/FP16/INT8) with a published mAP / FPS / latency benchmark.
 - **S3 — Hardware bench**: compile & flash ArduPilot to the FC; wire the flow sensor; wireless MAVLink telemetry; sensors live in QGC; motors armed (props off) driven from the app.
 - **S4 — Build & Mode A**: 3.5" build; first manual flights; real-time detection HUD overlay; indoor FlowHold hover with measured drift.
 - **S5 — Mode B in flight**: closed detection → yaw → MAVLink loop; end-to-end latency p50/p95, command rate, loss-of-target behavior.
@@ -58,10 +71,10 @@ Every milestone ships a **published number** (mAP, FPS, latency p50/p95, positio
 
 ```
 argos/
-├── sitl/              # SITL-phase scripts (pymavlink)
-│   └── mission_basic.py   # arm → takeoff → square → land, in GUIDED
-├── docs/
-│   └── journal.md     # dev journal: discoveries, surprises, traps
+├── sitl/             # SITL scripts (pymavlink): mission + yaw demo + launcher
+├── guidance/         # C++/MAVSDK guidance app + control law + unit tests
+├── perception/       # YOLO → TensorRT pipeline + quantization benchmark
+├── docs/journal.md   # dev journal: discoveries, surprises, traps
 ├── README.md
 └── LICENSE
 ```
