@@ -180,3 +180,16 @@ memory cement: interview material, build-in-public content, and my own notes.
   (`MavlinkPassthrough`) the ArduPilot way: **takeoff is a MODE, not a command** — arm + switch
   to mode `TAKEOFF` (13) → auto climb-out; end with mode `RTL` (11) → loiter (verified: alt ~50 m,
   mode RTL). Lesson: high-level SDKs are vendor-shaped; off the happy path you go back to the protocol.
+
+## 2026-06-17 — Mode A: operator detection console (web)
+
+- Built the operator-facing console (`perception/console.py`): video → FP16 TensorRT
+  inference → OpenCV HUD → **MJPEG web stream** (FastAPI) viewable in a browser. Web
+  (not `cv2.imshow`) so it needs no X display — works over SSH/WSL, reachable from the
+  Mac via Tailscale. Core decoupled from display; `annotate()` + the HTML are the seam
+  Victor refines. ~47 FPS on 1080p, ~40 detections/frame, vehicles at 0.9 conf.
+- **UX lesson (Victor's call, correct):** a "video" stitched from independent VisDrone
+  images is **unwatchable for a human** — it sabotages the whole point of a good operator
+  UI. A real continuous aerial clip is essential. Fix: `get_video.py` now downloads a
+  real aerial clip (Pexels, free) with the VisDrone-stitch only as a fallback. Good
+  operator UX needs footage a human can actually follow, not just data the model likes.
