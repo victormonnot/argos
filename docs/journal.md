@@ -145,3 +145,21 @@ memory cement: interview material, build-in-public content, and my own notes.
   the actual files* after running. Fix: remap non-destructively (back up the pristine
   10-class labels once, always remap from the backup) so the class mapping can be
   changed without re-downloading.
+
+## 2026-06-17 — S2 perception: TensorRT export + quantization benchmark
+
+- **Pipeline:** `best.pt` → ONNX → TensorRT FP32/FP16/INT8 (`export.py`), INT8 via
+  PTQ calibration on VisDrone; benchmarked mAP + latency p50/p95 + FPS per precision
+  (`benchmark.py` → `benchmark.md`). TensorRT 11.1, RTX 4060, batch-1, imgsz 640.
+- **Numbers:** PyTorch FP32 mAP50 0.527 / p50 6.6ms / p95 15.4ms; TRT FP32 0.526 /
+  5.5 / 6.6; **TRT FP16 0.527 / 5.0 / 6.2 (198 FPS) — the sweet spot**; TRT INT8 0.507
+  / 5.4 / 7.6.
+- **The real lesson — measure, don't assume.** TensorRT's biggest win here isn't the
+  mean speed, it's the **p95 tail collapsing 15.4 → 6.6 ms** (predictable latency
+  matters more than peak FPS in embedded). And **INT8 lost**: −2 mAP points *and* not
+  faster than FP16. Why: a yolo11n at 640/batch-1 already runs in ~5 ms → it's
+  overhead-bound, not compute-bound, so INT8 has nothing to win; plus TRT fell back to
+  mixed precision on the (de)quant layers (the `Skipping tactic` errors at build).
+  Conclusion: **FP16 is the deployment choice**; INT8's case is on the Jetson Orin
+  (DLA, different compute profile) or batched throughput — an honest S3 line, and a
+  stronger interview story than a fake "INT8 ×3".
