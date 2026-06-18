@@ -67,6 +67,25 @@ def main() -> None:
     print("[test] RESULTAT:", "OK -- la physique Gazebo repond aux moteurs ✅"
           if reached else "altitude non atteinte ❌")
 
+    # atterrissage propre : LAND descend puis desarme tout seul au contact
+    print("[test] LAND ...")
+    m.set_mode(m.mode_mapping()["LAND"])
+    t0 = time.time()
+    while time.time() - t0 < 40:
+        m.recv_match(type="GLOBAL_POSITION_INT", blocking=True, timeout=1)
+        a = None
+        p = m.recv_match(type="GLOBAL_POSITION_INT", blocking=True, timeout=1)
+        if p:
+            a = p.relative_alt / 1000.0
+            print(f"[test] descente  alt = {a:.2f} m")
+        if not m.motors_armed():
+            print("[test] posé et désarmé ✅")
+            return
+    # filet de securite : force le desarmement si pas encore fait
+    m.mav.command_long_send(m.target_system, m.target_component,
+                            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 0, 0, 0, 0, 0, 0, 0)
+    print("[test] désarmement forcé")
+
 
 if __name__ == "__main__":
     main()

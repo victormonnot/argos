@@ -26,13 +26,14 @@ set -euo pipefail
 
 # IP Tailscale du Mac (stable quel que soit le WiFi). Vider pour desactiver le pont QGC.
 MAC_IP="${MAC_IP-100.114.183.96}"
+ARGOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # racine du repo argos
 ARDUPILOT_DIR="${ARDUPILOT_DIR:-$HOME/argos-project/ardupilot}"
 GAZEBO_DIR="${GAZEBO_DIR:-$HOME/argos-project/ardupilot_gazebo}"
-WORLD="${WORLD:-iris_runway.sdf}"
+WORLD="${WORLD:-argos_demo.sdf}"               # monde ARGOS (drone + cibles), cf sitl/gazebo/
 export PATH="$HOME/venv-ardupilot/bin:$PATH"   # pour trouver mavproxy.py
 
-# --- Gazebo : ou trouver modeles, mondes et le plugin compile ---
-export GZ_SIM_RESOURCE_PATH="$GAZEBO_DIR/models:$GAZEBO_DIR/worlds:${GZ_SIM_RESOURCE_PATH:-}"
+# --- Gazebo : mondes/modeles ARGOS d'abord, puis ceux d'ardupilot_gazebo + le plugin ---
+export GZ_SIM_RESOURCE_PATH="$ARGOS_DIR/sitl/gazebo/worlds:$ARGOS_DIR/sitl/gazebo/models:$GAZEBO_DIR/models:$GAZEBO_DIR/worlds:${GZ_SIM_RESOURCE_PATH:-}"
 export GZ_SIM_SYSTEM_PLUGIN_PATH="$GAZEBO_DIR/build:${GZ_SIM_SYSTEM_PLUGIN_PATH:-}"
 # --- WSL : rendu GPU headless via D3D12 (sinon llvmpipe logiciel, trop lent) ---
 export GALLIUM_DRIVER="${GALLIUM_DRIVER:-d3d12}"
@@ -65,6 +66,11 @@ for _ in $(seq 1 60); do
   if gz topic -l 2>/dev/null | grep -q "/stats"; then echo " ok"; break; fi
   echo -n "."; sleep 0.5
 done
+
+# Camera ISR : pitch le gimbal vers l'avant-bas (~ -0.8 rad) pour cadrer le sol ahead.
+# Tenu par le JointPositionController -> rigide avec le corps (yaw drone = yaw camera).
+GIMBAL_PITCH="${GIMBAL_PITCH:--0.8}"
+gz topic -t /gimbal/cmd_pitch -m gz.msgs.Double -p "data: $GIMBAL_PITCH" 2>/dev/null || true
 
 cd "$ARDUPILOT_DIR"
 echo "[run_gazebo] ArduCopter SITL (FDM JSON -> Gazebo) -> $SITL_LOG"
