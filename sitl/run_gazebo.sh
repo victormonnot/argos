@@ -14,18 +14,22 @@
 #   3. en headless "gz sim -s -r" STEP bien la physique (le diag "ca ne step pas" etait faux)
 #
 # Usage :
-#   ./sitl/run_gazebo.sh            # lance tout, MAVLink sur tcp:127.0.0.1:5760
+#   ./sitl/run_gazebo.sh            # Gazebo + SITL + pont MAVLink vers QGC (Mac) et vers :14551
 #   GUI=1 ./sitl/run_gazebo.sh      # avec la fenetre Gazebo (sur le PC fixe, display dispo)
-#   Ctrl-C                          # arrete proprement Gazebo + SITL
+#   MAC_IP="" ./sitl/run_gazebo.sh  # headless pur, sans pont QGC (MAVLink seulement sur tcp:5760)
+#   Ctrl-C                          # arrete proprement Gazebo + SITL + mavproxy
 #
-# Apres lancement, dans un autre terminal :
-#   - console.py se connecte tout seul a tcp:127.0.0.1:5760 (Mode B)
-#   - pour QGC sur le Mac :  mavproxy.py --master tcp:127.0.0.1:5760 --out udp:<MAC>:14550
+# Quand le pont QGC est actif (MAC_IP non vide), les clients se branchent ainsi :
+#   - QGroundControl sur le Mac : se connecte tout seul (ecoute UDP 14550)
+#   - scripts pymavlink / smoke-test : CONN=udp:127.0.0.1:14551
 set -euo pipefail
 
+# IP Tailscale du Mac (stable quel que soit le WiFi). Vider pour desactiver le pont QGC.
+MAC_IP="${MAC_IP-100.114.183.96}"
 ARDUPILOT_DIR="${ARDUPILOT_DIR:-$HOME/argos-project/ardupilot}"
 GAZEBO_DIR="${GAZEBO_DIR:-$HOME/argos-project/ardupilot_gazebo}"
 WORLD="${WORLD:-iris_runway.sdf}"
+export PATH="$HOME/venv-ardupilot/bin:$PATH"   # pour trouver mavproxy.py
 
 # --- Gazebo : ou trouver modeles, mondes et le plugin compile ---
 export GZ_SIM_RESOURCE_PATH="$GAZEBO_DIR/models:$GAZEBO_DIR/worlds:${GZ_SIM_RESOURCE_PATH:-}"
@@ -39,6 +43,7 @@ SITL_LOG=/tmp/argos_sitl.log
 
 cleanup() {
   echo; echo "[run_gazebo] arret..."
+  [[ -n "${MP_PID:-}"   ]] && kill "$MP_PID"   2>/dev/null || true
   [[ -n "${SITL_PID:-}" ]] && kill "$SITL_PID" 2>/dev/null || true
   [[ -n "${GZ_PID:-}"   ]] && kill "$GZ_PID"   2>/dev/null || true
   pkill -f "[a]rducopter .*JSON:127.0.0.1" 2>/dev/null || true
@@ -71,15 +76,29 @@ build/sitl/bin/arducopter \
   >"$SITL_LOG" 2>&1 &
 SITL_PID=$!
 
+# --- pont MAVLink : tcp:5760 (SITL) -> QGC sur le Mac (14550) + scripts locaux (14551) ---
+# mavproxy se connectant au master 5760 debloque aussi la boucle FDM du SITL.
+MP_LOG=/tmp/argos_mavproxy.log
+if [[ -n "$MAC_IP" ]]; then
+  echo "[run_gazebo] pont MAVLink -> QGC udp:${MAC_IP}:14550 (+ local :14551) -> $MP_LOG"
+  mavproxy.py --master tcp:127.0.0.1:5760 \
+    --out "udp:${MAC_IP}:14550" \
+    --out udp:127.0.0.1:14551 \
+    --daemon >"$MP_LOG" 2>&1 &
+  MP_PID=$!
+fi
+
 cat <<EOF
 
 [run_gazebo] c'est parti.
    Gazebo  PID $GZ_PID   (log: $GZ_LOG)
-   SITL    PID $SITL_PID (log: $SITL_LOG)
-   MAVLink : tcp:127.0.0.1:5760
-   Camera  : gz topic -e -t /world/iris_runway/.../camera/image
+   SITL    PID $SITL_PID (log: $SITL_LOG)${MAC_IP:+
+   mavproxy PID ${MP_PID:-?} (log: $MP_LOG)}
+   MAVLink : tcp:127.0.0.1:5760${MAC_IP:+   |   QGC(Mac): udp:${MAC_IP}:14550   |   scripts: udp:127.0.0.1:14551}
+   Camera  : gz topic -e -t /world/iris_runway/model/iris_with_gimbal/.../camera/image
 
-   -> lance la console (Mode B) ou QGC dans un autre terminal.
+   -> Sur le Mac : ouvre QGroundControl, il se connecte tout seul.
+   -> Preuve du vol : CONN=udp:127.0.0.1:14551 ~/venv-ardupilot/bin/python sitl/gazebo_takeoff_test.py
    -> Ctrl-C ici pour tout arreter.
 EOF
 
