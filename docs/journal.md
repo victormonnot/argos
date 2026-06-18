@@ -211,3 +211,34 @@ memory cement: interview material, build-in-public content, and my own notes.
   is **S5**. Residual hunting = naive nearest-neighbour tracker + moving target (ByteTrack later).
 - Infra: connected straight to the SITL binary on **tcp:5760** (no MAVProxy headless) → had to
   `request_data_stream` manually; pre-arm checks disabled (SITL only) for a reliable takeoff.
+
+## 2026-06-17 — Gazebo visual sim: infra UP, SITL↔Gazebo handshake PENDING
+
+Goal: a real drone-in-3D-sim demo (free, no hardware) — camera-in-the-loop closed guidance,
+the software version of S5. Chose **Gazebo Harmonic + ArduPilot SITL**.
+
+- **Working ✅:** Gazebo Sim 8.13 installed; `ardupilot_gazebo` plugin **built** at
+  `~/argos-project/ardupilot_gazebo/build` (deps: libgz-sim8-dev, libopencv-dev, gstreamer-1.0
+  /-app, rapidjson). **Headless GPU rendering confirmed** (`GALLIUM_DRIVER=d3d12` →
+  `D3D12 (RTX 4060)`). `iris_runway.sdf` loads `iris_with_gimbal` (a drone + camera); the
+  **camera image topic** and IMU topics exist; the plugin opens FDM port **9002**.
+- **Blocker ❌:** ArduCopter SITL (`--model gazebo-iris --sim-address=127.0.0.1`) does **not
+  sync** with Gazebo headless — no MAVLink heartbeat. Root cause: the headless `gz sim -s -r`
+  server **isn't stepping the physics** (IMU never publishes), so the ArduPilot↔Gazebo
+  **lockstep deadlocks** (Gazebo waits for servos, SITL waits for state). Unpausing via the
+  `/world/iris_runway/control` service (returned `data: true`) did **not** bootstrap stepping.
+- **Leads for next session:** (1) run Gazebo **with the GUI on the physical PC** (WSLg display)
+  and press play → confirms SITL+Gazebo flight works there, isolating the *headless-stepping*
+  issue; (2) investigate headless server stepping (ogre2/EGL render engine flags, world
+  `<physics>` + lockstep config); (3) double-check FDM port roles. Everything except the
+  physics handshake is proven.
+- **Retry on a CLEAN WSL (after a full reboot):** ruled OUT the process-conflict theory — a
+  *bare* SITL now heartbeats fine, so the earlier "internal clock bits / Time has wrapped" was a
+  leftover ArduPlane SITL + MAVProxy fighting over the clock (killed by the reboot). Ruled OUT
+  lockstep (`lock_step=0` → no change). Gazebo **does step** (IMU publishes) — but note headless
+  `gz sim -s -r` starts **PAUSED**; must unpause via the `/world/iris_runway/control` service.
+  The SITL still blocks at `Home:`, never receiving FDM state on its bound port 9003. **Narrowed
+  to: the plugin's FDM state never reaches the SITL** → most likely a **version mismatch**
+  (`ardupilot_gazebo` cloned at latest master vs ArduPilot cloned in S1; the SITL JSON/FDM packet
+  format may have changed). **Next: match versions** — update ArduPilot + rebuild SITL, or checkout
+  a plugin tag matching his ArduPilot (see the ardupilot_gazebo README compat table).
