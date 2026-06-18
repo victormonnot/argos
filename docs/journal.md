@@ -242,3 +242,36 @@ the software version of S5. Chose **Gazebo Harmonic + ArduPilot SITL**.
   (`ardupilot_gazebo` cloned at latest master vs ArduPilot cloned in S1; the SITL JSON/FDM packet
   format may have changed). **Next: match versions** — update ArduPilot + rebuild SITL, or checkout
   a plugin tag matching his ArduPilot (see the ardupilot_gazebo README compat table).
+
+## 2026-06-19 — Gazebo handshake SOLVED ✅ (real drone flies in the 3D sim)
+
+The version-mismatch theory was **wrong** (both recent: ArduPilot 4.6.0-beta1 @2026-06-13,
+plugin @2026-04-03, Gazebo 8.13). Three real causes, all fixed:
+
+1. **Wrong model flag.** Launches used `--model gazebo-iris` (invalid) instead of
+   **`--model JSON:127.0.0.1`**. The JSON FDM backend (`libraries/SITL/SIM_JSON.cpp`) sends
+   servos to `127.0.0.1:9002` and the plugin **replies to the sender's address** (no fixed
+   `fdm_port_out` in the SDF), so the bound-port worry was a non-issue.
+2. **Editing the wrong SDF.** Yesterday's `lock_step` tweaks were on
+   `models/iris_with_ardupilot/model.sdf`, but `iris_runway.sdf` loads **`iris_with_gimbal`**,
+   whose **own** `ArduPilotPlugin` (model.sdf:187, `fdm_port_in 9002`, `lock_step 1`) is the
+   active one. The edits had zero effect.
+3. **"Headless doesn't step" was false.** `gz sim -s -r` **does** advance sim time headless
+   (`/stats` real_time_factor ≈ 0.47, GPU ogre2 render). No unpausing needed.
+
+**Proof it flies:** connected pymavlink to `tcp:5760` → HEARTBEAT (ArduPilotMega), full FDM
+telemetry from Gazebo (RAW_IMU acc=(0,0,-1000)=gravity, GPS 3D fix 10 sats from the navsat
+sensor), then **GUIDED → arm → NAV_TAKEOFF 10 m** and altitude climbed
+`0.01→0.70→2.61→5.37→7.80→9.53→10.03→10.00 m` and held. Physics is 100% Gazebo responding to
+ArduPilot's motor outputs. The "crashes" mid-debug were my own foreground kills (the sandbox
+SIGs long foreground procs at 144) + the client disconnecting — the SITL itself is rock-solid.
+
+**Reproducible:** `sitl/run_gazebo.sh` (launches Gazebo + SITL with the right wiring, clean
+Ctrl-C teardown) and `sitl/gazebo_takeoff_test.py` (the arm→takeoff smoke test above).
+Active camera topic for the next step:
+`/world/iris_runway/model/iris_with_gimbal/.../camera/image`.
+
+**Next:** bridge that Gazebo gimbal camera into `console.py` (subscribe via `gz topic` /
+ros-gz or the gstreamer UDP the plugin can emit) → run the detector on the synthetic frames
+(COCO weights for the synthetic domain) → close the **real** visual yaw loop, retiring the
+viewport-pan hack.
