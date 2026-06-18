@@ -323,3 +323,36 @@ d'un réglage SITL+Gazebo).
 **Lancer la démo :** `./sitl/run_gazebo.sh` puis `make console` (ou
 `perception/.venv/bin/python perception/console.py`) → `http://<fixe-tailscale>:8088`, source
 "POV drone · Gazebo", Décoller, cliquer une cible → le gimbal la suit.
+
+## 2026-06-19 (3) — ENGAGE débloqué : corrections majeures sur la physique & le gimbal
+
+Reprise sur une simu FRAÎCHE (Victor a reset le PC). Plusieurs conclusions d'avant étaient des
+**artefacts de simu dégradée** (mes tests crashaient le drone en boucle). Vérité établie par des
+tests directs MAVLink sur la simu propre :
+
+- **Le drone PEUT translater** ✅ : un setpoint de vitesse NED le fait bouger (pitch -17°, vol à
+  4 m/s, position qui change). L'ancien « setpoints ignorés » était faux. → **ENGAGE est faisable.**
+- **Le drone ne peut TOUJOURS pas yawer** ❌ (confirmé : yaw_rate + CONDITION_YAW + RC override yaw
+  tous sans effet) — pas de couple de lacet dans le modèle iris.
+- **Le gimbal se pilote via ArduPilot (mount RC), PAS via gz topic.** Mon retrait des canaux 8/9/10
+  avait cassé l'actionnement du gimbal (c'est le canal ArduPilot qui applique la force au joint, pas
+  le JointPositionController seul). **Restauré les canaux** + ajouté le param officiel
+  `config/gazebo-iris-gimbal.parm` (MNT1_TYPE=1, SERVO9-11_FUNCTION, RC7_OPTION=213 pitch,
+  RC8_OPTION=214 yaw, MNT1_DEFLT_MODE=3 RC_TARGETING) au lancement (`run_gazebo.sh`).
+  → **Gimbal piloté en RC override : RC7=pitch (1500≈nadir, ~1610=avant-bas), RC8=yaw.** Validé
+  (le pitch et le yaw bougent la caméra).
+
+**Nouvelle architecture du suivi (console)** — comme le drone translate mais ne yaw pas :
+- gimbal **fixe** (RC7 pitch avant-bas, RC8 neutre) tenu en continu par `_drone_thread` (RC override
+  renvoyé à 5 Hz, l'override expire en ~3 s) ;
+- **suivi par TRANSLATION** : l'erreur horizontale → strafe Est/Ouest du drone pour recentrer la
+  cible ; **ENGAGE** = vitesse avant. Tout en vitesse NED (validé). Remplacé l'ancien tracking
+  gz-topic gimbal (cassé). Constantes à régler : `RC7_PITCH`, `K_STRAFE`, `STRAFE_SIGN`,
+  `ENGAGE_SPEED`, `GZ_IMGSZ`.
+
+**Point dur restant = la DÉTECTION synthétique** (domain gap COCO) : la voiture Hatchback est mal
+classée depuis l'aérien (kite/airplane) ; la personne ne sort bien qu'en `imgsz=1280` (0.68). Et
+l'angle exact du gimbal est très sensible (vue qui varie). → À **régler en live** (voir la POV +
+les détections en direct est ~10× plus rapide que mes cycles de vol aveugles de 3 min). Pistes :
+altitude plus basse / cible plus proche (vue oblique, plus gros), autre modèle de véhicule,
+ajustement de `RC7_PITCH`.
