@@ -275,3 +275,51 @@ Active camera topic for the next step:
 ros-gz or the gstreamer UDP the plugin can emit) → run the detector on the synthetic frames
 (COCO weights for the synthetic domain) → close the **real** visual yaw loop, retiring the
 viewport-pan hack.
+
+## 2026-06-19 (suite) — Camera-in-the-loop : POV Gazebo + détection + tracking GIMBAL
+
+Branché la **vraie caméra du drone Gazebo** dans la console opérateur (POV live + détection +
+HUD + suivi de cible), ouvrable depuis le Mac via Tailscale. Pipeline de bout en bout validé.
+
+**Ce qui marche (validé end-to-end) :**
+- **Ingestion caméra** : `perception/gz_camera.py` lit le topic image gz via les bindings
+  Python `gz-transport13`/`gz-msgs10` (apt). Frame brute RGB_INT8 640×480 → BGR numpy. Un `.pth`
+  dans `perception/.venv` expose `/usr/lib/python3/dist-packages` (le venv garde la priorité).
+- **Scène** : monde ARGOS `sitl/gazebo/worlds/argos_demo.sdf` (copie d'iris_runway) + 2 cibles
+  Fuel (Hatchback + Standing person) devant le drone. `run_gazebo.sh` pointe dessus.
+- **Caméra ISR** : gimbal pitché ~-0.8 rad (vise le sol devant) + **crop du haut 50%** (retire
+  l'airframe, qui sinon se fait détecter comme "airplane"). Donne person ~0.72 / car ~0.67.
+- **Détection** : COCO `yolo11n.pt` quand source=gazebo (remap person→personne,
+  car/truck/bus/moto→vehicule), réutilise `detect()`/`draw_boxes()`. Source "gazebo" ajoutée au
+  menu à côté des 3 vidéos réelles (Mode A inchangé).
+- **Tracking par GIMBAL (boucle fermée)** : l'opérateur lock une détection → l'erreur (cible vs
+  centre image) intègre l'angle de **yaw du gimbal** → le pod slew → la cible se recentre.
+  Converge proprement : err +0.13 → 0.00 et tient, gimbal_yaw stable. C'est un vrai pod ISR.
+
+**Limites physiques découvertes (importantes) :** l'iris Gazebo ne peut **PAS** :
+- **yawer** (pas de couple de lacet modélisé — confirmé : CONDITION_YAW rejeté ACK 4, yaw_rate
+  ignoré, même RC override en ALT_HOLD ne tourne pas) ;
+- **se déplacer horizontalement** via les setpoints GUIDED (`SET_POSITION_TARGET` vélocité ET
+  position ET `DO_REPOSITION` : tous ignorés ; seuls arm + NAV_TAKEOFF marchent).
+→ D'où le **pivot du tracking vers le gimbal** (au lieu de yawer le drone comme le hack viewport
+des sources vidéo). Plus réaliste de toute façon. **ENGAGE** (le drone avance vers la cible)
+est câblé (vitesse NED vers le relèvement gimbal) mais **best-effort** : bloqué par la limite
+setpoint ci-dessus. À creuser (piste : la limite vient peut-être du sous-mode takeoff GUIDED ou
+d'un réglage SITL+Gazebo).
+
+**Autres correctifs :**
+- `lock_step=0` (no_lockstep) dans `models/iris_with_gimbal/model.sdf` : évite le deadlock
+  SITL↔Gazebo sous mavproxy (sim_time gelait). N'affecte pas les manœuvres (le blocage yaw/vel
+  est indépendant du lockstep).
+- **Canaux gimbal 8/9/10 retirés** de l'ArduPilotPlugin (`iris_with_gimbal/model.sdf`) :
+  ArduPilot publiait sur `/gimbal/cmd_*` et écrasait nos commandes une fois en vol → le gimbal
+  est maintenant piloté exclusivement par la console (JointPositionController).
+- Gimbal commandé via le **CLI `gz topic`** (subprocess) depuis un thread dédié `_gimbal_thread`
+  (~8 Hz) : le publish gz-transport python ne porte pas hors du thread principal.
+- `console.py` : `DRONE_CONN` défaut `udp:127.0.0.1:14551` (sortie mavproxy) ; `_drone_thread`
+  attend un fix GPS 3D avant d'armer (décollage fiable) ; `TAKEOFF_ALT=12` (cadre les cibles).
+- `sitl/gazebo_takeoff_test.py` : atterrit + désarme à la fin (ne reste plus en l'air).
+
+**Lancer la démo :** `./sitl/run_gazebo.sh` puis `make console` (ou
+`perception/.venv/bin/python perception/console.py`) → `http://<fixe-tailscale>:8088`, source
+"POV drone · Gazebo", Décoller, cliquer une cible → le gimbal la suit.
