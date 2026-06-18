@@ -78,7 +78,7 @@ build/sitl/bin/arducopter \
   -I0 \
   --model JSON:127.0.0.1 \
   --speedup 1 \
-  --defaults Tools/autotest/default_params/copter.parm,Tools/autotest/default_params/gazebo-iris.parm \
+  --defaults Tools/autotest/default_params/copter.parm,Tools/autotest/default_params/gazebo-iris.parm,$GAZEBO_DIR/config/gazebo-iris-gimbal.parm \
   >"$SITL_LOG" 2>&1 &
 SITL_PID=$!
 

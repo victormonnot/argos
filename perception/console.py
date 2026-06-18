@@ -48,14 +48,18 @@ VP_FRAC = 0.62          # largeur du viewport / largeur pleine
 FOV_HALF = 22.0         # demi-plage : ±FOV_HALF° de yaw = pan complet du viewport
 
 # Source Gazebo (POV drone réelle dans la simu 3D).
-# NB: l'iris Gazebo ne tourne pas en lacet -> on suit la cible avec le GIMBAL (pod ISR),
-# pas en yawant le drone. Le gimbal slew (contrôleur de position) pour recentrer la cible.
+# Contraintes physiques validées en SITL : l'iris Gazebo NE PEUT PAS yawer ni recevoir de
+# yaw_rate, mais il PEUT translater (vitesse NED). Le gimbal est un MOUNT ArduPilot piloté
+# en RC override (RC7=pitch, RC8=yaw). => caméra fixe pointée vers l'avant-bas, et on suit
+# la cible en TRANSLATANT le drone (strafe pour centrer, avance pour ENGAGE).
 GAZEBO = "gazebo"
 GZ_CROP_TOP = 0.5       # on retire le haut de l'image (airframe du drone) avant détection
-GZ_PITCH = -0.8         # pitch du gimbal (rad) : vise le sol devant le drone
-GIMBAL_GAIN = 0.5       # rad de yaw-gimbal par (erreur normalisée · s) — intégrateur
-GIMBAL_YAW_MAX = 2.7    # ±155° de débattement gimbal
-ENGAGE_SPEED = 3.0      # m/s : vitesse drone (frame NED) vers la cible quand ENGAGE
+GZ_IMGSZ = 1280         # détection sur image upscalée (cibles synthétiques petites/lointaines)
+RC7_PITCH = 1610        # PWM RC7 : pitch caméra avant-bas — À RÉGLER EN LIVE (1500=nadir, +haut=avant)
+RC8_YAW = 1500          # PWM RC8 : yaw gimbal neutre (caméra vers l'avant du drone)
+K_STRAFE = 2.5          # m/s de strafe (Est/Ouest) par erreur normalisée -> recentre la cible
+STRAFE_SIGN = 1.0       # +1 : cible à droite -> strafe Est. Inverser si ça diverge.
+ENGAGE_SPEED = 2.0      # m/s avant (Nord caméra) quand l'opérateur ENGAGE le suivi
 
 VIDEOS = {
     "gazebo": ("POV drone · Gazebo (live)", None),
@@ -81,6 +85,7 @@ _VEL_MASK = 0b0000111111000111            # SET_POSITION_TARGET : vitesse seule 
 _drone = {"status": "déconnecté", "armed": False, "alt": 0.0, "hdg": 0.0,
           "flying": False, "href": None}
 _drone_started = {"v": False}
+_gimbal = {"rc7": RC7_PITCH, "rc8": RC8_YAW}   # réglable en live via /gimbal?pitch=..&yaw=..
 
 
 def angdiff(a, b):
@@ -214,19 +219,9 @@ def _video_loop(model, name):
     cap.release()
 
 
-def _gimbal_cmd(topic, val):
-    """Commande le gimbal via le CLI gz (fiable depuis le thread worker — le publish
-    gz-transport python ne porte pas hors du thread principal)."""
-    try:
-        subprocess.run(["gz", "topic", "-t", topic, "-m", "gz.msgs.Double", "-p", f"data: {val}"],
-                       timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
-
-
 def _gazebo_loop(coco, cam):
-    """Source Gazebo : POV RÉELLE du drone (détection + HUD). Le tracking GIMBAL tourne
-    dans _gimbal_thread (cadence régulière, découplée du FPS de détection)."""
+    """Source Gazebo : POV RÉELLE du drone (détection + HUD). Le gimbal (RC override) et le
+    suivi par TRANSLATION sont gérés dans _drone_thread (qui détient la connexion MAVLink)."""
     t_prev = time.time()
     while True:
         with _lock:
@@ -239,7 +234,7 @@ def _gazebo_loop(coco, cam):
         H, W = frame.shape[:2]
         view = frame[int(GZ_CROP_TOP * H):, :].copy()        # retire le haut (airframe)
         Hc, Wc = view.shape[:2]
-        result = coco.predict(view, imgsz=IMGSZ, conf=CONF, device=0, verbose=False)[0]
+        result = coco.predict(view, imgsz=GZ_IMGSZ, conf=CONF, device=0, verbose=False)[0]
         dets_full = detect(result, COCO_MAP)
 
         pan_x, vp_w = 0, Wc                                   # caméra réelle : aucun pan
@@ -251,30 +246,6 @@ def _gazebo_loop(coco, cam):
         _publish(view, dets_full, fps, Wc, Hc, pan_x, vp_w)
 
 
-def _gimbal_thread():
-    """Pilote le gimbal à cadence fixe (~8 Hz) tant que la source Gazebo est active :
-    pitch fixe vers le sol + yaw intégré sur l'erreur de tracking (boucle fermée pod ISR)."""
-    gyaw = 0.0
-    t_prev = time.time()
-    while True:
-        time.sleep(0.12)
-        with _lock:
-            on = _sel["name"] == GAZEBO
-            active = _track["locked"] and _track["has"]
-            err = _track["error"]
-        if not on:
-            gyaw = 0.0
-            t_prev = time.time()
-            continue
-        now = time.time()
-        dt = now - t_prev
-        t_prev = now
-        _gimbal_cmd("/gimbal/cmd_pitch", GZ_PITCH)           # vise le sol devant (chaque tick)
-        if active:
-            gyaw = max(-GIMBAL_YAW_MAX, min(GIMBAL_YAW_MAX, gyaw - GIMBAL_GAIN * err * dt))
-            _gimbal_cmd("/gimbal/cmd_yaw", round(gyaw, 4))
-            with _lock:
-                _track["gimbal_yaw"] = round(gyaw, 4)
 
 
 def worker():
@@ -371,15 +342,20 @@ def _drone_thread():
                 src = _sel["name"]
                 active = _track["locked"] and _track["has"]
                 yaw = _track["yaw"]
+                error = _track["error"]
                 engage = _track["engage"]
-                gyaw = _track["gimbal_yaw"]
-                hdg = _drone["hdg"]
             if src == GAZEBO:
-                # Le tracking est fait par le GIMBAL (worker). ENGAGE = avancer le drone
-                # vers le relèvement visé (cap drone + yaw gimbal), en frame NED.
-                if active and engage:
-                    bearing = math.radians(hdg) + gyaw
-                    vN, vE = ENGAGE_SPEED * math.cos(bearing), ENGAGE_SPEED * math.sin(bearing)
+                # Gimbal = mount ArduPilot en RC override : pitch avant-bas + yaw neutre,
+                # tenu en continu (l'override expire en ~3 s, on le renvoie à 5 Hz).
+                with _lock:
+                    rc7, rc8 = _gimbal["rc7"], _gimbal["rc8"]
+                m.mav.rc_channels_override_send(m.target_system, m.target_component,
+                    65535, 65535, 65535, 65535, 65535, 65535, rc7, rc8)
+                # Suivi par TRANSLATION (le drone Gazebo ne peut pas yawer) : strafe Est/Ouest
+                # pour recentrer la cible, + avance quand ENGAGE. Le drone garde son cap Nord.
+                if active:
+                    vE = max(-3.0, min(3.0, STRAFE_SIGN * K_STRAFE * error))
+                    vN = ENGAGE_SPEED if engage else 0.0
                     m.mav.set_position_target_local_ned_send(
                         0, m.target_system, m.target_component,
                         mavutil.mavlink.MAV_FRAME_LOCAL_NED, _VEL_MASK,
@@ -395,7 +371,6 @@ def _drone_thread():
 @asynccontextmanager
 async def lifespan(_app):
     threading.Thread(target=worker, daemon=True).start()
-    threading.Thread(target=_gimbal_thread, daemon=True).start()
     yield
 
 
@@ -499,6 +474,17 @@ def drone_takeoff():
         threading.Thread(target=_drone_thread, daemon=True).start()
     with _lock:
         return dict(_drone)
+
+
+@app.get("/gimbal")
+def gimbal(pitch: int = None, yaw: int = None):
+    """Réglage live du gimbal (PWM RC7 pitch / RC8 yaw). Ex: /gimbal?pitch=1650"""
+    with _lock:
+        if pitch is not None:
+            _gimbal["rc7"] = max(1100, min(1900, pitch))
+        if yaw is not None:
+            _gimbal["rc8"] = max(1100, min(1900, yaw))
+        return dict(_gimbal)
 
 
 @app.get("/drone/status")
