@@ -72,7 +72,10 @@ DEFAULT = "vehicles"
 _state = {"jpeg": None, "dets": [], "fps": 0.0, "dims": None}
 _sel = {"name": DEFAULT}
 _track = {"locked": False, "cx": 0.0, "cy": 0.0, "error": 0.0, "yaw": 0.0,
-          "has": False, "engage": False, "gimbal_yaw": 0.0}
+          "has": False, "engage": False, "gimbal_yaw": 0.0, "cls_id": None,
+          "last_found": 0.0}
+# réglages de suivi ajustables en live via /tune (sans redémarrer la console)
+_tune = {"kstrafe": 1.5, "gate": 0.35, "coast": 1.5}   # coast = secondes de maintien après perte
 _view = {"pan_x": 0, "vp_w": 0}
 _lock = threading.Lock()
 
@@ -135,37 +138,51 @@ def draw_boxes(view, dets_full, pan_x, fps):
 
 def track_update(view, dets_full, pan_x, vp_w):
     h, w = view.shape[:2]
+    now = time.time()
     with _lock:
         if not _track["locked"]:
             _track["has"] = False
             return
         cx, cy = _track["cx"], _track["cy"]      # coords PLEINES (stables au pan)
+        tcls = _track.get("cls_id")
+        gate = _tune["gate"]
+        coast_t = _tune["coast"]
+        last_found = _track["last_found"]
+        last_err = _track["error"]
 
+    # ne suivre que la classe verrouillée (1 seule personne dans la scène -> robuste au
+    # flicker : on raccroche la cible où qu'elle soit, avec une gate généreuse).
+    cand = [d for d in dets_full if tcls is None or d["cls_id"] == tcls]
     best, bestd = None, 1e18
-    for d in dets_full:
+    for d in cand:
         dd = (d["cx"] - cx) ** 2 + (d["cy"] - cy) ** 2
         if dd < bestd:
             best, bestd = d, dd
-    found = best is not None and bestd < (vp_w * 0.16) ** 2
+    found = best is not None and bestd < (vp_w * gate) ** 2
     if found:
         cx, cy = best["cx"], best["cy"]
+        last_found = now
 
+    # COAST : la cible reste "active" un court instant après une perte (flicker détection)
+    # -> le drone continue de strafer vers sa dernière position au lieu de tout lâcher.
+    coasting = (now - last_found) < coast_t
+    has = found or coasting
     vp_center = pan_x + vp_w / 2
-    error = (cx - vp_center) / (vp_w / 2)         # -1 gauche .. +1 droite (du viewport)
-    yaw = yaw_rate_command(error)
+    error = (cx - vp_center) / (vp_w / 2) if found else last_err
+    yaw = yaw_rate_command(error) if has else 0.0     # utilisé par le Mode B vidéo (pas Gazebo)
 
     vx, vy = int(cx - pan_x), int(cy)
-    col = (255, 180, 80)
+    col = (255, 180, 80) if found else (120, 120, 120)
     cv2.line(view, (w // 2, h // 2), (vx, vy), col, 1, cv2.LINE_AA)
     cv2.circle(view, (vx, vy), 20, (0, 0, 255) if found else (130, 130, 130), 2, cv2.LINE_AA)
     cv2.drawMarker(view, (vx, vy), (0, 0, 255), cv2.MARKER_CROSS, 28, 1, cv2.LINE_AA)
-    cv2.putText(view, f"LOCK  err {error:+.2f}  yaw {yaw:+.0f} deg/s",
+    cv2.putText(view, f"LOCK  err {error:+.2f}  {'TRACK' if found else 'coast'}",
                 (10, h - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
 
     with _lock:
-        # cible perdue -> erreur de commande 0 (sinon une erreur figée fait dériver le gimbal)
-        _track.update({"cx": cx, "cy": cy, "error": round(error, 3) if found else 0.0,
-                       "yaw": round(yaw, 1) if found else 0.0, "has": found})
+        _track.update({"cx": cx, "cy": cy, "last_found": last_found,
+                       "error": round(error, 3) if has else 0.0,
+                       "yaw": round(yaw, 1) if has else 0.0, "has": has})
 
 
 def _publish(view, dets_full, fps, w, h, pan_x, vp_w):
@@ -290,6 +307,11 @@ def _drone_thread():
                                    mavutil.mavlink.MAV_DATA_STREAM_ALL, 5, 1)
     m.mav.param_set_send(m.target_system, m.target_component, b"ARMING_CHECK", 0,
                          mavutil.mavlink.MAV_PARAM_TYPE_INT32)
+    # WP_YAW_BEHAVIOR=0 : le drone NE tourne PAS le nez vers sa vitesse (sinon chaque
+    # strafe ferait pivoter la caméra hors cible). Indispensable au suivi par translation.
+    m.mav.param_set_send(m.target_system, m.target_component, b"WP_YAW_BEHAVIOR", 0,
+                         mavutil.mavlink.MAV_PARAM_TYPE_INT32)
+    time.sleep(0.3)
     with _lock:
         _drone["status"] = "connecté · attente GPS..."
     # attendre un fix GPS 3D (EKF prêt) — sinon le décollage GUIDED ne monte pas
@@ -349,12 +371,13 @@ def _drone_thread():
                 # tenu en continu (l'override expire en ~3 s, on le renvoie à 5 Hz).
                 with _lock:
                     rc7, rc8 = _gimbal["rc7"], _gimbal["rc8"]
+                    kstrafe = _tune["kstrafe"]
                 m.mav.rc_channels_override_send(m.target_system, m.target_component,
                     65535, 65535, 65535, 65535, 65535, 65535, rc7, rc8)
                 # Suivi par TRANSLATION (le drone Gazebo ne peut pas yawer) : strafe Est/Ouest
                 # pour recentrer la cible, + avance quand ENGAGE. Le drone garde son cap Nord.
                 if active:
-                    vE = max(-3.0, min(3.0, STRAFE_SIGN * K_STRAFE * error))
+                    vE = max(-3.0, min(3.0, STRAFE_SIGN * kstrafe * error))
                     vN = ENGAGE_SPEED if engage else 0.0
                     m.mav.set_position_target_local_ned_send(
                         0, m.target_system, m.target_component,
@@ -433,7 +456,8 @@ def lock(fx: float, fy: float):
             best, bestd = d, dd
     if best:
         with _lock:
-            _track.update({"locked": True, "cx": best["cx"], "cy": best["cy"]})
+            _track.update({"locked": True, "cx": best["cx"], "cy": best["cy"],
+                           "cls_id": best["cls_id"]})
     return {"locked": True}
 
 
@@ -485,6 +509,17 @@ def gimbal(pitch: int = None, yaw: int = None):
         if yaw is not None:
             _gimbal["rc8"] = max(1100, min(1900, yaw))
         return dict(_gimbal)
+
+
+@app.get("/tune")
+def tune(kstrafe: float = None, gate: float = None):
+    """Réglage live du suivi : kstrafe (gain strafe), gate (rayon de raccroche). Ex: /tune?gate=0.5"""
+    with _lock:
+        if kstrafe is not None:
+            _tune["kstrafe"] = max(0.0, min(5.0, kstrafe))
+        if gate is not None:
+            _tune["gate"] = max(0.05, min(0.9, gate))
+        return dict(_tune)
 
 
 @app.get("/drone/status")
