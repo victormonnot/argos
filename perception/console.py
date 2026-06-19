@@ -55,11 +55,16 @@ FOV_HALF = 22.0         # demi-plage : ±FOV_HALF° de yaw = pan complet du view
 GAZEBO = "gazebo"
 GZ_CROP_TOP = 0.5       # on retire le haut de l'image (airframe du drone) avant détection
 GZ_IMGSZ = 1280         # détection sur image upscalée (cibles synthétiques petites/lointaines)
+RC6_ROLL = 1500         # PWM RC6 : roll gimbal neutre (caméra à plat, pas bancale)
 RC7_PITCH = 1610        # PWM RC7 : pitch caméra avant-bas — À RÉGLER EN LIVE (1500=nadir, +haut=avant)
 RC8_YAW = 1500          # PWM RC8 : yaw gimbal neutre (caméra vers l'avant du drone)
 K_STRAFE = 2.5          # m/s de strafe (Est/Ouest) par erreur normalisée -> recentre la cible
 STRAFE_SIGN = 1.0       # +1 : cible à droite -> strafe Est. Inverser si ça diverge.
 ENGAGE_SPEED = 2.0      # m/s avant (Nord caméra) quand l'opérateur ENGAGE le suivi
+CLOSE_FRAC = 0.62       # ENGAGE : stop d'avancer quand la cible descend sous cette fraction
+                        # de la hauteur image (= proche -> le drone se maintient, sans dépasser)
+MANUAL_V = 2.5          # m/s des commandes de vol manuel (avancer/strafe)
+MANUAL_VZ = 1.5         # m/s vertical (monter/descendre)
 
 VIDEOS = {
     "gazebo": ("POV drone · Gazebo (live)", None),
@@ -89,6 +94,7 @@ _drone = {"status": "déconnecté", "armed": False, "alt": 0.0, "hdg": 0.0,
           "flying": False, "href": None}
 _drone_started = {"v": False}
 _gimbal = {"rc7": RC7_PITCH, "rc8": RC8_YAW}   # réglable en live via /gimbal?pitch=..&yaw=..
+_manual = {"vN": 0.0, "vE": 0.0, "vD": 0.0, "until": 0.0}   # vol manuel opérateur (override le suivi)
 
 
 def angdiff(a, b):
@@ -365,20 +371,29 @@ def _drone_thread():
                 active = _track["locked"] and _track["has"]
                 yaw = _track["yaw"]
                 error = _track["error"]
+                cy = _track["cy"]
                 engage = _track["engage"]
+                rc7, rc8 = _gimbal["rc7"], _gimbal["rc8"]
+                kstrafe = _tune["kstrafe"]
+                man = dict(_manual)
+                dims = _state["dims"]
             if src == GAZEBO:
-                # Gimbal = mount ArduPilot en RC override : pitch avant-bas + yaw neutre,
-                # tenu en continu (l'override expire en ~3 s, on le renvoie à 5 Hz).
-                with _lock:
-                    rc7, rc8 = _gimbal["rc7"], _gimbal["rc8"]
-                    kstrafe = _tune["kstrafe"]
+                # Gimbal (mount RC) : roll à plat + pitch + yaw, tenu en continu (override 5 Hz).
                 m.mav.rc_channels_override_send(m.target_system, m.target_component,
-                    65535, 65535, 65535, 65535, 65535, 65535, rc7, rc8)
-                # Suivi par TRANSLATION (le drone Gazebo ne peut pas yawer) : strafe Est/Ouest
-                # pour recentrer la cible, + avance quand ENGAGE. Le drone garde son cap Nord.
-                if active:
+                    65535, 65535, 65535, 65535, 65535, RC6_ROLL, rc7, rc8)
+                if now < man["until"]:
+                    # VOL MANUEL opérateur : prioritaire sur le suivi (positionner le drone).
+                    m.mav.set_position_target_local_ned_send(
+                        0, m.target_system, m.target_component,
+                        mavutil.mavlink.MAV_FRAME_LOCAL_NED, _VEL_MASK,
+                        0, 0, 0, man["vN"], man["vE"], man["vD"], 0, 0, 0, 0, 0)
+                elif active:
+                    # Suivi par TRANSLATION : strafe Est/Ouest pour recentrer + avance ENGAGE.
+                    # Stop-when-close : cible basse dans l'image (=proche) -> on cesse d'avancer
+                    # (le drone se maintient au-dessus/derrière au lieu de la dépasser).
                     vE = max(-3.0, min(3.0, STRAFE_SIGN * kstrafe * error))
-                    vN = ENGAGE_SPEED if engage else 0.0
+                    close = bool(dims) and cy > CLOSE_FRAC * dims[1]
+                    vN = ENGAGE_SPEED if (engage and not close) else 0.0
                     m.mav.set_position_target_local_ned_send(
                         0, m.target_system, m.target_component,
                         mavutil.mavlink.MAV_FRAME_LOCAL_NED, _VEL_MASK,
@@ -512,14 +527,26 @@ def gimbal(pitch: int = None, yaw: int = None):
 
 
 @app.get("/tune")
-def tune(kstrafe: float = None, gate: float = None):
-    """Réglage live du suivi : kstrafe (gain strafe), gate (rayon de raccroche). Ex: /tune?gate=0.5"""
+def tune(kstrafe: float = None, gate: float = None, coast: float = None):
+    """Réglage live du suivi : kstrafe (gain strafe), gate (rayon raccroche), coast (s)."""
     with _lock:
         if kstrafe is not None:
             _tune["kstrafe"] = max(0.0, min(5.0, kstrafe))
         if gate is not None:
             _tune["gate"] = max(0.05, min(0.9, gate))
+        if coast is not None:
+            _tune["coast"] = max(0.0, min(5.0, coast))
         return dict(_tune)
+
+
+@app.get("/fly")
+def fly(vN: float = 0.0, vE: float = 0.0, vD: float = 0.0, dur: float = 1.2):
+    """Vol manuel opérateur : impose une vitesse NED (m/s) pendant `dur` s (override le suivi).
+    Monter=vD<0, Descendre=vD>0, Avancer=vN>0, Reculer=vN<0, Droite/Est=vE>0, Gauche=vE<0."""
+    with _lock:
+        _manual.update({"vN": vN, "vE": vE, "vD": vD,
+                        "until": time.time() + max(0.2, min(3.0, dur))})
+    return {"manual": True, "vN": vN, "vE": vE, "vD": vD}
 
 
 @app.get("/drone/status")
@@ -541,6 +568,10 @@ HTML = """<!doctype html><html><head><meta charset="utf-8"><title>ARGOS — Mode
   button.src{display:block;width:100%;text-align:left;margin:5px 0;padding:9px 11px;border-radius:7px;
     border:1px solid #233040;background:#161d26;color:#bcccdb;font-size:13px;cursor:pointer}
   button.src.on{border-color:#5ec8ff;background:#10212e;color:#fff}
+  #dpad{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin:6px 0}
+  #dpad button{padding:8px 4px;border-radius:6px;border:1px solid #233040;background:#161d26;
+    color:#bcccdb;font-size:12px;cursor:pointer}
+  #dpad button:hover{border-color:#5ec8ff;color:#fff}
   #bar{height:8px;background:#1a2430;border-radius:4px;margin:8px 0;position:relative}
   #barfill{position:absolute;top:-2px;bottom:-2px;width:3px;background:#ff5a4d;border-radius:2px}
   ul{list-style:none;padding:0;margin:8px 0;font-size:12px;max-height:20vh;overflow:auto}
@@ -565,6 +596,15 @@ HTML = """<!doctype html><html><head><meta charset="utf-8"><title>ARGOS — Mode
     <div class="stat"><span>État</span><b id="dst" style="font-size:11px">déconnecté</b></div>
     <div class="stat"><span>Cap</span><b id="dhdg">–</b></div>
     <div class="stat"><span>Alt</span><b id="dalt">–</b></div>
+    <div class="lbl">PILOTAGE MANUEL</div>
+    <div id="dpad">
+      <button onclick="fly(0,0,-1.5)">Monter</button>
+      <button onclick="fly(2.5,0,0)">Avancer</button>
+      <button onclick="fly(0,0,1.5)">Descendre</button>
+      <button onclick="fly(0,-2.5,0)">Gauche</button>
+      <button onclick="fly(-2.5,0,0)">Reculer</button>
+      <button onclick="fly(0,2.5,0)">Droite</button>
+    </div>
     <div class="lbl">TÉLÉMÉTRIE</div>
     <div class="stat"><span>FPS</span><b id="fps">–</b></div>
     <div class="stat"><span>Personnes</span><b id="np">0</b></div>
@@ -582,6 +622,7 @@ async function unlock(){ await fetch('/unlock'); }
 async function engage(){ await fetch('/engage'); }
 async function disengage(){ await fetch('/disengage'); }
 async function takeoff(){ await fetch('/drone/takeoff'); }
+async function fly(vN,vE,vD){ await fetch(`/fly?vN=${vN}&vE=${vE}&vD=${vD}&dur=1.2`); }
 async function loadMenu(){
   const s=await (await fetch('/sources')).json();
   menu.innerHTML=s.videos.map(v=>
