@@ -356,3 +356,39 @@ l'angle exact du gimbal est très sensible (vue qui varie). → À **régler en 
 les détections en direct est ~10× plus rapide que mes cycles de vol aveugles de 3 min). Pistes :
 altitude plus basse / cible plus proche (vue oblique, plus gros), autre modèle de véhicule,
 ajustement de `RC7_PITCH`.
+
+## 2026-06-19 (4) — Camera-in-the-loop : DÉMO QUI MARCHE (suivi opérateur d'une personne)
+
+Validé en live dans la console (navigateur). Mise à jour des conclusions précédentes qui
+étaient pessimistes (ENGAGE n'est PAS bloqué — il marche).
+
+**Ce qui marche, de bout en bout :** POV réelle du drone Gazebo → détection COCO → l'opérateur
+clique pour **locker** une personne → le drone **strafe pour la centrer** → **ENGAGE** : il
+avance vers elle et **se maintient** (sans la dépasser). Cap tenu, vrai firmware ArduPilot,
+physique Gazebo. + **pilotage manuel** (boutons Monter/Avancer/… pour positionner le drone).
+
+**Les surprises de l'iris Gazebo (toutes contournées) :**
+- **Ne peut pas yawer** (pas de couple de lacet) → on ne tourne pas le drone.
+- **Tourne le nez vers sa vitesse** par défaut (`WP_YAW_BEHAVIOR`=1) → chaque déplacement
+  pointait la caméra hors cible. **Fix : `WP_YAW_BEHAVIOR=0`** (cap fixe). *Indispensable.*
+- **PEUT translater** (vitesse NED OK — l'ancien « setpoints ignorés » était un artefact de
+  simu crashée). → **suivi par TRANSLATION** : l'erreur image horizontale → strafe Est/Ouest
+  pour recentrer ; ENGAGE = vitesse avant + **stop-when-close** (cible basse dans l'image =
+  proche → on cesse d'avancer, on se maintient).
+- **Gimbal = mount ArduPilot, piloté en RC override** (PAS gz topic). Param officiel
+  `config/gazebo-iris-gimbal.parm` (MNT1, RC6/7/8_OPTION, SERVO9-11_FUNCTION, MNT1_DEFLT_MODE=3)
+  ajouté au lancement. **RC6=roll (à plat), RC7=pitch (~1610 avant-bas), RC8=yaw.** Tenu à 5 Hz
+  (l'override expire en ~3 s). NB : retirer les canaux 8/9/10 du plugin CASSE l'actionnement du
+  gimbal — il faut les garder.
+
+**Détection synthétique (le point dur) :** COCO sur rendus Gazebo. La personne ne sortait pas
+(trop petite avec le FOV 114°). **Fix : réduire le FOV caméra** (`gimbal_small_3d` horizontal_fov
+2.0 → 1.2 rad ≈ 69°) → cibles ~1.7× plus grosses, personne fiable (~0.6-0.7). + `imgsz=1280`,
+crop du haut, et un **COAST** (on garde le lock ~2 s après une perte → robuste au flicker ~30 %).
+La **voiture (Hatchback) reste mal détectée** depuis l'aérien (lue comme kite/airplane) → démo
+centrée personne ; swap de modèle véhicule à tenter plus tard.
+
+**Réglages live (sans redémarrer la console) :** `/gimbal?pitch=&yaw=`, `/tune?kstrafe=&gate=&coast=`,
+`/fly?vN=&vE=&vD=&dur=`. **Lancer :** `./sitl/run_gazebo.sh` (T1) + `python perception/console.py`
+(T2) → `http://<fixe-tailscale>:8088`, source "POV drone · Gazebo". **Toujours redémarrer la
+console quand on redémarre la simu** (sinon connexion drone périmée).
