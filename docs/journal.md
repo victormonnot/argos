@@ -392,3 +392,21 @@ centrée personne ; swap de modèle véhicule à tenter plus tard.
 `/fly?vN=&vE=&vD=&dur=`. **Lancer :** `./sitl/run_gazebo.sh` (T1) + `python perception/console.py`
 (T2) → `http://<fixe-tailscale>:8088`, source "POV drone · Gazebo". **Toujours redémarrer la
 console quand on redémarre la simu** (sinon connexion drone périmée).
+
+## 2026-07-01 — Analyse stack Alta Ares → 2 nouvelles briques planifiées
+
+Victor a ajouté `stack-tech-altaares.md` (3 annonces Alta Ares : MAVLink & Autopilot Engineer,
+Embedded SWE, spontanée). Analyse croisée avec l'état d'ARGOS. Verdict : déjà très aligné
+(SITL+Gazebo+MAVLink, companion computer, console opérateur, GNSS-denied ↔ leur C-UAS, log
+DataFlash). Deux actions décidées, **planifiées mais pas encore codées** (voir `argos-plan-sprint.md` §8) :
+
+- **A — MAVLink en profondeur (`ARGOS_TARGET`).** Leur compétence la plus martelée (poste dédié) :
+  *messages/dialectes custom, parsers/routers, en C++ ET Python*. On va définir un dialecte XML
+  custom + un message `ARGOS_TARGET`, le générer via `mavgen` en Python **et** C++, faire publier
+  la perception dessus et le consommer côté guidance C++. Meilleur mapping 1:1 avec une fiche ouverte.
+- **B — Démo ArduPlane SITL.** Leur fiche exige fixed-wing ET multi-rotor (« required »). ARGOS est
+  copter-only = seule case vide. La démo ArduPlane (jusqu'ici ligne de coupe n°1) est **promue
+  livrable**.
+
+Aucun code touché aujourd'hui : session de planif. Mémoire interne mise à jour
+(`reference-altaares-stack`). À attaquer en session dédiée quand Victor veut.
