@@ -435,19 +435,21 @@ connect à 115200 en échec (« La séquence ne contient aucun élément » = er
 changement de port — fermer/relancer MP), puis **connexion OK à 57600** : HUD qui suit les
 mouvements de la carte, `ArduCopter V4.8.0-dev` annoncé, sélection de frame accessible.
 
-**MAIS découverte importante (vérif du hash)** : la carte annonce `(996a50e9)` alors que le
-build local embarque `GIT_VERSION 740cbb71` (vérifié dans `build/SpeedyBeeF405Mini/ap_version.h`),
-et `996a50e9` est un commit upstream ArduPilot **absent du clone local** → ce qui tourne est le
-**firmware officiel** (téléchargé par Mission Planner pendant les tâtonnements), PAS le build
-from-source. Pas grave fonctionnellement — et le bootloader ArduPilot en place vient bien du
-build local — mais pour la cohérence « from source » : re-uploader `arducopter.apj` via
-Mission Planner (Load custom firmware ; plus besoin de DFU maintenant que le bootloader
-ArduPilot est là) et vérifier que la version affiche `740cbb71`.
+**Vérif du hash — fausse alerte, puis confirmation : c'est BIEN le build from-source qui
+tourne.** Une première lecture donnait `(996a50e9)` (un commit upstream absent du clone local),
+d'où soupçon que MP avait flashé le firmware officiel par-dessus. Contre-vérification en double :
+(1) MP refuse l'upload du `.apj` maison — « No need to upload. already on the board » (il compare
+le hash du `.apj` à celui de la carte) ; (2) l'onglet **Messages** après connexion affiche
+`ArduCopter V4.8.0-dev (740cbb71)` = exactement le `GIT_VERSION` du build local
+(`build/SpeedyBeeF405Mini/ap_version.h`). Le `996a50e9` venait probablement de l'écran Install
+Firmware (version officielle *téléchargeable*, pas installée). **Leçon retenue : la source de
+vérité pour « quel firmware tourne » = l'onglet Messages après connexion, hash compris.**
 
 **Acquis du jour** : premier flash = toujours `_with_bl.hex` en DFU (remplace le bootloader
 Betaflight) ; ensuite le `.apj` suffit via le bootloader ArduPilot, sans toucher BOOT. Le baud
 USB (57600 vs 115200) est anecdotique (CDC natif).
 
-**Prochaines étapes S3** (une à la fois, vérifiée) : re-flash `.apj` maison → frame Quad X +
+**Milestone : la SpeedyBee F405 Mini boote ArduCopter V4.8.0-dev compilé from source (740cbb71),
+MAVLink OK, HUD réactif.** Prochaines étapes S3 (une à la fois, vérifiée) : frame Quad X +
 calibration accéléro dans Mission Planner → bind ELRS + mapping RC + kill switch → motor test
 ESC **sans hélices** → MTF-02P optical flow + EKF3.
