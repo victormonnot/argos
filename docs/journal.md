@@ -410,3 +410,44 @@ DataFlash). Deux actions décidées, **planifiées mais pas encore codées** (vo
 
 Aucun code touché aujourd'hui : session de planif. Mémoire interne mise à jour
 (`reference-altaares-stack`). À attaquer en session dédiée quand Victor veut.
+
+## 2026-07-15 — S3 kickoff : firmware compilé from source pour la SpeedyBee F405 Mini
+
+**Le hardware est arrivé** : SpeedyBee F405 Mini (stack 20×20) + ESC BLS 35A Mini V2 4-en-1
+(BLHeli_S, intégré au stack) + récepteur SpeedyBee Nano ELRS 2.4G/915. Début du bench S3.
+
+**Firmware compilé from source (WSL)** — la toolchain était déjà en place (arm-none-eabi-gcc
+10.2.1 = pile la version recommandée, `empy` 3.3.4 dans `~/venv-ardupilot`) :
+`./waf configure --board SpeedyBeeF405Mini && ./waf copter` → 857 Ko de flash utilisés sur 1 Mo.
+La cible `SpeedyBeeF405Mini` (hwdef vérifié) mappe déjà USART2 en RCIN → l'ELRS ira sur les
+pads RX2, protocole CRSF auto-détecté. Fichiers produits dans
+`ardupilot/build/SpeedyBeeF405Mini/bin/`, copiés côté Windows
+(`C:\Users\victo\Desktop\ARGOS_firmware\`) :
+- `arducopter_with_bl.hex` — bootloader ArduPilot + firmware, pour le **premier** flash en DFU
+  (la carte sort d'usine sous Betaflight, son bootloader doit être remplacé) ;
+- `arducopter.apj` — firmware seul, pour les mises à jour suivantes via le bootloader ArduPilot.
+
+**FLASH RÉUSSI ✅ (confirmé le soir même).** Parcours (reconstitué depuis la session Windows de
+Victor) : DFU + « no response from board » (premier essai raté), puis « Load custom firmware »
+avec le `_with_bl.hex` → « upload via DFU » → `Found board type 1135 blrev 5 … STM32F40x` (le
+bootloader ArduPilot répond) → après reboot, Windows énumère **« ArduPilot (COM3) »**. Premiers
+connect à 115200 en échec (« La séquence ne contient aucun élément » = erreur MP après
+changement de port — fermer/relancer MP), puis **connexion OK à 57600** : HUD qui suit les
+mouvements de la carte, `ArduCopter V4.8.0-dev` annoncé, sélection de frame accessible.
+
+**MAIS découverte importante (vérif du hash)** : la carte annonce `(996a50e9)` alors que le
+build local embarque `GIT_VERSION 740cbb71` (vérifié dans `build/SpeedyBeeF405Mini/ap_version.h`),
+et `996a50e9` est un commit upstream ArduPilot **absent du clone local** → ce qui tourne est le
+**firmware officiel** (téléchargé par Mission Planner pendant les tâtonnements), PAS le build
+from-source. Pas grave fonctionnellement — et le bootloader ArduPilot en place vient bien du
+build local — mais pour la cohérence « from source » : re-uploader `arducopter.apj` via
+Mission Planner (Load custom firmware ; plus besoin de DFU maintenant que le bootloader
+ArduPilot est là) et vérifier que la version affiche `740cbb71`.
+
+**Acquis du jour** : premier flash = toujours `_with_bl.hex` en DFU (remplace le bootloader
+Betaflight) ; ensuite le `.apj` suffit via le bootloader ArduPilot, sans toucher BOOT. Le baud
+USB (57600 vs 115200) est anecdotique (CDC natif).
+
+**Prochaines étapes S3** (une à la fois, vérifiée) : re-flash `.apj` maison → frame Quad X +
+calibration accéléro dans Mission Planner → bind ELRS + mapping RC + kill switch → motor test
+ESC **sans hélices** → MTF-02P optical flow + EKF3.
