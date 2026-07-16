@@ -453,3 +453,43 @@ USB (57600 vs 115200) est anecdotique (CDC natif).
 MAVLink OK, HUD réactif.** Prochaines étapes S3 (une à la fois, vérifiée) : frame Quad X +
 calibration accéléro dans Mission Planner → bind ELRS + mapping RC + kill switch → motor test
 ESC **sans hélices** → MTF-02P optical flow + EKF3.
+
+## 2026-07-16 — Victor refait TOUTE la chaîne firmware lui-même (+ fork + custom banner)
+
+Suite au constat honnête « c'est Claude qui a compilé, je ne peux pas le raconter en entretien »,
+Victor a refait l'intégralité du chemin **de ses mains**, avec cette fois une vraie modification
+du firmware. Calibrations (frame Quad X + accéléro + level) faites dans Mission Planner au
+préalable.
+
+**Ce qu'il a fait lui-même (tout vérifié) :**
+- **Fork GitHub** `victormonnot/ardupilot` ; remotes rebranchés proprement sur le clone existant
+  (`origin` = son fork, `upstream` = l'officiel) — motivation : récupérer son ArduPilot custom
+  depuis plusieurs machines (Mac + fixe), le fork est le point de rencontre.
+- **Branche `argos-custom`** ; modif de `ArduCopter/version.h` →
+  `THISFIRMWARE "ArduCopter-ARGOS V4.8.0-dev"` ; **commit `8927564c`** « ARGOS: custom firmware
+  banner » (posé sur `740cbb71`) ; branche **poussée sur le fork**.
+- **Build par lui** : `./waf configure --board SpeedyBeeF405Mini && ./waf copter` →
+  `GIT_VERSION "8927564c"` embarqué (vérifié dans `ap_version.h` et dans le `.apj` copié sur le
+  Bureau Windows). Upload du `.apj` via Mission Planner (bootloader ArduPilot, plus de DFU).
+- **Attendu côté carte** : bannière `ArduCopter-ARGOS V4.8.0-dev (8927564c)` dans Messages
+  (= la preuve par le hash que SA modif tourne).
+
+**Concepts consolidés au passage** (sessions d'explication à la demande) : compilation vs
+interprétation (analogie ONNX→TensorRT : source portable → binaire spécifique au hardware),
+cross-compilation x86→ARM (`file` sur les deux binaires : ELF x86-64 pour la SITL vs ELF ARM
+32-bit pour la FC — même source), waf configure/build (≈ cmake/make de S2), `build/` = atelier
+jetable gitignoré, `.apj` = `.bin` + métadonnées (board id, githash, checksum — c'est ce que
+MP compare pour dire « already on the board »), clone vs fork vs branche (local vs GitHub),
+hash git = empreinte SHA calculée du contenu, stockée dans `.git/objects/`, embarquée dans le
+firmware à la compilation = mécanisme de traçabilité.
+
+**Story d'entretien acquise** : « le firmware de ma FC, je l'ai modifié, compilé from source
+sur ma machine, flashé via le bootloader que j'ai moi-même installé, et je peux le prouver par
+le hash git que la carte annonce. »
+
+**Multi-machine** : le Mac clone les deux repos (`argos` + fork `ardupilot`) dans la même
+arborescence `~/argos-project/` ; le Mac = sources/édition, le fixe = build/flash/simu (venvs
+et toolchains restent locaux à chaque machine).
+
+**Étape suivante** : câblage + bind du récepteur SpeedyBee Nano ELRS sur RX2/TX2 (pinout à
+préparer avant de sortir le fer), calibration radio, kill switch.
