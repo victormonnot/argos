@@ -493,3 +493,80 @@ et toolchains restent locaux à chaque machine).
 
 **Étape suivante** : câblage + bind du récepteur SpeedyBee Nano ELRS sur RX2/TX2 (pinout à
 préparer avant de sortir le fer), calibration radio, kill switch.
+
+## 2026-07-20 — S3 bench (1/2) : première soudure, RX ELRS opérationnel, chaîne radio complète
+
+**Le reste du matériel est arrivé — build 3.5" cohérent, inventaire validé** : frame FlyFishRC
+Volador VX3.5 O4 Pro (« O4 » = marketing pour le système DJI numérique ; l'analogique se monte
+sans souci), moteurs T-Motor F1404 3800KV (3-4S), hélices Gemfan Hurricane 3525 tripales,
+caméra RunCam Phoenix 2 SP V3 + VTX SpeedyBee TX800 5.8G (analogique), LiPo Dogcom 4S 850 mAh
+150C, chargeur ISDT 608PD (entrée DC/USB-C PD → prévoir une source PD ≥65 W). Bonus non
+planifié : **GPS HGLRC M100-5883** (M10 + compas QMC5883) — comble l'absence de compas de la
+F405 Mini ; ira sur T6/R6 + SDA/SCL, `SERIAL6` déjà GPS par défaut. Les 2× **ESP32-C3
+SuperMini** du tiroir = les futurs ponts télémétrie DroneBridge du plan. Le NRF24L01 ne sert
+pas (ELRS + ESP32 couvrent tout).
+
+**Lecture du hwdef `SpeedyBeeF405Mini` — la carte est devenue lisible.** Mapping UART complet :
+UART1 = VTX DJI par défaut (réutilisable, on est en analogique), **UART2 = RCIN (pads T2/R2,
+CRSF auto) ← le RX**, UART3 = libre (candidat ESP32 DroneBridge), UART4 = Bluetooth interne,
+UART5 = télémétrie ESC, **UART6 = GPS (pads T6/R6) ← le futur M100**. Point critique repéré :
+`HAL_FRAME_TYPE_DEFAULT = 12` (**Betaflight X**) — l'ESC 4-en-1 du stack est câblé dans l'ordre
+moteurs Betaflight, à vérifier dans les params avant le motor test (un `FRAME_TYPE=1` posé par
+l'écran frame de MP casserait le mapping).
+
+**Première soudure de sa vie** (fer 80 W réglable, étain 0.8 mm étiqueté « étain pur » mais
+fusion à 183 °C = du 63/37 au plomb mal étiqueté, flux gel KINGBO RMA-218, Kapton pour
+maintenir). Entraînement sur chutes de fil silicone (étamage ×10, jonctions) avant le vrai
+job. Leçons gravées : **l'étain fond sur les pièces chauffées, pas sur la panne** ; **la panne
+doit rester étamée** — le film liquide EST le pont thermique (l'envie de monter à 400 °C
+venait d'une panne sèche, pas d'un manque de watts) ; 340-350 °C pour l'électronique, la
+vraie haute température se réserve aux gros pads de puissance ; pads traversants (RX, trou
+métallisé, faciles) vs pads plats (FC). Multimètre ANENG SZ308 découvert sans pile (6F22 9V
+à acheter) → vérif anti-court visuelle en plan B, acceptée après inspection zoom.
+
+**RX SpeedyBee Nano ELRS 2.4G soudé et bindé.** Câblage croisé RX→FC : `5V→4V5`, `G→G`,
+`T→R2`, `R→T2` (4 fils, full duplex = télémétrie CRSF vers la radio). Antenne U.FL clipsée
+AVANT mise sous tension (règle RF : jamais d'émetteur sans antenne — vital pour le VTX plus
+tard). Premier boot : double clignotement = bind mode auto (RX jamais bindé). Radio =
+**RadioMaster Pocket, module ELRS interne 2.4G** — version lue via le script Lua ExpressLRS :
+`LBT_3.3.1 CE` + hash de build `e051b8` (même mécanisme de traçabilité que le `8927564c`
+d'ArduPilot — le concept se généralise à tout l'embarqué open source). Majeure 3.x des deux
+côtés → bind direct via [Bind] du Lua (après un détour involontaire par le mode WiFi du RX —
+il y bascule seul après ~60 s sans lien ; power cycle et c'est réglé). LED fixe = lien établi.
+
+**Chaîne radio validée de bout en bout dans Mission Planner** : manches → ELRS → RX → soudures
+→ UART2 → ArduPilot → barres MP. Calibration radio faite (992-2011), ordre AETR d'origine
+EdgeTX correct, convention pitch inversé notée. Cartographie des commandes de la Pocket :
+voie 5 = épaule gauche 2 pos, voie 6 = gauche 3 pos, voie 7 = droite 3 pos, voie 8 = extrême
+droite 2 pos, voie 9 = dos 2 pos, voie 10 = molette. Victor a repéré seul que les voies 15/16
+frémissent avec la distance = **LQ/RSSI injectés par ELRS** (jauges de lien, pas des commandes).
+
+**Mapping contrôles + kill switch + failsafe — tout testé.** Params écrits : `RC5_OPTION=153`
+(ArmDisarm, épaule gauche = mémoire musculaire tinywhoop), `FLTMODE_CH=6` (modes sur le 3 pos
+gauche — obligatoire dès que l'arm prend la voie 5, sinon double emploi), `RC8_OPTION=31`
+(**Motor Emergency Stop** sur le 2 pos de droite — côté opposé à l'arm, pas de confusion
+possible). Leçon de philosophie : Betaflight coupe les moteurs au disarm (l'arm switch du
+tinywhoop ÉTAIT un kill de fait) ; ArduPilot protège le disarm (refus en vol, checks) et
+sépare le coupe-tout inconditionnel = option 31. **Kill switch prouvé par test croisé** :
+kill actif + tentative d'arm → `Arm: Motors Emergency Stopped` dans Messages (cette version
+ne loggue pas la bascule elle-même — la preuve fonctionnelle vaut mieux). **Failsafe radio
+testé** : radio éteinte → FAILSAFE rouge au HUD + « Radio Failsafe » ; rallumée → « Radio
+Failsafe Cleared », reprise auto. Comportement ELRS = *no pulses* (perte franche, exactement
+ce qu'ArduPilot attend). Messages pré-arm actuels normaux sur USB : batterie low voltage
+(pas de LiPo) + Compass1 not healthy (pas de compas avant le M100). À poser à la prep vol :
+`FS_THR_ENABLE=3` (Land) pour l'indoor — RTL sans GPS impossible et dangereux sous plafond.
+
+**Montage frame commencé.** Stack sur le pattern **20×20** (la frame offre aussi 25,5×25,5 —
+suivre SON matériel, pas la vidéo de référence). Ordre : ESC en bas (câblage lourd), FC
+au-dessus (**flèche vers l'avant**, USB accessible), nappe 8 broches entre les deux, sandwich
+plots anti-vibration + entretoises + écrous en haut serrés doux. Vis moteur : bras 3,5 mm
+d'épaisseur → ~2,5 mm d'engagement avec des vis de 6 mm ; jamais forcer une vis qui bute
+(bobinage dessous). Leçon d'intégration (trouvée par Victor) : **la géométrie d'abord, les
+longueurs de fil ensuite** — moteurs montés sur les bras avant de couper/souder leurs fils.
+La **calibration accéléro sera refaite sur le drone assemblé** (celle de la carte nue était
+bancale — et c'est de toute façon la bonne pratique : on calibre l'objet final, calibrate
+level en posture d'atterrissage).
+
+**Suite (2/2) dans la prochaine entrée** : 12 fils moteurs + XT60 + condensateur low-ESR sur
+l'ESC (soudure de puissance, fer à 400+ °C légitime), gate sécurité pile 9V → continuité +/−
+avant première LiPo, vérif `FRAME_TYPE=12`, passage DShot300, motor test SANS hélices dans MP.
