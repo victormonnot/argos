@@ -570,3 +570,63 @@ level en posture d'atterrissage).
 **Suite (2/2) dans la prochaine entrée** : 12 fils moteurs + XT60 + condensateur low-ESR sur
 l'ESC (soudure de puissance, fer à 400+ °C légitime), gate sécurité pile 9V → continuité +/−
 avant première LiPo, vérif `FRAME_TYPE=12`, passage DShot300, motor test SANS hélices dans MP.
+
+## 2026-07-21 — S3 bench (2/2) : soudures de puissance, première LiPo, motor test 4/4 ✅
+
+**Frame montée, stack intégré.** Volador VX3.5 assemblée (notice Scribd VX3/VX3.5 + guide
+Oscar Liang + vidéo build en appui), moteurs vissés sur les bras (vis courtes — bras 3,5 mm,
+jamais forcer une vis qui bute = bobinage dessous). Stack 20×20 : ESC en bas, FC au-dessus
+flèche vers l'avant, nappe 8 broches (moteurs + tension/courant batterie), **pas d'entretoise
+rigide entre les cartes** — les plots silicone SONT les entretoises, précontrainte légère à
+l'écrou (appui doux pour engager, serrage en croix, jamais écraser : c'est l'isolation
+anti-vibration du gyro).
+
+**Soudures de puissance** (fer à 390-420 °C — la haute température légitime, celle qui
+compense la masse thermique, pas les défauts de geste). 12 fils moteurs coupés à longueur
+sur la frame (géométrie d'abord), chaque moteur sur SON coin d'ESC, ordre des 3 phases
+indifférent. XT60 rouge→`+` triple-vérifié + condensateur low-ESR **470 µF 35 V Rubycon ZLH**
+(le 1000 µF en rechange), pattes courtes, bande = patte négative, corps immobilisé. Leçon
+majeure au passage : les premiers joints qui « pelaient » = **défaut de mouillage** (joint
+froid) — le pad n'était pas assez chaud, l'étain perlait dessus au lieu de s'y étaler.
+Corrigé par : goutte d'étain sur la panne comme pont thermique + flux + méplat pressé +
+patience jusqu'à voir l'étain *couler*. Un joint de puissance réussi ne s'arrache pas.
+
+**Multimètre apprivoisé** (ANENG SZ308 + pile 9V/6F22) : mode continuité — et une mesure
+plus parlante que prévu : en mode Ω sur le XT60, lecture qui grimpe puis « 1 » (infini) =
+**le condo qui se charge sous le courant de test** — signature d'un rail sain, pas de court.
+Mode V⎓ : LiPo à 15,4 V = charge de stockage (~3,85 V/cellule), suffisante pour le bench.
+Concept calibres manuels compris (2000m = 2 V max → saturation sur une 4S).
+
+**Première LiPo : baptême réussi.** Étincelle de charge du condo (entendue en grésillement —
+brancher franchement la prochaine fois), mélodie ESC jouée par les moteurs, aucune chauffe,
+aucune odeur, tension remontée à la FC : **Bat1 15,17 V dans MP** (≈ multimètre → monitoring
+batterie validé), message pré-arm batterie disparu.
+
+**Le piège `FRAME_TYPE` s'est confirmé** : le param était à **1** (X classique) — écrasé par
+l'écran frame de MP à la calibration du 15/07 — alors que l'ESC du stack est câblé en ordre
+Betaflight. Remis à **12** (Betaflight X). Invisible au bench, retournement garanti au
+décollage : exactement ce que le motor test sert à attraper. `MOT_PWM_TYPE=5` (DShot300,
+numérique, pas de calibration de plage, BLHeli_S natif).
+
+**Motor test (sans hélices, throttle 5-8 %, drapeaux de scotch sur les cloches)** :
+- Mapping positions : **4/4 parfait** du premier coup — A=avant-droit, B=arrière-droit,
+  C=arrière-gauche, D=avant-gauche (MP affiche le mapping BF : A→Motor2, B→Motor1…).
+- Sens : les 4 inversés uniformément (câblage des phases cohérent → miroir global).
+  `SERVO_BLH_RVMASK=15` sans effet (BLHeli_S 16.7 stock ignore la commande DShot
+  d'inversion) → **corrigé via BLHeliSuite16 en passthrough** (`SERVO_BLH_AUTO=1`, MP fermé,
+  LiPo branchée, interface « SILABS BLHeli Bootloader (C/F) », COM3) : les 4 ESC détectés
+  (`J_H_40`, rev 16.7), **Motor Direction → Reversed** ×4, Write Setup. Re-test : **A CCW,
+  B CW, C CCW, D CW — conforme 4/4**. Correction stockée DANS les ESC (survit aux reflash
+  FC). `RVMASK` remis à 0 (éviter une double inversion si un futur firmware honore la
+  commande).
+
+**Recalibration accéléro sur le drone assemblé** (6 positions + Calibrate Level en posture
+d'atterrissage) — remplace la calibration bancale faite sur carte nue le 15/07 ; on calibre
+l'objet final, pas un composant.
+
+**Bilan S3 bench : le drone existe.** Radio + kill switch + failsafe testés (1/2), propulsion
+mappée et vérifiée dans les deux sens du terme (2/2), alimentation saine, monitoring batterie
+opérationnel. Premières soudures de sa vie → un drone qui répond. Reste avant premier vol :
+VTX + caméra (UART libre à choisir), GPS M100-5883 sur T6/R6 + I2C, `FS_THR_ENABLE=3` (Land)
+et choix des modes sur la voie 6, charge complète LiPo (source USB-C PD pour l'ISDT), et
+LE différenciateur : **MTF-02P optical flow + EKF3** = le chapitre GPS-denied.
