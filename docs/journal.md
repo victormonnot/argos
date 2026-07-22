@@ -630,3 +630,98 @@ opérationnel. Premières soudures de sa vie → un drone qui répond. Reste ava
 VTX + caméra (UART libre à choisir), GPS M100-5883 sur T6/R6 + I2C, `FS_THR_ENABLE=3` (Land)
 et choix des modes sur la voie 6, charge complète LiPo (source USB-C PD pour l'ISDT), et
 LE différenciateur : **MTF-02P optical flow + EKF3** = le chapitre GPS-denied.
+
+## 2026-07-21 (soir) — S3 périphériques : VTX + caméra + GPS soudés, u-blox détecté ✅, compas en debug
+
+**Corrections au plan, vérifiées à la source avant de souder.** (1) Le TX800 parle **IRC
+Tramp, pas SmartAudio** (page SpeedyBee + test Oscar Liang) → `SERIAL1_PROTOCOL=44`. Et lu
+dans le code du firmware : contrairement à SmartAudio qui active le half-duplex tout seul
+(`AP_SmartAudio.cpp:57`), le driver Tramp ne le fait pas et sa machine à états attend des
+réponses du VTX sur le fil unique → **`SERIAL1_OPTIONS=4` obligatoire**. Tramp est compilé
+d'office dans le build 1 Mo (forcé par `minimize_fpv_osd.inc`). (2) Le TX800 s'alimente en
+**5V (3,7–5,5 V, ≤750 mA)** — ses voisins de pads `BAT` et `9V` seraient mortels. (3) Le
+manuel du stack (schéma p.6 lu image par image) route le fil IRC vers **T1** : UART1 est LE
+pad VTX analogique prévu par SpeedyBee ; UART3 reste 100 % libre pour l'ESP32 DroneBridge.
+(4) France : 5,8 GHz limité à 25 mW → `VTX_MAX_POWER=25`. Mine repérée pour plus tard :
+`minimize_fpv_osd.inc` fait **`AP_OPTICALFLOW_ENABLED 0`** → à réactiver dans le build
+custom pour le chapitre MTF-02P.
+
+**Câblage (13 soudures).** Caméra Phoenix 2 : 3 fils seulement (rouge→`5V`, noir→`G`,
+jaune→`CAM`) — les fils menu/OSD (pack bleu+noir + fil seul) isolés, le pad `CC` Betaflight
+ne sert à rien sous ArduPilot. VTX : `5V/G/VTX/T1` via le pigtail JST 4 broches. GPS
+M100-5883 : rouge→`4V5` (rail vivant sur USB → bench sans LiPo), noir→`G`, jaune(TX)→`R6`,
+vert(RX)→`T6`, blanc(SDA)→`DA`, bleu(SCL)→`CL`. **Les couleurs du faisceau différaient du
+dessin du manuel HGLRC** (paires UART et I2C miroirées) — lecture sur la sérigraphie du
+module refaite deux fois puis validée par l'expérience (l'UART marche avec cette lecture).
+Leçons de câblage : pads en deux rangées en quinconce (le groupe logique s'étale sur les
+deux ; seule la sérigraphie fait foi), étamer tous les pads avant d'amener les fils, rangée
+intérieure avant rangée du bord. Sauvetage d'un pad récalcitrant : l'étain refondu n'a plus
+de flux (il se consume à la première fusion) → nettoyer le flux carbonisé (alcool), retirer
+l'étain mort, repartir flux frais + étain neuf + 20-30 °C de plus sur un pad de masse.
+
+**Le rituel multimètre a payé, deux fois.** Un vrai pont trouvé et corrigé. Puis un faux
+positif instructif : bip `CAM`↔`G` avec **74,6 Ω stable** = la résistance de terminaison
+vidéo 75 Ω sur la FC à l'entrée de l'AT7456E (standard analogique), pas un court. Règle
+gravée : c'est **bip + ~0 Ω** qui condamne ; bip + dizaines d'Ω = électronique interne ;
+chiffres qui montent = condo qui se charge. Autre subtilité apprise : une ligne UART au
+repos est à 3,3 V comme l'I2C — mesurer la tension ne discrimine pas les pads.
+
+**Test USB : GPS détecté ✅, compas muet ❌.** LEDs du M100 : bleue fixe (alim) + rouge PPS
+fixe (démarré, pas de fix — normal en intérieur ; elle clignotera au fix). Après plusieurs
+rebranchements du connecteur (contact de sertissage limite soupçonné — il ne parlait pas
+avant manipulation) : `GPS 1: detected u-blox` + **`ROM SPG 5.10` = M10 authentique**,
+auto-configuré à 230400 bauds. Le compas QMC5883, lui : `COMPASS_DEV_ID=0` persistant.
+Éliminé méthodiquement : params (`COMPASS_ENABLE=1`, `COMPASS_DISBLMSK=0` — TYPEMASK
+n'existe pas dans cette version), drivers (QMC5883L 0x0D **et** QMC5883P 0x2C compilés dans
+le build — `.o` vérifiés), bus électrique (continuité bout en bout OK, pas de courts, repos
+à 3,2 V), couleurs (validées par l'UART qui marche), étiquettes FC re-vérifiées (blanc sous
+`DA`, bleu sous `CL`). Restent deux suspects : une inversion DA/CL résiduelle → **prochain
+test : épissure croisée en milieu de câble** (blanc↔bleu, sans toucher pads ni connecteur —
+le SH 1,0 mm sans outil d'extraction, c'est non), sinon **puce compas morte → SAV**. Pas
+bloquant pour le premier vol : l'indoor n'utilise pas le compas, et l'EKF3 sait estimer le
+cap sans compas dehors (GSF sur vitesse GPS).
+
+**Divers.** MP sans fix GPS : position fantaisiste sur la carte (dérive EKF sur IMU seule)
+et traits rouge/noir/orange = indicateurs cap/route pointant au nord par défaut — cosmétique.
+`PreArm: RC not found` = radio éteinte pendant les tests. Implantation : TPU arrière de la
+VX3.5 = passages prévus batterie/antenne VTX/brins dipôle RX (les critères d'implantation
+sont une hiérarchie, pas des absolus : hélices/pincement > ciel GPS > distance fils de
+puissance > antennes séparées). Les « carrés de plastique » fournis = gaine thermo à cartes
+pour RX et GPS — à mouler APRÈS validation électronique complète. Le boîtier métal du TX800
+= radiateur/blindage, verrouillé par les vis de montage.
+
+**Reste à faire** : épissure croisée → verdict compas ; test LiPo caméra+VTX (image lunettes
++ OSD incrusté + test Tramp par changement de `VTX_CHANNEL` depuis MP) ; params VTX à poser
+(`44`/`4`/`VTX_ENABLE=1`/`25 mW` + band/canal des lunettes) ; montage mécanique final +
+gaines ; calibration compas (si vivant) APRÈS montage final ; fix GPS à la fenêtre ;
+`FS_THR_ENABLE=3` + modes voie 6 (Stabilize/AltHold/Land) ; charge LiPo (source USB-C PD).
+Commande en cours : gaine thermo assortie + IPA ≥90 % + kit d'extraction de contacts JST.
+
+## 2026-07-22 — S3 : verdict compas = module défectueux (SAV), enquête close proprement
+
+**La méthode qui a permis de conclure : le soft reboot (Ctrl-F → Reboot Pixhawk dans MP).**
+Le sondage I2C du compas n'a lieu qu'au boot de la FC, et le module M100 souffre d'un
+défaut de démarrage à froid (jamais détecté au power-up, il faut débrancher/rebrancher son
+connecteur — comportement systématique, USB comme LiPo). Le soft reboot redémarre le
+programme de la FC **sans couper les rails d'alim** → le module reste debout pendant le
+nouveau sondage. Preuve dans les logs : après soft reboot, u-blox re-détecté en 9 s
+directement à 230400 bauds (il avait gardé sa config → il n'a jamais perdu l'alim).
+
+**Matrice finale, module garanti vivant au moment du sondage** : épissure croisée →
+`COMPASS_DEV_ID=0` ; épissure remise droite → `COMPASS_DEV_ID=0`. Combiné aux éliminations
+précédentes (params, drivers compilés, bus électrique sain, couleurs validées par l'UART),
+il ne reste aucune case où un compas fonctionnel pourrait se cacher → **puce QMC morte ou
+jamais reliée en interne** (ou variante M100 sans compas expédiée par erreur — à vérifier
+sur la sérigraphie du blindage : « M100-5883 » vs « M100 »). Double dossier SAV : compas
+muet + démarrage à froid défaillant (inutilisable en vol tel quel).
+
+**Leçons engrangées** : soft reboot vs power-cycle (reset MCU sans couper les rails —
+l'outil parfait pour re-sonder un périphérique I2C sans le redémarrer lui) ; sondage GPS
+continu vs sondage compas boot-only (l'asymétrie qui masquait le défaut de démarrage du
+module) ; un test dont la précondition n'est pas remplie n'est pas négatif, il est
+**invalide** (la 1re épissure croisée ne testait rien : le module était couché au boot).
+
+**Impact projet : nul.** Premier vol = indoor (Stabilize/AltHold), zéro GPS/compas requis ;
+le différenciateur MTF-02P+EKF3 est par définition GPS-denied. Le module remplacé arrivera
+pour les tests outdoor. La prep vol continue : test lunettes caméra+VTX + params Tramp,
+montage final, FS_THR_ENABLE=3, modes voie 6.
