@@ -725,3 +725,45 @@ module) ; un test dont la précondition n'est pas remplie n'est pas négatif, il
 le différenciateur MTF-02P+EKF3 est par définition GPS-denied. Le module remplacé arrivera
 pour les tests outdoor. La prep vol continue : test lunettes caméra+VTX + params Tramp,
 montage final, FS_THR_ENABLE=3, modes voie 6.
+
+## 2026-07-22 (suite) — Première image vidéo du drone + contrôle Tramp prouvé ✅
+
+**Le drone voit et transmet.** Chaîne complète validée : Phoenix 2 → pad `CAM` → puce OSD
+AT7456E (incrustation ArduPilot dans le signal analogique) → pad `VTX` → TX800 → 5,8 GHz →
+RC832 → carte de capture MS2130 → laptop Ubuntu (`ffplay`). Image avec la neige analogique
+normale du bench (antennes trop proches = saturation du récepteur ; ≥1 m et polarisations
+alignées améliorent). OSD confirmé à l'écran : tension batterie + — ironie parfaite — le
+« PreArm: Compass 1 not healthy » en boucle toutes les 10 s.
+
+**Config VTX (pièges MP au passage)** : le groupe `VTX_` n'apparaît qu'après `VTX_ENABLE=1`
++ reboot ; `VTX_FREQ` est réputé *readonly* côté MP (dérivé de band/channel) ; `VTX_CHANNEL`
+est **0-indexé** (0=CH1). `VTX_MAX_POWER=25` + `VTX_POWER=25` (plafond légal France).
+Comportement découvert en live : à la première connexion, **le driver Tramp lit l'état réel
+du VTX et adopte ses réglages** (band/channel réécrits à 0/0 = A1 5865, le défaut d'usine
+du TX800) — conforme au commentaire du code (« make sure the configured values now reflect
+reality »), et première preuve indirecte que le lien parlait.
+
+**Preuve Tramp définitive** : `VTX_CHANNEL` 0→1 dans MP → l'image décroche → RC832 sur
+« 12 » (A2 5845) → l'image revient. La FC pilote physiquement l'émetteur via le fil IRC
+soudé sur T1. Réglage de croisière adopté : retour à A1 (0/0, RC832 « 11 ») — le défaut
+d'usine comme point de ralliement prévisible. Décodage RC832 : affichage = [bande][canal],
+bande 1=A … 4=F, d'où « 44 »=F4=5800 (silence, normal) et « 11 »=A1=5865 (image).
+
+**GPS : gardé et en service.** Le démarrage à froid remarche systématiquement (la danse du
+connecteur a vraisemblablement poli le contact de sertissage fautif) ; le compas reste mort
+(verdict inchangé). Litige AliExpress pivoté vers **remboursement partiel sans retour** (le
+retour vers la Chine tuerait l'économie du dossier). Plan B compas si besoin un jour :
+breakout QMC/RM3100 à quelques euros sur les mêmes pads DA/CL. Concepts au passage : IRC
+Tramp = protocole ImmersionRC de contrôle VTX (concurrent de SmartAudio/TBS), d'où le pad
+« IRC » ; OSD = caractères dessinés en temps réel dans le signal vidéo par l'AT7456E.
+
+**Position stratégique de Victor consignée (2026-07-22)** : le MTF-02P lui déplaît
+(capteur cheap indoor-only — « je veux pas faire un projet jouet ») et l'idée d'un projet
+sans GPS lui plaît ; accord trouvé : MTF = échafaudage sautable (décision au pied du
+chapitre EKF3, chemin flow-caméra tenu prêt), le **ToF reste non-négociable** (l'échelle
+d'un flow, quel qu'il soit), le GPS = instrument de mesure/vérité terrain pour les
+benchmarks de dérive, pas un composant de navigation. Les deux chemins restent ouverts.
+
+**Reste avant premier vol** : montage mécanique final + gaines thermo (RX), `COMPASS_ENABLE=0`
+(tant que pas de compas vivant), `FS_THR_ENABLE=3`, modes voie 6 (Stabilize/AltHold/Land),
+charge LiPo (source USB-C PD ≥65 W), checklist pré-vol.
