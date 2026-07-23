@@ -767,3 +767,35 @@ benchmarks de dérive, pas un composant de navigation. Les deux chemins restent 
 **Reste avant premier vol** : montage mécanique final + gaines thermo (RX), `COMPASS_ENABLE=0`
 (tant que pas de compas vivant), `FS_THR_ENABLE=3`, modes voie 6 (Stabilize/AltHold/Land),
 charge LiPo (source USB-C PD ≥65 W), checklist pré-vol.
+
+## 2026-07-23 — Premiers sauts (!), premières analyses de logs DataFlash
+
+**Le drone a volé** — sauts de ~10 cm au-dessus du lit (pas le protocole recommandé : 4 vis
+d'hélices sur 8, en intérieur — mais il a volé, failsafe radio déclenché en vol et posé).
+Montage final terminé : batterie top-mount (strap dans les fentes de la top plate, couloir
+sous la plate laissé libre), TPU arrière = passages batterie/antenne VTX/brins RX comme
+prévu par FlyFishRC. Leçons de montage express : hélices T-mount (l'axe central ne fait que
+centrer, la fixation = 2 vis M2 par hélice — démonstration expérimentale par hélice-frisbee
+au premier throttle) ; test de longueur de vis à vide (visser seule + faire tourner la
+cloche = détecter le contact avant d'abîmer) ; USB seul devenu marginal depuis le montage
+complet (rail 4V5 chargé RX+GPS > budget 500 mA du port → bench sur LiPo désormais).
+Radio : modes confirmés voie 6 = 3 pos GAUCHE (mapping du 20/07, pas une anomalie) ; ACRO
+existe sous ArduPilot (mode 1, + ACRO_TRAINER) pour plus tard. Params prep vol posés :
+COMPASS_ENABLE=0, FS_THR_ENABLE=3, FLTMODE 0/2/9, failsafe batterie 14.0V→Land.
+
+**Premier rituel data : 3 logs .bin téléchargés (MP → Download DataFlash Via Mavlink) et
+analysés en pymavlink depuis WSL.** Résultats :
+- **Vibrations : excellentes** — moyennes 0,1-0,9 m/s/s (seuil ~20-30), clipping ≈0 (2
+  événements = réceptions sur le lit). Les plots silicone du stack fonctionnent. ✅
+- **Équilibre moteurs** : 1402/1431/1421/1388 µs en poussée (~3 % d'écart) = géométrie et
+  CG sains. ✅
+- **Attitude** : erreur moyenne 0,7° roll / 0,3° pitch au hover — PID par défaut OK. ✅
+- **Batterie** : chargée 16,5 V, sag modeste, capteur courant plausible (pics 13 A). ✅
+- Dans les données : failsafe radio trigger/clear, kill switch, ELRS 250 Hz, bascule modes
+  0/2/9 — tous les tests bench visibles dans les logs. Erreurs EKF/GPS-glitch en intérieur
+  sans fix = normales, disparaîtront dehors.
+
+**Feu vert vol extérieur sous DEUX conditions : 8 vis d'hélices (M2×9 validées à vide,
+mais 4 manquantes — commande en cours) + coin d'herbe calme.** Protocole : Stabilize
+(position basse), hover 1 m, pose, re-analyse du log (vibrations au hover soutenu = le
+juge de paix). Le rituel voler→lire le log→corriger→revoler est né aujourd'hui.
