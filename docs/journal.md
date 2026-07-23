@@ -929,3 +929,28 @@ branlant → retrait = le plus propre, supprime mort-baro ET glitches EKF) ; (3)
 puce log (8 Mo pleine) ; (4) prochain vol Stabilize seul, sauts courts, relire vibe-en-vol +
 santé EKF ; AltHold seulement quand baro prouvé stable. Outil `tools/log_quicklook.py` étendu
 mentalement (corrélation vibe/état de vol = le bon réflexe d'analyse).
+
+## 2026-07-23 (nuit, correction) — Wobble : mes 2 théories réfutées, retour à l'honnêteté
+
+Victor a challengé (à raison) : le wobble était là AUSSI le matin en intérieur, GPS sans
+fix → le GPS ne peut pas être la cause commune. Vérification poussée du log du matin
+(11-35) : les gros roulis (jusqu'à +160°) surviennent à ~2 m d'altitude, montée régulière
++47→+160° en 0,5 s avec perte d'altitude = **de vrais RETOURNEMENTS**, pas des erreurs
+d'estimation ni du bruit capteur. → Mes deux hypothèses tombent : (1) GPS réfuté par le
+matin ; (2) « estimation corrompue par capteurs I2C » réfuté = les gros chiffres sont des
+flips réels, pas des glitches. J'ai fait du pattern-matching sur des logs de sauts bordéliques
+(flips + rattrapages + rebonds + manipulation) — indiagnostiquable pour un « petit wobble ».
+
+**Position honnête retenue** : le wobble léger d'une montée est le plus probablement le
+**tune par défaut non adapté** à cette frame 3,5"/3800KV/hélices (cas archi-courant d'un
+premier vol non tuné), possiblement + CG décalé. Le baro/GPS branlants restent un problème
+RÉEL mais SÉPARÉ (mort baro + EKF-position dégradé l'aprem, pas le wobble). Pour trancher :
+il faut UN log propre = hover stable 20-30 s en Stabilize (pas des sauts).
+
+**Plan** : (1) nettoyer/retirer fils GPS I2C ; (2) recalibration accéléro à froid/à plat
+(masse changée depuis le 21/07) ; (3) `RC2_REVERSED=1` (pitch, certain indépendamment du
+wobble) ; (4) EKF vert au sol avant arm ; (5) hover soutenu → lecture log ENSEMBLE ; (6) si
+wobble persiste sur hover propre → Autotune. Leçon perso (Claude) : ne pas surinterpréter un
+log sale ; un chiffre d'attitude énorme peut être un vrai flip, pas un bug capteur — vérifier
+l'altitude/contexte AVANT de conclure. (Et créditer Victor, pas moi, pour le doute qui a
+cassé la fausse piste.)
