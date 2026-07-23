@@ -859,3 +859,73 @@ conventions d'axes — l'échec classique du flow étant l'axe inversé).
 = répétition générale logicielle du différenciateur sur le rig existant ; (4) wiggle test
 au bench (signes + délai) ; (5) vol : FlowHold → Loiter flow-only → benchmark de dérive
 p50/p95 vs GPS sur 60 s × ≥10 runs. Liste de courses complète en fin de doc.
+
+## 2026-07-23 (soir) — Premier vol EXTÉRIEUR + panne baro diagnostiquée (court I2C)
+
+**Premier vol en extérieur — il a volé**, malgré une série de soucis (et un pitch inversé
+piloté sans le savoir, posé quand même). Observations de vol, à confirmer au prochain log :
+- **Wobble circulaire lent** persistant même en hauteur avec 8 vis (donc ni effet de sol ni
+  vis) → hypothèse CG : batterie trop en avant et mal calée. À vérifier via RCOU.
+- **Manche droit avant = recule** → pitch inversé. Fix : `RC2_REVERSED=1` + vérif sens dans
+  MP avant de revoler (vrai point sécurité).
+- **Descente bizarre** : « ne descend pas, tient l'altitude, puis chute d'un coup moteurs
+  réduits » = comportement typique **AltHold** (manche centré = tient, faut descendre sous
+  le centre) → il était probablement sur la position AltHold du sélecteur, pas Stabilize.
+  OU le baro déconnait déjà en vol et nourrissait AltHold en altitude foireuse. Log à lire.
+- **Drift gauche constant** → CG/trim, à confirmer.
+- **GPS** : pour la 1re fois LED fixe + LED clignotante = **vrai fix 3D** (log au sol de
+  17h49 : 14 sats, status 4). Puis le connecteur s'est débranché en vol (crimp limite connu)
+  → retiré. Le module GPS marche ; c'est le connecteur le point faible.
+
+**LA panne : `Config Error: Baro: unable to initialise driver` + `motors not allocated`**
+(refus d'arm, OSD disparu de la vidéo en vol, logs non téléchargeables — TOUS des symptômes
+AVAL de la même erreur : sur config error ArduPilot stoppe son init). **Cause trouvée et
+confirmée** : le baromètre DPS310 est sur **I2C1**, et cette carte n'a **qu'un seul bus I2C**
+(`I2C_ORDER I2C1`, `BARO ... I2C:0:0x76`, `HAL_I2C_INTERNAL_MASK 0`) — le **même** que les
+pads DA/CL du GPS. Les **épissures croisées blanc/bleu (= SDA/SCL) faites pour le test compas
+étaient mal isolées** → en court sur le bus (entre elles ou contre le carbone) → baro mort.
+Victor a écarté les épissures → baro revenu (`Barometer 1 calibration complete`, `ArduPilot
+Ready`). Diagnostic bouclé par lui-même. **Action : isoler proprement ou dessouder les 6 fils
+GPS** (module sorti + compas mort = ils ne servent plus). Leçon gravée : sur cette FC, tout
+défaut sur DA/CL tue le baromètre — l'I2C est un bus partagé, pas une ligne dédiée au GPS.
+
+**Logs de vol probablement perdus** : rien de la séance de vol (~18h) sur disque ; la puce
+DataFlash de 8 Mo était vraisemblablement pleine (matin + aprem) → vol non enregistré. À
+vérifier via la liste des logs sur la puce ; sinon Erase pour repartir propre. Les questions
+wobble/drift/altitude tomberont au prochain vol (avec pitch corrigé).
+
+**Bilan** : le drone vole en extérieur, la propulsion et la radio tiennent, mais premier vol
+= premier crash-course de debug terrain. Rien de cassé : une panne d'isolation, résolue.
+
+## 2026-07-23 (nuit) — Analyse du log de vol extérieur : diagnostic complet
+
+Le vol EST récupéré : `2026-07-23 17-51-32.bin` (5,6 Mo, 790 s, 15 sats, décollages
+multiples, altitude −3,5→5,7 m). Les fichiers « 1970 » sur la puce n'étaient pas vieux —
+Victor a failli les jeter sur la foi du nom ; c'est le CONTENU qui tranche (rappel : nom de
+log ≠ contenu). Les 2 tlogs (18h56/19h01) sont inutiles = MP branché après le crash baro.
+
+**Lecture en contexte (la leçon du jour) :** le log affichait VibeMax 52 + clipping 35 →
+l'air alarmant. Corrélation pic-de-vibe ↔ état : **10 pics >25, TOUS au sol/atterrissage,
+0 en vol** = rebonds de posé, pas une vibration de vol. En vol : moyennes 0,7-1,1 (saines),
+moteurs équilibrés ~2 %, batterie OK (I max 29,6 A). **Mécaniquement le drone va bien.**
+
+**Vraies causes des symptômes :**
+1. **Wobble circulaire → pitch inversé** (n°1). Manche tangage à l'envers → chaque correction
+   part à l'envers → oscillation entretenue (+ CG décalé + vent). Fix : `RC2_REVERSED=1` +
+   vérif sens dans MP.
+2. **Glitches EKF EN vol → capteurs I2C/GPS branlants.** Timeline : 74s EKF cale sur GPS →
+   79s `EKF variance: position lost` (GPS qui lâche, connecteur) → 80s `DCM Roll/Pitch
+   inconsistent 47°` → 202s+ `EKF attitude is bad`/`core unhealthy` (refus d'arm). Le GPS au
+   connecteur branlant + le baro aux épissures I2C nues nourrissaient l'EKF en données
+   pourries → attitude fausse (aggrave le wobble) → arm refusé. Le baro mort au sol à 19h04 =
+   stade terminal de ce qui clignotait déjà en vol.
+3. **Descente « tient puis chute » → AltHold.** Modes enregistrés : passages en AltHold
+   (mode 2) confirmés. Manche centré = tient l'altitude ; + baro instable = altitude tenue
+   fausse → chute. Pas une erreur de pilotage.
+
+**Plan avant de revoler (rien de cassé) :** (1) `RC2_REVERSED=1` + vérif ; (2) nettoyer le
+câblage GPS I2C — isoler OU dessouder les 6 fils (GPS sorti + compas mort + connecteur
+branlant → retrait = le plus propre, supprime mort-baro ET glitches EKF) ; (3) effacer la
+puce log (8 Mo pleine) ; (4) prochain vol Stabilize seul, sauts courts, relire vibe-en-vol +
+santé EKF ; AltHold seulement quand baro prouvé stable. Outil `tools/log_quicklook.py` étendu
+mentalement (corrélation vibe/état de vol = le bon réflexe d'analyse).
