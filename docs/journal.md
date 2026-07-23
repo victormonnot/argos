@@ -979,3 +979,21 @@ Velocity/PosHoriz rouges = NORMAL sans GPS (n'affecte pas Stabilize/AltHold — 
 vert » était faux pour un setup sans GPS ; le vrai check attitude = HUD qui suit les
 basculements + arme en Stabilize). Reste : recentrer CG, puis vol extérieur = hover soutenu
 → log à lire ensemble. Autotune seulement après ce hover propre si un résidu de wobble reste.
+
+## 2026-07-23 (nuit, point d'étape) — Wobble intermittent, moteurs OK au banc, verdict reporté au vol dehors
+
+Suite : wobble INTERMITTENT en intérieur (« des fois oui des fois non »), test moteurs
+individuels dans MP = les 4 sonnent/tournent pareil → piste moteur écartée (log confirmait
+déjà des commandes équilibrées ; rappel : pas de télémétrie RPM par moteur sur BLHeli_S
+stock → un fil moteur mal soudé serait quasi INVISIBLE au log, d'où le test au banc). Le
+log ne peut pas diagnostiquer le wobble (pas de RPM, RCOUT = commandes pas poussée réelle,
+écarts-types des 4 moteurs proches 77-98µs = aucun coupable).
+
+**Point clé : l'intérieur est un mauvais juge.** Un petit quad en chambre = son souffle
+recircule (sol/murs/plafond) et le buffete → il danse indépendamment du tune. « Parfois ça
+wobble parfois non » en déplaçant le drone = signature de l'aérologie de la pièce, pas une
+conclusion sur la stabilité. → verdict reporté au **vol extérieur** (air calme, CG recentré,
+hover soutenu 20-30s à 1,5-2m, log lu ensemble). Hypothèses restantes : tune par défaut trop
+chaud pour un 3,5" (principale, vu le « wobble circulaire ») OU juste l'intérieur. Si
+oscillation régulière sur hover propre dehors → Autotune. État matériel : pitch corrigé
+(RC2_REVERSED), fils I2C isolés, moteurs OK, CG à recentrer. Prochaine session = ce vol test.
