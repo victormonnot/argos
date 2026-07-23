@@ -954,3 +954,28 @@ wobble persiste sur hover propre → Autotune. Leçon perso (Claude) : ne pas su
 log sale ; un chiffre d'attitude énorme peut être un vrai flip, pas un bug capteur — vérifier
 l'altitude/contexte AVANT de conclure. (Et créditer Victor, pas moi, pour le doute qui a
 cassé la fausse piste.)
+
+## 2026-07-23 (nuit, résolution) — Wobble PARTI : les épissures I2C nues étaient (probablement) la cause
+
+Test indoor après 2 changements : (1) isolation des épissures SDA/SCL qui étaient scotchées
+ensemble SANS isolation entre elles, (2) batterie repositionnée. **Le wobble a disparu.**
+
+**Victor avait raison, et ma conclusion « tune par défaut » était à côté.** Le vrai facteur
+COMMUN au wobble matin+aprem = les épissures I2C nues (présentes les deux fois) — que j'avais
+éliminées à tort. Mécanisme que j'avais loupé : un bus I2C en court/qui accroche ne perturbe
+pas que le baro, il fait **hoqueter la boucle de contrôle** (timeouts I2C → jitter du loop
+d'attitude → oscillation). Deux fils SDA/SCL qui se touchent par intermittence = wobble
+plausible. Réserve : 2 variables changées (fils + batterie) → pas 100 % attribuable ; le log
+propre de demain (hover soutenu 20-30 s dehors) confirmera.
+
+**Nouveau symptôme, cause identifiée par Victor** : drift franc vers l'ARRIÈRE = CG trop
+reculé (batterie déplacée en arrière → poussée devant le poids → nez cabré → recule). Fix :
+avancer la batterie, test d'équilibre sur un tube au centre (doit rester à plat), marquer la
+position au scotch. Rappel : petit drift résiduel = normal en Stabilize (pas de tenue de
+position) ; c'est le drift franc et constant qu'on corrige.
+
+**État** : pitch corrigé (RC2_REVERSED), fils I2C isolés, wobble parti en test indoor, EKF
+Velocity/PosHoriz rouges = NORMAL sans GPS (n'affecte pas Stabilize/AltHold — mon « EKF tout
+vert » était faux pour un setup sans GPS ; le vrai check attitude = HUD qui suit les
+basculements + arme en Stabilize). Reste : recentrer CG, puis vol extérieur = hover soutenu
+→ log à lire ensemble. Autotune seulement après ce hover propre si un résidu de wobble reste.
