@@ -799,3 +799,63 @@ analysés en pymavlink depuis WSL.** Résultats :
 mais 4 manquantes — commande en cours) + coin d'herbe calme.** Protocole : Stabilize
 (position basse), hover 1 m, pose, re-analyse du log (vibrations au hover soutenu = le
 juge de paix). Le rituel voler→lire le log→corriger→revoler est né aujourd'hui.
+
+## 2026-07-23 (suite) — Chapitre GPS-denied ouvert : flow réactivé dans le firmware, architecture EKF3 posée
+
+**Firmware : l'optical flow est de retour dans le build custom.** Le `minimize_fpv_osd.inc`
+des cartes 1 Mo force `AP_OPTICALFLOW_ENABLED 0` → réactivé dans le hwdef
+`SpeedyBeeF405Mini` de la branche `argos-custom`, en ne gardant que le **backend MAVLink**
+(`AP_OPTICALFLOW_MAV_ENABLED 1`, les drivers de capteurs SPI/série qu'on ne possède pas
+restent dehors). Vérifié dans les sources : `EK3_FEATURE_OPTFLOW_FUSION` suit ce flag
+automatiquement → la fusion EKF3 + l'estimateur de hauteur-sol reviennent avec. Réactivé
+aussi **FlowHold** (mode 22 : tenue de position au flow SANS télémètre — le premier barreau
+de l'échelle de vol, testable avant même l'arrivée du ToF). Build vert :
+**874 696 B utilisés / 124 728 B libres** — tout tient large dans le 1 Mo. Deux pièges
+hwdef appris : (1) pour écraser un `define` posé par un include, il faut `undef` d'abord
+(le premier `define` gagne, silencieusement) ; (2) `hwdef.h` n'est régénéré qu'au
+`waf configure`, pas au build incrémental. Modif stagée — commit à faire, puis rebuild
+(pour le hash de traçabilité) et flash via `ARGOS_firmware\`.
+
+**La contrainte qui a structuré toutes les décisions capteurs : il ne reste QU'UN seul
+UART full-duplex libre (UART3).** UART4 = Bluetooth interne sans pads, UART5 = pad RX
+seul (télém ESC). Conséquences en cascade, tranchées aujourd'hui :
+
+- **ToF = Benewake TFmini-S en mode I2C** (~40 €) sur les pads DA/CL (libres, le compas
+  mort n'écoute que 0x0D, le TFmini-S parle en 0x10). `RNGFND1_TYPE=25` (driver
+  TFminiPlus-I2C **déjà compilé** dans le build minimisé), 12 m, tient le plein soleil.
+  Coût UART : zéro. Écarte TF-Luna (UART-only sous ArduPilot) et VL53L1X (aveugle au
+  soleil = indoor-only). Subtilité : livré en mode UART → une commande de bascule I2C à
+  envoyer une fois via adaptateur USB-TTL.
+- **MTF-02P : ÉCARTÉ** — décision actée (position de Victor + argument structurel : il
+  prendrait UART3, la place du companion qu'il était censé dé-risquer). Sa valeur de
+  dé-risquage est remplacée gratuitement par l'échelle SITL. Tripwires consignés dans le
+  doc pour rouvrir le dossier (qualité flow inutilisable, latence > 250 ms, ou envie du
+  head-to-head) — et s'il revient un jour, il se branchera sur un UART du Pi, pas de la FC.
+- **Companion = Raspberry Pi Zero 2 W sur UART3 + caméra Arducam OV9281 global shutter
+  pointée au nadir** (~55 € l'ensemble + BEC 5 V dédié). Triple rôle : calcul du flow
+  (LK sparse 30-50 Hz), injection `OPTICAL_FLOW` en MAVLink2 local (~30-45 ms de latence,
+  loin du plafond `EK3_FLOW_DELAY=250 ms`), et pont télémétrie WiFi (mavlink-router) —
+  **il absorbe le rôle prévu de l'ESP32 DroneBridge**. Point clé compris en route : la
+  Phoenix2 FPV ne peut PAS être la caméra de flow (elle regarde devant ; le modèle EKF3
+  suppose un capteur nadir) — elle reste 100 % pilotage/OSD/Mode A.
+
+**Architecture EKF3 gelée dans [`docs/ekf_flow_fusion.md`]** (le doc interview-gold est
+né) : table `EK3_SRC1_*` flow-only (VELXY=5, POSXY=0, POSZ=1 baro + terrain estimator),
+`EK3_SRC2` = GPS en filet de sécurité commutable (`RCx_OPTION=90`) jamais utilisé pendant
+les runs de benchmark, GPS = vérité terrain loggée. Pépite vérifiée dans
+`AP_NavEKF3_Control.cpp` : le flow est AID_RELATIVE et le code dit explicitement que les
+capteurs body-frame **n'exigent pas d'alignement de yaw** → voler flow-only SANS compas
+(`EK3_SRC1_YAW=0`, cap intégré gyro) est une config supportée — le compas mort ne bloque
+rien. Côté injection, lu dans `AP_OpticalFlow_MAV.cpp` : envoyer les champs
+`flow_rate_x/y` (rad/s, float) — le backend les préfère aux champs legacy — plus
+`quality` 0-255 qui gate la fusion ; l'horodatage est à la réception (jitter non corrigé
+→ cadence d'envoi stable). Méthode de mesure de la latence : corrélation croisée
+`OF.flowX` vs gyro dans les logs (le pic donne `EK3_FLOW_DELAY`, son signe valide les
+conventions d'axes — l'échec classique du flow étant l'axe inversé).
+
+**Échelle de validation SITL-first** : (1) flow simulé SITL → valider tout le set
+`EK3_SRC*` et FlowHold/Loiter sans matériel ; (2) script injecteur `OPTICAL_FLOW` → SITL
+= répétition du chemin d'injection ; (3) caméra Gazebo → le VRAI algo de flow → EKF3 SITL
+= répétition générale logicielle du différenciateur sur le rig existant ; (4) wiggle test
+au bench (signes + délai) ; (5) vol : FlowHold → Loiter flow-only → benchmark de dérive
+p50/p95 vs GPS sur 60 s × ≥10 runs. Liste de courses complète en fin de doc.
