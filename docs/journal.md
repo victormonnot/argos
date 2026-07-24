@@ -997,3 +997,57 @@ hover soutenu 20-30s à 1,5-2m, log lu ensemble). Hypothèses restantes : tune p
 chaud pour un 3,5" (principale, vu le « wobble circulaire ») OU juste l'intérieur. Si
 oscillation régulière sur hover propre dehors → Autotune. État matériel : pitch corrigé
 (RC2_REVERSED), fils I2C isolés, moteurs OK, CG à recentrer. Prochaine session = ce vol test.
+
+## 2026-07-24 — Wobble mesuré (0,7 Hz) = tune par défaut → cap sur l'Autotune
+
+Vol dehors ce matin : wobble PERSISTE en air libre (→ pas la chambre) ET identique avec un
+câble moteur détaché en vol (→ pas les moteurs ; Victor a ressoudé). Diagnostic mécanique
+définitivement écarté. Params lus dans le log : **100 % défauts d'usine ArduCopter**
+(ATC_RAT_RLL_P=0.135, D=0.0036, ANG_P=4.5, INS_GYRO_FILTER=20) — jamais tuné.
+
+**Wobble enfin mesuré** : dans le log 10-17, fenêtre de 21 s tenue sous ±25° → oscillation
+**~0,7 Hz, Roll ±13°, DesRoll≈0°** (le drone oscille seul, manches centrés). Oscillation
+LENTE = domaine du réglage de contrôle (pas bruit HF/filtre). Signature classique « vole mais
+wobble sur tune défaut d'un 3,5" léger » (les défauts sont calibrés pour du 5"+). Note :
+extraire un wobble propre a demandé de chercher la fenêtre calme — les logs sont pollués de
+tumbles (±358° roll) dus au câble détaché + arrêts brusques.
+
+**Décision : Autotune** (le drone est assez pilotable, 21 s à ±25°). Deux préparatifs
+d'abord : (1) **recentrer le CG** (batterie avancée + test d'équilibre — un CG décalé biaise
+le tune, et pourrait déjà réduire le wobble) ; (2) vérifier qu'**AltHold tient l'altitude**
+(baro réparé). Procédure : `RC7_OPTION=17` (Autotune sur la voie 7 libre), `AUTOTUNE_AXES=7`,
+décollage AltHold ~3-4 m en zone dégagée air calme, bascule voie 7, saccades auto 5-10 min,
+atterrir en gardant la voie active pour sauver. Sécurité : pouce prêt à repasser Stabilize +
+kill. Plan B si Autotune galère : baisser le rate P à la main d'abord. Log post-Autotune à
+lire ensemble. Outil : `tools/log_quicklook.py` (+ analyses ad hoc fréquence d'oscillation).
+
+## 2026-07-24 (après-midi) — PERCÉE : le vrai coupable = VIBRATIONS mécaniques (balourd), pas le tune
+
+Session Autotune ratée mais ULTRA diagnostique (log 14-07-40, 8 Mo). Autotune n'a jamais
+démarré (« Mode change to Autotune failed: init failed » ×2). Mais 2 symptômes-clés
+rapportés par Victor + confirmés au log ont tout recadré :
+
+**1. Envolée AltHold incontrôlable.** CTUN à l'appui : de t=87 à t=90s, BAlt passe de -1m à
+14,3m en 3s, ALORS QUE le manche gaz est à fond en bas (ThIn=-1.6). Le contrôleur d'altitude
+reçoit des **données verticales corrompues** → croit que le drone tombe → plein gaz → monte →
+emballement. Dangereux (a causé une chute + hélice tordue).
+
+**2. Vibrations qui montent avec le régime.** VibeZ moy 1,2 à bas régime → **5,8 à haut
+régime** (pics 49, means X/Y/Z 3,4/4,9/4,1, clipping 0). Vibration proportionnelle au régime
+= **balourd mécanique** (hélice ou moteur déséquilibré). = le « shake » ressenti.
+
+**Recadrage majeur : ce n'était JAMAIS le tune.** C'est mécanique depuis le début, ce qui
+explique pourquoi baisser rate P, angle P, etc. n'a jamais rien changé. Les vibrations
+corrompent (a) l'estimation verticale → envolée AltHold, (b) l'estimation d'attitude →
+wobble/shake. Le « changer les hélices ne change rien » colle SI le balourd est dans un
+**MOTEUR** (arbre tordu par une chute) et pas l'hélice. Les chutes répétées ont pu
+l'aggraver. Note : EKF GPS-aiding instable aussi (yaw GPS sans compas + connecteur branlant)
+→ contribue au drift incohérent + yaw incohérent, mais problème séparé.
+
+**PLAN (sécurité d'abord : STABILIZE UNIQUEMENT, plus d'AltHold/Autotune tant que vibrations
+pas réglées — l'envolée est dangereuse) :** (1) remplacer les 4 hélices (celle retordue à la
+main = déséquilibrée) ; (2) inspecter chaque MOTEUR à la main — arbre droit ? roulement qui
+gratte/du jeu ? un arbre tordu survit aux changements d'hélice = suspect n°1 ; (3) re-hover
+Stabilize → relire VibeZ au log ; (4) vibrations basses → réévaluer wobble → alors seulement
+AltHold + Autotune. Hypothèse : cause UNIQUE (balourd) derrière shake + envolée AltHold +
+wobble. Aussi : puce log pleine (« logging full ») → à effacer.
