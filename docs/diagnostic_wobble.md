@@ -1,7 +1,10 @@
 # ARGOS — Diagnostic vol : wobble + envolée AltHold (topo complet)
 
-> État au 2026-07-24. Document de synthèse pour réflexion / forums / reprise de contexte.
-> Tout est tiré de tests réels + analyse des logs DataFlash (pymavlink).
+> **RÉSOLU le 2026-07-25 — voir §9. Les §6-§8 ci-dessous sont conservés comme historique
+> des hypothèses, mais elles sont FAUSSES.**
+>
+> État au 2026-07-24 pour §1-§8. Document de synthèse pour réflexion / forums / reprise de
+> contexte. Tout est tiré de tests réels + analyse des logs DataFlash (pymavlink).
 
 ---
 
@@ -107,7 +110,7 @@ Sur tous les vols réels, en fenêtre calme :
 
 ---
 
-## 6. Hypothèses actuelles (meilleure compréhension)
+## 6. Hypothèses au 2026-07-24 — ⚠ TOUTES RÉFUTÉES, voir §9
 
 1. **Wobble = roulis sous-amorti.** Le drone répond **plus vite en roulis qu'en tangage** avec les mêmes gains → oscillation spécifique au roulis. Cause physique probable : **batterie montée en longueur avant-arrière → faible inertie en roulis** (masse proche de l'axe de roulis), forte inertie en tangage. Les gains par défaut (symétriques) sont trop chauds pour l'axe roulis léger.
    → **Remède attendu : Autotune** (règle chaque axe séparément → gains adaptés au roulis).
@@ -143,4 +146,111 @@ Pistes à tester :
 
 ---
 
-*Historique détaillé jour par jour dans `docs/journal.md` (entrées 2026-07-20 → 2026-07-24).*
+---
+
+## 9. ✅ RÉSOLUTION (2026-07-25) — le mélangeur sature en permanence
+
+**Cause racine unique : le drone est tellement surmotorisé que son point de hover tombe hors
+de la plage de contrôle utile d'ArduPilot. Le mélangeur sature 99 % du temps.**
+
+### 9.1 Mesures (3 vols exploitables, hover stabilisé)
+
+| grandeur | mesure | attendu |
+|---|---|---|
+| sortie moteur au hover | 1246-1264 µs | — |
+| `MOT_SPIN_MIN` = 0.15 | 1150 µs → **96 µs de marge sous le hover** | plusieurs centaines |
+| **poussée de hover réelle** (échelle 0→1 ArduPilot) | **0.052** | 0.25-0.40 |
+| `MOT_THST_HOVER` | 0.35 → **faux d'un facteur 6,8** | = poussée réelle |
+| `PIDR/PIDP/PIDY` drapeau `LIMIT` (bit 0) | **98-99,4 %**, tous vols depuis le 1er | < 10 % |
+| ≥1 moteur collé sur `MOT_SPIN_MIN` | **100 % du temps** | ponctuel |
+| terme I des boucles de rate | **≈ 0** (std 0.0002) | trime l'erreur |
+| erreur d'assiette moyenne | **+6° roulis / +8° tangage** | < 2° |
+| `CTUN.ThO` (gaz demandés) → `MOTB.ThrOut` (appliqués) | 0.024 → 0.056 (**x2,4**) | ≈ égaux |
+| course de manche des gaz au hover | **6,5 %** | ~45-55 % |
+
+### 9.2 Mécanisme (vérifié dans le source, `AP_MotorsMatrix::output_armed_stabilizing`)
+
+Quand la commande roulis+tangage+lacet ne tient pas dans la plage disponible :
+`rpy_scale = -throttle_avg_max / rpy_low`, `limit.set_rpy(true)`, et
+`_thrust_rpyt_out[i] = throttle_best + rpy_scale * _thrust_rpyt_out[i]`.
+
+1. **Les gains PID sont mathématiquement sans effet.** Doubler la sortie des PID double
+   `rpy_low`, donc divise `rpy_scale` par deux : le produit est **inchangé**. → explique
+   « baisser rate P / angle P ne change rien » (§4). Le tune n'était pas bon : il était
+   **hors circuit**. (Aucun des 13 logs ne contient de gains modifiés, tous à 0.135/4.5.)
+2. **Intégrateurs gelés** (`_motors.limit.roll` → argument `limit` de `AC_PID::update_all`)
+   → plus de trim → **erreur d'assiette permanente → dérive constante et de direction
+   variable** (§3.3, §3.4). Ce n'est pas le CG.
+3. **La poussée moyenne n'est plus pilotée par le manche** mais par
+   `get_throttle_avg_max() = throttle_in*(1-mix) + MOT_THST_HOVER*mix` :
+   - Stabilize (`ATC_THR_MIX_MAN`=0.1) → plancher 0.035 **> hover réel 0.026** : le drone
+     monte gaz fermés, d'où le hover à 6,5 % de manche.
+   - AltHold (`ATC_THR_MIX_MAX`=0.5) → plancher **0.175 = 7x le hover réel**.
+4. **Autorité lacet bridée** : `yaw_allowed` est calculé sur la marge moteur restante, quasi
+   nulle ici, puis forcé à `MOT_YAW_HEADROOM`=0.2 → explique le **lacet incohérent** (§3.5).
+
+### 9.3 Envolée AltHold, à la seconde près (log 14-07-40, t=188.57)
+
+Bascule AltHold → `MOTB.ThrOut` saute à **0.1750** (= 0.35 × 0.5 exactement) et **reste figé
+1,3 s** pendant que `CTUN.ThO` = **0.0000** et que le manche est en bas. BAlt 3,97 → 13,68 m
+= **+7,5 m/s**. Ce n'est pas une estimation verticale corrompue : c'est un **feed-forward de
+gaz faux d'un facteur 7**.
+
+Aggravant : `AP_MOTORS_THST_HOVER_MIN = 0.125f` est un **clamp dur** dans
+`get_throttle_hover()` → avec un hover réel à 0.052, `MOT_THST_HOVER` ne peut PAS descendre
+assez bas : **AltHold est structurellement impossible dans cette config**. Et
+`Copter::update_throttle_hover()` sort tôt si `flightmode->has_manual_throttle()` → **n'apprend
+jamais en Stabilize**. Cercle vicieux complet.
+
+### 9.4 Ce que ça invalide dans les §4-§8
+
+- **Balourd mécanique — FAUX.** Un balourd apparaît à 1x le régime (~245 Hz au hover ici :
+  24,6 % de gaz × 15,7 V × 3800 KV). Des VIBE qui montent avec le régime, c'est le
+  comportement **normal** de tout multirotor ; 5,8 est très bon (seuil ArduPilot : 30),
+  clipping = 0 en vol. Rien à changer côté mécanique.
+- **Tune par défaut — FAUX** (gains hors circuit).
+- **Baro coupable de l'envolée — FAUX** (mais voir §9.5).
+- **« Oscillation à 0,5-0,7 Hz » — ARTEFACT D'ALIASING.** ATT/RATE loggés à **10 Hz**
+  (Nyquist 5 Hz), IMU à 25 Hz, ~23 % de messages perdus. Le spectre du gyro roulis a **97 %
+  de son énergie dans 8-12,5 Hz, empilée sur Nyquist** = repliement. Vraie fréquence
+  probablement ~15 Hz, **non mesurable avec ce réglage de log**. Il reste une oscillation
+  roulis HF réelle (`GyrX` rms 2,06 rad/s = 118 °/s vs `GyrY` 0,65 en fenêtre calme) à
+  requalifier une fois la saturation levée ET le logging réparé.
+
+### 9.5 Problème secondaire réel : le baro voit le souffle des hélices
+
+Drone au sol, altitude vraie constante, moteurs OFF vs ralenti, sur 5 logs :
+**BAlt chute de 0,86 à 1,68 m** rien qu'au ralenti. Le DPS310 n'est pas bruité (0,12 m
+statique) mais **biaisé par le débit d'air**. Mousse à cellules ouvertes sur le capteur avant
+de compter sur AltHold. Ce n'est pas la cause de l'envolée, mais ça la rendrait instable
+ensuite.
+
+### 9.6 Plan de correction (ordre impératif)
+
+1. **Calibration `MOT_SPIN_ARM` / `MOT_SPIN_MIN`** (MP → Motor Test). Attendu ~0.02-0.04 et
+   ~0.04-0.06 (les défauts 0.10/0.15 sont dimensionnés pour du 5"+ lent). Vérifier que les 4
+   moteurs démarrent et tournent **sous charge** sans décrocher (BLHeli_S = risque de désync).
+2. **`MOT_THST_EXPO` ≈ 0.55** (0.65 = grosses hélices).
+3. **Vol Stabilize court → `tools/thrust_range.py` → recalculer.** Si la poussée de hover est
+   encore < 0.20, **plafonner `MOT_SPIN_MAX`** (~0.57-0.60 attendu = 1570-1600 µs). On sacrifie
+   une poussée max dont il y a un excès absurde (T/W restant ≈ 4).
+4. **`MOT_THST_HOVER` = valeur mesurée** (cible 0.25). AltHold redevient sûr, et
+   `MOT_HOVER_LEARN=2` l'affinera seul.
+5. **⚠ SÉCURITÉ — baisser les gains AVANT de revoler.** Gain effectif actuel
+   ≈ `0.135 × rpy_scale(~0.1)`. Saturation levée → `rpy_scale → 1` → gain d'assiette réel
+   **x8-10 d'un coup**. Passer par **MP → SETUP → Mandatory Hardware → Initial Tune
+   Parameters** (hélice 3,5", 4S) : pose d'un bloc `ATC_RAT_*`, `INS_GYRO_FILTER` (20 Hz est
+   trop bas pour du 3,5") et `MOT_THST_EXPO`. Premier vol bas, court, sur herbe, pouce sur le
+   kill.
+6. **Réparer le logging avant de rediagnostiquer** : `LOG_BITMASK` + bit 0 (`ATTITUDE_FAST`)
+   et décocher GPS/COMPASS/NTUN/CAMERA pour tenir dans 8 Mo ; pour une vraie FFT,
+   `INS_LOG_BAT_MASK=1` (échantillonneur par lots ~1 kHz) sur 60-90 s, puce effacée avant.
+7. Puis : hover propre → requalifier le wobble résiduel → notch `INS_HNTCH` si besoin →
+   **Autotune**.
+
+**Outil** : `tools/thrust_range.py` — inverse la courbe de poussée d'ArduPilot et sort la
+poussée de hover réelle, le % de saturation du mélangeur, et le `MOT_SPIN_MAX` à viser.
+
+---
+
+*Historique détaillé jour par jour dans `docs/journal.md` (entrées 2026-07-20 → 2026-07-25).*
