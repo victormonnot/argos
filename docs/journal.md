@@ -1051,3 +1051,122 @@ gratte/du jeu ? un arbre tordu survit aux changements d'hélice = suspect n°1 ;
 Stabilize → relire VibeZ au log ; (4) vibrations basses → réévaluer wobble → alors seulement
 AltHold + Autotune. Hypothèse : cause UNIQUE (balourd) derrière shake + envolée AltHold +
 wobble. Aussi : puce log pleine (« logging full ») → à effacer.
+
+## 2026-07-25 — CAUSE RACINE TROUVÉE : le mélangeur sature en permanence (drone trop surmotorisé pour l'échelle de poussée ArduPilot)
+
+Relecture complète des 13 logs DataFlash (`/mnt/c/.../Mission Planner/logs/QUADROTOR/1/`)
++ lecture du code d'`AP_MotorsMatrix` / `AC_AttitudeControl_Multi` dans MON fork. Verdict :
+**ce n'était ni le tune, ni un balourd, ni le baro.** Une seule cause explique tout.
+
+### La mesure
+
+Sur les 3 vols exploitables (07-23 17-51, 07-24 10-17, 07-24 14-07), en hover stabilisé :
+
+| grandeur | mesure |
+|---|---|
+| sortie moteur au hover | **1246-1264 µs** |
+| `MOT_SPIN_MIN` = 0.15 | = 1150 µs → **96 µs de marge sous le hover** |
+| poussée de hover réelle (échelle 0→1 d'ArduPilot) | **0.052** |
+| `MOT_THST_HOVER` | **0.35** → faux d'un facteur **6,8** |
+| drapeau `LIMIT` de `PIDR/PIDP/PIDY` (bit 0 = sortie saturée, anti-windup actif) | **98-99,4 % du temps, sur TOUS les vols depuis le premier** |
+| ≥1 moteur collé sur `MOT_SPIN_MIN` | **100 % du temps** |
+| terme I des boucles de rate | **≈ 0** (std 0.0002) alors que l'erreur d'assiette moyenne est de **+6° roulis / +8° tangage** |
+| gaz demandés vs appliqués (`CTUN.ThO` vs `MOTB.ThrOut`) | 0.024 → 0.056 = **x2,4** |
+
+### Le mécanisme (vérifié dans le source, pas déduit)
+
+`AP_MotorsMatrix::output_armed_stabilizing()` : quand la commande roulis+tangage+lacet ne
+tient pas dans la plage de poussée disponible, il calcule
+`rpy_scale = -throttle_avg_max / rpy_low`, applique `limit.set_rpy(true)`, et sort
+`_thrust_rpyt_out[i] = throttle_best + rpy_scale * _thrust_rpyt_out[i]`.
+
+Trois conséquences, toutes observées :
+
+1. **Les gains PID deviennent mathématiquement sans effet.** Si on double la sortie des PID,
+   `rpy_low` double, donc `rpy_scale` est divisé par deux : le produit `rpy_scale * rpy_out`
+   est **inchangé**. → C'est LA raison pour laquelle baisser rate P (0.135→0.08→0.06) ou
+   angle P (4.5→3.0) n'a jamais rien changé. Ce n'était pas « le tune est déjà bon », c'était
+   « le tune est hors circuit ». (Note : aucun des 13 logs ne contient de gains modifiés —
+   tous à 0.135/4.5 — donc ces essais n'ont de toute façon jamais été enregistrés.)
+2. **Les intégrateurs sont gelés** (`_motors.limit.roll` est passé en argument `limit` à
+   `AC_PID::update_all`). Plus de trim → erreur d'assiette permanente 6-8° → **dérive
+   constante, de direction variable**. Rien à voir avec le CG.
+3. **La poussée moyenne n'est plus pilotée par le manche** mais par
+   `get_throttle_avg_max() = throttle_in*(1-mix) + MOT_THST_HOVER*mix`.
+   - Stabilize (`ATC_THR_MIX_MAN`=0.1) : plancher = 0.35×0.1 = **0.035 > hover réel 0.026**
+     → le drone monte même gaz fermés, d'où le hover à **6,5 % de course de manche**.
+   - AltHold (`ATC_THR_MIX_MAX`=0.5) : plancher = 0.35×0.5 = **0.175 = 7x le hover réel**.
+
+### L'envolée AltHold, expliquée à la seconde près (log 14-07, t=188.57)
+
+Bascule en AltHold → `MOTB.ThrOut` saute à **0.1750** (= 0.35 × 0.5, exactement) et **y reste
+figé 1,3 s** pendant que `CTUN.ThO` (gaz commandés) est à **0.0000** et que le manche est en
+bas. BAlt : 3,97 → 13,68 m, soit **+7,5 m/s**. Ce n'était PAS une estimation verticale
+corrompue par les vibrations : c'est un feed-forward de gaz faux d'un facteur 7.
+
+Pire : `AP_MOTORS_THST_HOVER_MIN = 0.125f` est un **clamp dur** dans
+`get_throttle_hover()`. Avec un hover réel à 0.052, `MOT_THST_HOVER` ne peut PAS descendre
+assez bas → **AltHold est structurellement impossible dans cette config**, même avec
+l'apprentissage. Et `Copter::update_throttle_hover()` sort tôt si
+`flightmode->has_manual_throttle()` → **il n'apprend jamais en Stabilize**. Cercle vicieux :
+AltHold est cassé parce que THST_HOVER est faux, et THST_HOVER ne peut s'apprendre qu'en
+AltHold.
+
+### Ce que ça invalide
+
+- **« Balourd mécanique » (07-24 après-midi) : FAUX.** Un balourd d'hélice/moteur apparaît à
+  1x le régime = ~245 Hz au hover ici (24,6 % de gaz × 15,7 V × 3800 KV). Les VIBE qui
+  montent avec le régime (1,2 → 5,8) sont le comportement NORMAL de n'importe quel quad, et
+  5,8 est très bon (seuil d'alerte ArduPilot : 30). Clipping = 0 en vol. Rien à changer.
+- **« Tune par défaut » (07-24 matin) : FAUX** (les gains sont hors circuit).
+- **« Le baro fait s'envoler AltHold » : FAUX** pour l'envolée. Mais voir ci-dessous.
+- **Le « 0,7 Hz » mesuré : ARTEFACT.** ATT/RATE sont loggés à 10 Hz (Nyquist 5 Hz), IMU à
+  25 Hz — et il y a ~23 % de messages perdus. Le spectre du gyro roulis a **97 % de son
+  énergie dans la bande 8-12,5 Hz, empilée sur Nyquist** = signature d'aliasing. La vraie
+  fréquence est probablement ~15 Hz (repliement 25-9,6), mais **elle n'est pas mesurable
+  avec ce réglage de log**. `GyrX` rms = 2,06 rad/s (118 °/s) contre 0,65 pour `GyrY` en
+  fenêtre calme : il reste une oscillation roulis HF réelle à requalifier une fois la
+  plage de poussée corrigée et le logging réparé.
+
+### Problème secondaire RÉEL : le baro voit le souffle des hélices
+
+Test sur 5 logs, drone au sol, altitude vraie constante, moteurs OFF vs moteurs au ralenti :
+**BAlt chute de 0,86 à 1,68 m** rien qu'au ralenti. Le baro (DPS310) n'est pas bruité
+(0,12 m statique) mais **biaisé par le débit d'air**. À traiter (mousse à cellules ouvertes
+sur le capteur) avant de compter sur AltHold — mais ce n'est PAS la cause de l'envolée.
+
+### Plan de correction (ordre impératif)
+
+1. **Calibration `MOT_SPIN_ARM` / `MOT_SPIN_MIN`** (procédure ArduPilot, MP → Motor Test).
+   Attendu ~0.02-0.04 et ~0.04-0.06, pas 0.10/0.15 (valeurs par défaut dimensionnées pour du
+   5"+ lent). Vérifier que les 4 moteurs démarrent et tournent **sous charge** sans décrocher.
+2. **`MOT_THST_EXPO` ≈ 0.55** (0.65 = valeur pour grosses hélices).
+3. **Vol Stabilize court → relire la sortie moteur au hover → recalculer** avec
+   `tools/thrust_range.py`. Si la poussée de hover est encore < 0.20, **plafonner
+   `MOT_SPIN_MAX`** (~0.57-0.60 attendu, soit 1570-1600 µs) : on sacrifie une poussée max
+   dont il y a un excès absurde (T/W restant ≈ 4).
+4. **`MOT_THST_HOVER` = valeur mesurée** (cible 0.25). Ensuite seulement AltHold devient sûr,
+   et `MOT_HOVER_LEARN=2` pourra l'affiner tout seul.
+5. **⚠ SÉCURITÉ — baisser les gains AVANT de revoler.** Aujourd'hui le gain effectif est
+   `P × rpy_scale ≈ 0.135 × 0.1`. Une fois la saturation levée, `rpy_scale → 1` : le gain
+   d'assiette réel est multiplié par ~8-10 d'un coup. Utiliser **MP → SETUP → Mandatory
+   Hardware → Initial Tune Parameters** (hélice 3,5", 4S) qui pose d'un bloc `ATC_RAT_*`,
+   `INS_GYRO_FILTER` (20 Hz est trop bas pour du 3,5") et `MOT_THST_EXPO`. Premier vol : bas,
+   court, sur herbe, pouce sur le kill.
+6. **Réparer le logging avant de rediagnostiquer** : `LOG_BITMASK` + bit 0 (`ATTITUDE_FAST`,
+   ATT/RATE/PID à la cadence de boucle) et décocher GPS/COMPASS/NTUN/CAMERA pour tenir dans
+   les 8 Mo ; pour une vraie FFT de vibration, `INS_LOG_BAT_MASK=1` (échantillonneur par
+   lots, ~1 kHz brut) sur un vol de 60-90 s, puce effacée avant.
+7. Puis, dans l'ordre : hover propre → relire le wobble résiduel → notch harmonique
+   (`INS_HNTCH`) si besoin → **Autotune**.
+
+Outil ajouté : **`tools/thrust_range.py`** — inverse la courbe de poussée d'ArduPilot pour
+sortir la poussée de hover réelle, le % de saturation du mélangeur et la valeur de
+`MOT_SPIN_MAX` à viser. À relancer après chaque changement.
+
+**Leçon de méthode.** J'ai enchaîné 4 diagnostics faux (pitch inversé → I2C → tune → balourd)
+en raisonnant sur des symptômes et des moyennes. Ce qui a tranché, c'est (a) d'aller lire les
+drapeaux d'état du contrôleur dans le log (`PIDR.Flags`) plutôt que ses sorties, (b) de lire
+le code du mélangeur au lieu de supposer ce qu'il fait, et (c) de vérifier la cadence
+d'échantillonnage avant de croire une fréquence. Un log qui « montre » 0,7 Hz à 10 Hz
+d'échantillonnage ne montre rien.
