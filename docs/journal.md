@@ -1170,3 +1170,135 @@ drapeaux d'état du contrôleur dans le log (`PIDR.Flags`) plutôt que ses sorti
 le code du mélangeur au lieu de supposer ce qu'il fait, et (c) de vérifier la cadence
 d'échantillonnage avant de croire une fréquence. Un log qui « montre » 0,7 Hz à 10 Hz
 d'échantillonnage ne montre rien.
+
+---
+
+## 2026-07-25 (suite) — Réorganisation du portfolio en 3 groupes + `GUIDED_NOGPS` identifié
+
+Session sans code : remise à plat de la stratégie, déclenchée par la fragilité du 3,5" (pas de
+budget si quelque chose casse → tout faire dépendre de lui met le portfolio sur un point de
+défaillance unique). Cadre acté dans **`PORTFOLIO.md`** (privé, gitignoré comme
+`argos-plan-sprint.md`).
+
+**Structure retenue : 3 groupes indépendants**, par régime de risque — (1) ARGOS sur le 3,5" +
+SITL/Gazebo, (2) le whoop Air65 II sous Betaflight comme plateforme d'itération IA sans peur de
+la casse, (3) recherche en simu pure. Règle qui en découle : **le 3,5" n'est pas une plateforme
+d'itération, c'est une plateforme de tournage.**
+
+### La trouvaille technique : `GUIDED_NOGPS`
+
+Cherchant comment faire l'engagement sur cible **sans GPS et sans MTF-02P**, j'ai identifié le
+mode **20** (`ArduCopter/mode.h:95`) : un Guided réduit au contrôle d'attitude pur — `init()`
+appelle `angle_control_start()`, `run()` appelle `angle_control_run()`, rien d'autre
+(`mode_guided_nogps.cpp:10-23`). La boucle devient `erreur pixel → angles désirés + Δcap →
+quaternion → SET_ATTITUDE_TARGET`, **sans aucune estimation de position**.
+
+Spécification lue dans le source (`ArduCopter/GCS_MAVLink_Copter.cpp:890-964`) — **deux points
+où la doc communautaire est fausse** :
+
+- **les rates de corps SONT supportés**, mais en tout-ou-rien : les trois bits `*_RATE_IGNORE`
+  clairs, ou les trois posés. Un mélange → `hold_position()`. Donc `type_mask = 0b00000111`
+  (angles seuls) est un choix, pas une limite du firmware ;
+- **la sémantique de `thrust` dépend de `GUID_OPTIONS` bit 3**
+  (`SetAttitudeTarget_ThrustAsThrust = 1U << 3`, valeur 8, `mode.h:1207`). Bit à **0 (défaut) =
+  taux de montée** : `0.5` tient l'altitude, `>0.5` monte jusqu'à `WP_SPD_UP`, `<0.5` descend
+  jusqu'à `WP_SPD_DN` → **ArduPilot ferme la boucle d'altitude au baro, sans GPS**. Bit à 1 =
+  poussée brute contrainte à −1..1.
+
+Le champ `thrust` est **obligatoire** (`THROTTLE_IGNORE` posé → `hold_position()`), et le
+quaternion doit être unitaire à ±1e-3 sous peine du même sort.
+
+**Conséquence qui unifie les 3 groupes :** `GUID_OPTIONS` bit 3 donne exactement l'espace
+d'action *attitude + poussée brute* des papiers de RL drone — et c'est le même que Betaflight en
+ACRO. Une politique apprise a donc la même interface sur les trois plateformes.
+
+**Deux difficultés de conception identifiées** (c'est là qu'est le contenu) : (1) sans retour de
+vitesse il n'y a pas d'amortissement → le drone dépasse ; la **taille de la bounding box sert de
+capteur de distance** pour la loi de garde ; (2) compas mort + pas de GPS → le cap dérive, donc
+**envoyer `cap_courant + Δ`** et jamais un cap absolu.
+
+**Prérequis matériel :** l'altitude tenue à `thrust = 0.5` s'appuie sur le baro, qui est biaisé
+par le souffle des hélices (0,86 → 1,68 m au ralenti, cf. `plan_correction_poussee.md`). La
+mousse sur le DPS310 devient un **prérequis** de ce bloc, pas une finition.
+
+### Autres points tranchés
+
+- **HITL, échelle honnête.** HITL-1 companion-in-the-loop (vrai Pi Zero 2W, vrai UART, vrai
+  MAVLink contre Gazebo/SITL) = certain et le plus utile ; HITL-2 radio en joystick USB = facile ;
+  HITL-3 Simulation on Hardware (`Tools/scripts/sitl-on-hardware/`) = **pronostic négatif** :
+  cibles de référence MatekH743/CubeOrange (H7, 2 MB) qui désactivent déjà NavEKF2/ADSB/proximity
+  /visualodom pour tenir, alors que le build ARGOS est à 874 696 B utilisés / 124 728 B libres sur
+  1 MB. Dépassement attendu ~200-300 KB. Le test coûte une commande — on lira le chiffre.
+- **ArduPilot sur l'Air65 II : impossible.** Matrix 1S 5IN1 II = **STM32G473CEU6**, 512 KB de
+  flash, **pas de baro**. ArduPilot n'a aucune cible ArduCopter sur G4 (le G4 n'existe chez eux
+  que pour AP_Periph). Et c'est tant mieux : Betaflight en ACRO donne l'interface CTBR brute,
+  meilleure pour une politique apprise.
+- **MAVLink en profondeur** : dialecte `argos.xml` + `ARGOS_TARGET`, généré en Python **et** en C
+  depuis la même source (`mavgen --lang=Python` / `--lang=C`), plus un panneau console qui fait
+  **inspecteur ET composeur** (montant : ID/nom/Hz/champs/hexa ; descendant : formulaire →
+  message → `COMMAND_ACK`) — un outil qui couvre les deux sens plutôt que deux demi-outils.
+- **Écarté : le debugging comme artefact de portfolio.** Position de Victor, et elle est juste :
+  c'est une ligne de CV et de la matière d'entretien. Un projet qui montre une capacité réelle
+  implique ces phases par construction ; en faire un livrable séparé signale que c'est le point
+  haut.
+
+**Prochain pas :** sortir le drone de la saturation de poussée, et en parallèle — sans aucune
+dépendance matérielle — `GUIDED_NOGPS` en SITL.
+
+### Contre-vérification (même jour) — trois corrections
+
+**1. `GUIDED_NOGPS` n'était pas dans le firmware.** `minimize_common.inc:115` :
+`define MODE_GUIDED_NOGPS_ENABLED 0`. Exactement le piège FlowHold, sur la brique centrale du
+Groupe 1 : le drone aurait été flashé, emmené sur un terrain, et le mode 20 n'aurait pas existé
+dans la liste. Corrigé dans le hwdef `SpeedyBeeF405Mini` (recette `undef` puis `define`, cf. le
+piège « le premier define gagne silencieusement »), rebuild vérifié : **9 symboles
+`ModeGuidedNoGPS`, coût 288 B, 124 440 B libres** — le mode réutilise le contrôleur d'angle de
+Guided qui était déjà là.
+
+Nuance qui aggrave le piège : le handler MAVLink n'est **pas** gardé par
+`MODE_GUIDED_NOGPS_ENABLED` mais par `#if MODE_GUIDED_ENABLED`
+(`GCS_MAVLink_Copter.cpp:889` et `:1181`). Le point d'entrée `SET_ATTITUDE_TARGET` aurait donc
+répondu normalement pendant que le mode manquait → paquets acceptés et silencieusement ignorés.
+Vérifié présent dans le binaire : `handle_message_set_attitude_target` et
+`set_attitude_target_provides_thrust`. **Le SITL construit tout, donc développer la loi en SITL
+n'aurait rien révélé — la divergence n'apparaît qu'au flash.** Argument de plus pour le HITL.
+
+**2. Erreur corrigée dans `PORTFOLIO.md` : CTBR ≠ attitude.** J'avais écrit que `GUID_OPTIONS`
+bit 3 donnait « l'espace d'action attitude + poussée, le même que Betaflight en ACRO ». Faux :
+**ACRO est du rate**, et le bit 3 ne change que la sémantique de la poussée, jamais celle de
+l'attitude — c'est le `type_mask` qui décide angle vs rate. Le mode 20 expose en fait **trois
+barreaux** : (1) quaternion + bit 0 = attitude + alt-hold baro ; (2) quaternion + bit 1 =
+attitude + poussée ; (3) `ATTITUDE_IGNORE` + les 3 rates + bit 1 = **CTBR**, l'espace des papiers
+de RL. Preuve au niveau de l'appel (`mode_guided.cpp:1025-1036`) : `attitude_quat.is_zero()` →
+`input_rate_bf_roll_pitch_yaw_rads()`, sinon `input_quaternion()`.
+
+Conséquence d'architecture, actée : **typer `VehicleBackend` au niveau CTBR** (plus petit
+dénominateur commun) et faire de l'attitude une couche de confort au-dessus. Typée en attitude,
+l'interface serait inadaptée à ACRO et une politique CTBR ne pourrait pas s'y brancher.
+
+**3. Piège découvert au passage — le timeout du contrôleur d'angle.**
+`angle_control_run()` (`mode_guided.cpp:983-993`) : sans mise à jour pendant `GUID_TIMEOUT`
+(`MAX(g2.guided_timeout, 0.1) × 1000` ms), il remet l'attitude à plat au cap courant, annule les
+rates **et force `use_thrust = false`**. Une politique CTBR dont la boucle bégaie **retombe
+silencieusement du barreau 3 au barreau 1** — deux régimes de contrôle, aucun message. Filet de
+sécurité utile, mais à régler bas (0,2-0,5 s) et à logger.
+
+**Autres trous du build minimisé, repérés sur le chemin critique :**
+`HAL_GYROFFT_ENABLED 0` → **`INS_HNTCH_MODE=4` (FFT en vol) n'existe pas**, ce qui touche
+directement l'étape 7 de `plan_correction_poussee.md` : il reste `MODE=1` (piloté par les gaz)
+ou `MODE=3` (télémétrie ESC, peu probable avec un UART RX-only et du BLHeli_S stock).
+`MODE_SYSTEMID_ENABLED 0` → pas de balayage fréquentiel (optionnel, mais c'est ce qui produirait
+une vraie identification chiffrée plutôt qu'un Autotune boîte noire).
+`AP_RC_CHANNEL_AUX_FUNCTION_STRINGS_ENABLED 0` → pas de chaîne de confirmation en clair sur les
+`RCx_OPTION` ; ne pas lire ce silence comme un échec.
+
+**Piège de terrain :** `ModeGuidedNoGPS::requires_position()` renvoie `false` (`mode.h:1278`),
+donc pas de blocage EKF — mais il hérite de `ModeGuided::allows_arming()` =
+`option_is_enabled(AllowArmingFromTX)` = **`GUID_OPTIONS` bit 0** (`mode_guided.cpp:126`). Donc
+armer en Stabilize puis basculer (le plus propre), ou poser le bit 0. Et le mode doit être
+atteignable : `FLTMODE` occupés par 0/2/9 → basculer par `SET_MODE` depuis le companion.
+
+**Lien de commande whoop — inconnue levée :** la Pocket expose un **DSC 3,5 mm TRS** *et* une
+**baie nano 8 broches**. Voie à 0 € (ESP32-C3 déjà en stock → DSC → EdgeTX Trainer → ELRS interne)
+à tester en premier ; plafond **~45 Hz en PPM**, suffisant pour les barreaux 1-2, limitant pour du
+CTBR. La baie nano (~25 €, CRSF 250-500 Hz) devient un achat justifié par une mesure.
