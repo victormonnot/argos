@@ -59,25 +59,31 @@ def load(path, types):
     return arr, params
 
 
-def actuator_to_thrust(actuator, spin_min, spin_max, expo):
+def actuator_to_thrust(actuator, spin_min, spin_max, expo, lift_max=1.0):
     """Inverse de AP_Motors_Thrust_Linearization::thrust_to_actuator().
 
-    thrust_to_actuator(t) = spin_min + (spin_max - spin_min) * r(t)
-    avec r(t) = (-(1-e) + sqrt((1-e)^2 + 4*e*t)) / (2*e)
-    (lift_max = 1 tant que MOT_BAT_VOLT_MAX = 0, i.e. pas de compensation tension)
+    thrust_to_actuator(t) = spin_min + (spin_max - spin_min) * r(t) * comp_gain
+    avec r(t)     = (-(1-e) + sqrt((1-e)^2 + 4*e*lift_max*t)) / (2*e)
+    et   comp_gain = 1 / lift_max
+
+    lift_max vaut 1 tant que MOT_BAT_VOLT_MAX = 0 (pas de compensation de tension).
+    Dès que la compensation est active, lift_max varie avec la tension batterie —
+    on le lit alors dans MOTB.LiftMax plutôt que de le supposer.
     """
-    r = (actuator - spin_min) / max(spin_max - spin_min, 1e-9)
+    lift_max = max(lift_max, 1e-6)
+    r = (actuator - spin_min) / max(spin_max - spin_min, 1e-9) * lift_max
     if abs(expo) < 1e-6:
-        return r
-    return ((2 * expo * r + (1 - expo)) ** 2 - (1 - expo) ** 2) / (4 * expo)
+        return r / lift_max
+    return ((2 * expo * r + (1 - expo)) ** 2 - (1 - expo) ** 2) / (4 * expo * lift_max)
 
 
-def thrust_to_actuator(thrust, spin_min, spin_max, expo):
+def thrust_to_actuator(thrust, spin_min, spin_max, expo, lift_max=1.0):
+    lift_max = max(lift_max, 1e-6)
     if abs(expo) < 1e-6:
-        r = thrust
+        r = thrust * lift_max
     else:
-        r = (-(1 - expo) + np.sqrt((1 - expo) ** 2 + 4 * expo * thrust)) / (2 * expo)
-    return spin_min + (spin_max - spin_min) * r
+        r = (-(1 - expo) + np.sqrt((1 - expo) ** 2 + 4 * expo * lift_max * thrust)) / (2 * expo)
+    return spin_min + (spin_max - spin_min) * r / lift_max
 
 
 def find_hover(d):
@@ -120,7 +126,17 @@ def main(path, t0=None, t1=None):
     mot = np.vstack([d['RCOU'][f'C{i}'] for i in (1, 2, 3, 4)])[:, k]
     hover_us = mot.mean()
     actuator = (hover_us - 1000.0) / 1000.0
-    thrust = actuator_to_thrust(actuator, spin_min, spin_max, expo)
+
+    # compensation de tension : lift_max = 1 si MOT_BAT_VOLT_MAX = 0, sinon lu dans MOTB
+    lift_max = 1.0
+    if d['MOTB'] and 'LiftMax' in d['MOTB']:
+        tm_all = d['MOTB']['TimeUS'] / 1e6
+        km_all = (tm_all >= t0) & (tm_all <= t1)
+        if km_all.sum():
+            lm = np.nanmean(d['MOTB']['LiftMax'][km_all])
+            if np.isfinite(lm) and lm > 0:
+                lift_max = float(lm)
+    thrust = actuator_to_thrust(actuator, spin_min, spin_max, expo, lift_max)
 
     print(f"\n--- paramètres moteurs ---")
     print(f"  MOT_SPIN_ARM  = {spin_arm:.3f}  ({1000+1000*spin_arm:.0f} us)")
@@ -128,6 +144,9 @@ def main(path, t0=None, t1=None):
     print(f"  MOT_SPIN_MAX  = {spin_max:.3f}  ({1000+1000*spin_max:.0f} us)  <- poussée « pleine » du modèle")
     print(f"  MOT_THST_EXPO = {expo:.3f}")
     print(f"  MOT_THST_HOVER= {thst_hover:.3f}  (ce que le firmware CROIT)")
+    print(f"  MOT_BAT_VOLT_MAX/MIN = {P.get('MOT_BAT_VOLT_MAX', 0):.2f} / {P.get('MOT_BAT_VOLT_MIN', 0):.2f}"
+          f"   -> lift_max mesuré = {lift_max:.3f}"
+          + ("  (compensation de tension INACTIVE)" if lift_max == 1.0 else "  (compensation ACTIVE)"))
 
     print(f"\n--- mesure ---")
     print(f"  sortie moteur au hover      : {hover_us:.0f} us   (min {mot.min():.0f} / max {mot.max():.0f})")
@@ -166,7 +185,7 @@ def main(path, t0=None, t1=None):
         print(f"    dans cet état ne sert à rien — corriger d'abord la plage de poussée.")
 
     if thrust < THRUST_HOVER_TARGET:
-        target_act = thrust_to_actuator(THRUST_HOVER_TARGET, 0.0, 1.0, expo)
+        target_act = thrust_to_actuator(THRUST_HOVER_TARGET, 0.0, 1.0, expo, lift_max)
         new_max = spin_min + (actuator - spin_min) / max(target_act, 1e-9)
         print(f"\n--- pour ramener le hover à {THRUST_HOVER_TARGET:.2f} (à MOT_SPIN_MIN={spin_min:.3f} inchangé) ---")
         print(f"  MOT_SPIN_MAX ≈ {new_max:.3f}  ({1000+1000*new_max:.0f} us de sortie max)")
