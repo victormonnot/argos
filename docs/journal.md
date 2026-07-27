@@ -1302,3 +1302,147 @@ atteignable : `FLTMODE` occupés par 0/2/9 → basculer par `SET_MODE` depuis le
 **baie nano 8 broches**. Voie à 0 € (ESP32-C3 déjà en stock → DSC → EdgeTX Trainer → ELRS interne)
 à tester en premier ; plafond **~45 Hz en PPM**, suffisant pour les barreaux 1-2, limitant pour du
 CTBR. La baie nano (~25 €, CRSF 250-500 Hz) devient un achat justifié par une mesure.
+
+## 2026-07-27 — Correction de la plage de poussée : le drone devient pilotable, et une 2e cause apparaît
+
+Journée d'itération rapide (5 vols, params + log relus à chaque fois). Le plan du 25/07 a été
+appliqué ; il a marché sur ce qu'il visait, et il a démasqué un problème indépendant.
+
+### Ce qui a été fait
+
+1. **MP → Initial Tune Parameters**, hélice **3,5"** (champ « Aircrew size in inch » = *Airscrew*,
+   coquille de MP). Piège rencontré : MP tourne en locale FR, `ConvertToDouble` plante sur
+   « 3.5 » → **il faut taper « 3,5 » avec une virgule**. Ce bloc a posé les FILTRES
+   (`INS_GYRO_FILTER` 20→101, `ATC_RAT_*_FLTD/FLTT` 20→50,5, `INS_ACCEL_FILTER` 20→10),
+   `MOT_THST_EXPO` 0,65→0,43, la compensation de tension (`MOT_BAT_VOLT_MAX/MIN` 16,8/13,2)
+   et les seuils batterie. **Il n'a PAS touché aux gains PID** — point important pour la suite.
+2. **Calibration `MOT_SPIN_ARM` = 0,03 / `MOT_SPIN_MIN` = 0,05** (les moteurs démarrent dès 1 %
+   au banc, mais on choisit la fiabilité : le BLHeli_S commute mal à très bas régime, et la
+   sensibilité de la poussée de hover entre 0,02 et 0,06 est négligeable — c'est le plafond
+   `MOT_SPIN_MAX` qui ferait le gros du travail, pas le plancher).
+3. `MOT_THST_HOVER` réglé sur la valeur **mesurée** (0,179).
+
+### Résultat : la saturation du mélangeur est bien la cause du gros wobble
+
+Comparaison sur hover stabilisé (log 14-07-40 du 24/07 vs 14-20-00 du 27/07) :
+
+| | avant | après |
+|---|---|---|
+| erreur d'assiette roulis (std / moyenne) | 5,13° / **+5,96°** | **0,82° / +0,67°** |
+| erreur tangage | 3,03° / +8,03° | **0,46° / +1,87°** |
+| poussée de hover | 0,052 | **0,178** (> plancher dur 0,125) |
+| manche des gaz au hover | 6 % | **46 %** |
+| gaz demandés → appliqués | ×2,4 | **×1,0** |
+| intégrateur tangage | 0,0007 (gelé) | 0,0035 (il travaille) |
+| mélangeur saturé | 99,4 % | 78,5 % |
+
+Victor : « première fois que je peux le faire voler stable dans ma chambre, c'était impossible
+avant ». Le shaking lent a disparu, remplacé par une vibration rapide. **`MOT_SPIN_MAX` n'a
+finalement PAS été plafonné** : l'objectif (sortir du plancher 0,125) était atteint, et la
+saturation résiduelle venait d'ailleurs (voir plus bas).
+
+### Incident : montée au plafond → `MOT_THST_HOVER` écrit à 0,6864
+
+Entre deux vols, `MOT_THST_HOVER` s'est retrouvé à **0,6864** = le maximum du firmware
+(`AP_MOTORS_THST_HOVER_MAX` = 0,6875), soit **3,9× le hover réel**. Preuve que ce n'est pas un
+apprentissage : `CTUN.ThH` était **plat à 0,2000 pendant tout le vol précédent** et déjà à
+0,6864 au boot du suivant → écrit au clavier. Suspect n°1 : le séparateur décimal encore
+(« 0.18 » avalé comme « 18 », puis écrêté et sauvegardé par le firmware).
+
+Double effet, tous les deux vers le haut : la **courbe de manche** devient ~1,5× plus raide
+(hover à 10 % de manche au lieu de 46 %) et le **plancher du mélangeur** repasse au-dessus de
+la commande (`ThO 0,113 → ThrOut 0,165`, ×1,46). En chambre → plafond.
+**Leçon : relire toute valeur écrite dans MP sur cette machine.**
+
+Le refus d'armement qui a suivi n'était pas une panne : `PreArm: Battery 1 below minimum
+arming voltage`, `BATT_ARM_VOLT` = 14,7 posé par Initial Tune. Idem l'atterrissage
+automatique du vol suivant : `Battery 1 is low 14.27V used 65 mAh` → Battery Failsafe → RTL et
+Smart RTL refusés (pas de position en intérieur) → repli sur LAND (`BATT_FS_LOW_ACT`=3).
+**Les packs sont fatigués : 14,27 V après 65 mAh sur un 850 mAh.** Devenu le facteur limitant
+(vols de 20 s = fenêtres d'analyse trop courtes).
+
+### La FFT enfin propre : 15,5 Hz, et ce n'est ni le bruit moteur ni le tune
+
+`INS_LOG_BAT_MASK=1` + `INS_LOG_BAT_OPT=1` (**bit 0 = cadence CAPTEUR ~989 Hz**, pas la cadence
+de boucle : à 400 Hz, Nyquist 200 Hz, on aurait réaliasé la fondamentale moteur à ~250 Hz).
+Deux corrections à mes conseils antérieurs, vérifiées dans le source : retirer `NTUN` ne
+supprime pas les messages EKF (il ne gate que `PSCD`), et `ATTITUDE_FAST` **augmente** le log
+EKF (10 → 25 Hz).
+
+| | gyro | accéléro |
+|---|---|---|
+| roulis (X) | rms 1,15 rad/s, **96 % dans 15-30 Hz, pic 15,5 Hz** | 48 % dans 120-250 Hz, pics **238-268 Hz** |
+| tangage (Y) | rms 0,23 | idem bande moteur |
+| lacet (Z) | rms 0,29 | idem |
+
+Conséquences :
+- La fondamentale hélice (238-268 Hz) sature l'accéléro mais **le gyro n'en voit que 0,2 %** :
+  `INS_GYRO_FILTER=101 Hz` fait son travail. → **Le notch harmonique ne sert à rien ici**,
+  étape rayée du plan.
+- Les 15,5 Hz sont **dans le gyro et quasi absents de l'accéléro** (0,5 % en 15-30 Hz) →
+  rotation pure, sans translation.
+- **Spécificité roulis : gyro X 1,15 contre Y 0,23 et Z 0,29 (×5).**
+
+### Erreur d'analyse, puis réfutation (2 itérations)
+
+Après avoir divisé le D par 2 (0,0036→0,0018), le gyro roulis a baissé de 25 % et j'en ai
+conclu « fréquence figée + amplitude qui suit le gain = c'est la boucle ». **C'était faux** :
+ce −25 % était un artefact (autre batterie, fenêtre de 20 s). Le vol suivant l'a réfuté.
+
+| | D=0,0036 P=0,135 | D=0,0018 P=0,135 | D=0,0009 P=0,09 |
+|---|---|---|---|
+| gain de boucle à 15,5 Hz | 0,486 | 0,310 | **0,178** (−63 %) |
+| terme D (sortie PID) | 0,3768 | 0,2619 | **0,0740** (÷5) |
+| écart moteur instantané | 474 µs | 394 µs | **99 µs** (÷4,8) |
+| **gyro roulis rms en vol** | 1,293 | 1,184 | **1,416** |
+| **gyro roulis max** | 1,749 | 1,647 | **1,751** |
+| **fréquence** | 15,6 Hz | 16,4 Hz | **15,5 Hz** |
+| erreur d'assiette roulis | 1,43° | 1,18° | 1,31° |
+
+**La commande moteur a été divisée par 5 sans le moindre effet sur le gyro.** Ce n'est pas la
+boucle. Une fréquence insensible à un facteur 3 sur le D et 1,5 sur le P est une **résonance
+mécanique**. Les gains actuels (P=I=0,09, D=0,0009) sont bons et gardés : même erreur
+d'assiette qu'à l'origine pour une commande 5× plus douce.
+
+### Ce n'est pas le gyro non plus
+
+Test tiré du même log — amplitude de la raie 13-19 Hz du gyro roulis selon le régime :
+
+| moteurs | amplitude |
+|---|---|
+| **arrêtés (désarmé)** | **0,013 rad/s** |
+| ralenti | 0,0007 |
+| proche hover | **1,292** (×100) |
+
+Absente moteurs coupés → **capteur sain, excitation mécanique réelle**.
+
+### État et prochaine étape
+
+Deux candidats que le log ne départage pas — j'avais affirmé « c'est la FC », Victor a
+objecté à raison qu'il avait vérifié la visserie avant/après les vols extérieurs, donc **la
+résonance existait AVEC les écrous en place** (ils ont été retrouvés manquants après le
+dernier vol : conséquence plausible, pas cause) :
+1. **la FC sur ses silentblocs** ;
+2. **la batterie sur sa sangle** — montée en longueur sur le dessus, ~1/3 de la masse, libre de
+   basculer latéralement = axe de roulis, ce qui collerait avec la spécificité roulis.
+
+Correction de raisonnement à noter : mon argument « les moteurs bougent 5× moins donc la
+cellule ne peut pas rouler, donc c'est la carte » est incomplet. Il élimine un roulis *piloté
+par les hélices*, mais **une masse interne qui oscille applique un couple de réaction sans
+aucune commande moteur** et produit la même signature.
+
+**Prochain test : essai modal, sans voler.** `LOG_DISARMED=1`, drone sous tension sur la table,
+hélices démontées, pichenette sèche successivement sur la batterie, la stack, puis chaque
+bras, 5 s entre chaque. Chaque structure sonne à sa fréquence propre → on lit le spectre
+autour de chaque impact et on identifie celle qui résonne à 15,5 Hz. Gratuit, sans risque, et
+ça ne consomme pas de batterie (devenue le facteur limitant).
+
+Ensuite seulement : Autotune — surtout pas avant, il calerait ses gains sur un gyro qui ment.
+
+**Leçons de méthode.** (1) Vérifier la cadence d'échantillonnage avant de croire une
+fréquence : le « 0,7 Hz » de départ était un repliement d'ATT loggé à 10 Hz, la vraie valeur
+est 15,5 Hz — et mon estimation par calcul de repliement sur le log du 24/07 donnait 15,4 Hz,
+donc la résonance est bien là depuis le début. (2) Un delta de 25 % sur une seule mesure, avec
+deux conditions expérimentales différentes, ne prouve rien : il fallait le troisième point
+pour réfuter. (3) Faire varier le gain d'un facteur 3 et regarder si la fréquence bouge est le
+test le plus discriminant entre « boucle » et « mécanique ».
