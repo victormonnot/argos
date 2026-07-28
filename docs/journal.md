@@ -1515,3 +1515,59 @@ perception qui est le cœur d'ARGOS.
 collectées peuvent dire. Les trois invariances étaient dans les logs depuis le 27/07 — faire
 varier une grandeur et vérifier si la fréquence suit est plus discriminant qu'un essai modal
 mal instrumenté.
+
+## 2026-07-28 (clôture) — Pause hardware forcée, bascule sur SITL
+
+**Blocage mécanique** : les pas de vis de la plaque supérieure du cadre sont morts → pas d'accès
+à la stack → impossible de remonter la visserie de la FC, de remplacer les silentblocs par des
+entretoises rigides, ni de faire le test de masse ajoutée. **C'est le chemin critique**, et
+aucun vol supplémentaire ne peut apporter d'information tant qu'il n'est pas levé. Vols de
+diagnostic suspendus.
+
+### État du drone à la mise en pause
+
+| | 24/07 | à la pause |
+|---|---|---|
+| erreur d'assiette roulis (std) | 5,13° | **1,31°** |
+| dérive | permanente, direction variable | **supprimée** (intégrateurs libérés) |
+| manche des gaz au hover | 6 % de course | **47 %** |
+| AltHold | structurellement impossible | **débloqué** |
+| commande moteur | butée 1050↔1550 | **÷5** |
+| poussée de hover | 0,052 | 0,173 (`MOT_THST_HOVER`=0,179, ×1,0) |
+
+**Reste une seule anomalie** : résonance mécanique **15,44 Hz** (σ=0,00), axe de roulis,
+amplitude ±0,75° d'assiette. Éliminés par la mesure : boucle de commande (gain ÷3 sans effet),
+gyro (raie absente moteurs coupés, ×100 entre arrêt et hover), balourd et battement moteurs
+(fréquence insensible à un balayage 235→256 Hz de la fondamentale), **batterie** (fréquence
+inchangée alors que la rotation à 90° change massivement l'inertie de roulis), câbles/RX/VTX
+(argument de moment cinétique : un câble de 3 g à 5 cm oscillant de ±2 mm à 15 Hz manque d'un
+facteur ~50 pour produire 75 °/s sur 300 g).
+
+**Suspect restant : la stack sur son montage souple.** Argument décisif — une pièce qui *porte
+l'IMU* n'a besoin de faire tourner qu'elle-même de ±0,75° pour saturer le gyro, alors que
+n'importe quelle autre masse devrait secouer tout le drone. Cohérent avec 96 % de l'énergie
+dans le gyro contre ~1 % dans l'accéléro, et avec les écrous de stack retrouvés manquants.
+**Test à faire dès l'accès rétabli** : scotcher quelques grammes sur la stack → si la fréquence
+descend, c'est elle (même logique que celle qui a éliminé la batterie).
+
+Note : l'orientation batterie **en travers** fait tomber la résonance de 100 % à **5 % du
+temps** (amplitude ÷10) sans déplacer la fréquence — donc ce n'est pas la cause, mais c'est un
+état de vol exploitable en attendant.
+
+**Reliquats à traiter à la reprise** : `AHRS_TRIM` toujours à zéro (le `SAVE_TRIM` posé sur
+RC7_OPTION=5 n'a jamais pu se déclencher — il exige les gaz à zéro, donc inutilisable en vol ;
+utiliser **`RC7_OPTION=182`** `AHRS_AUTO_TRIM`, vérifié compilé dans le binaire) ; CG encore
+reculé de 34 µs d'écart moteur (avancer la batterie de 5-10 mm, cible < 10 µs) ;
+`LOG_BITMASK=136954` avant tout nouveau vol de diagnostic.
+
+### Suite : SITL, barreaux 1 et 2 de l'échelle GPS-denied
+
+Le chapitre flow (`docs/ekf_flow_fusion.md`) a ses deux premiers barreaux réalisables **sans
+aucun matériel** : (1) flow natif SITL — valider la fusion `EK3_SRC1_VELXY=5`, FlowHold, et la
+lecture des innovations ; (2) SITL + script d'injection `OPTICAL_FLOW` en MAVLink2 — c'est
+exactement l'interface qu'utilisera le Pi, et c'est là que se maîtrisent cadence d'envoi,
+timestamps et gestion de `quality`. Barreau 3 (caméra Gazebo + vrai algo) accessible aussi,
+l'infra Gazebo tourne déjà.
+
+**Action parallèle** : commander la liste §9 du doc flow (~110 €, TFmini-S + Arducam OV9281 +
+Pi Zero 2W) en même temps que les pièces de cadre, pour que la pause serve à quelque chose.
