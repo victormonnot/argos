@@ -1446,3 +1446,72 @@ donc la résonance est bien là depuis le début. (2) Un delta de 25 % sur une s
 deux conditions expérimentales différentes, ne prouve rien : il fallait le troisième point
 pour réfuter. (3) Faire varier le gain d'un facteur 3 et regarder si la fréquence bouge est le
 test le plus discriminant entre « boucle » et « mécanique ».
+
+## 2026-07-28 — La résonance est structurelle : trois invariances, et l'essai modal qui rate
+
+Suite du 27/07. Objectif : départager « FC sur silentblocs » vs « batterie sur sangle ».
+
+### L'essai modal (pichenettes) : raté, et pourquoi
+
+Deux échecs d'instrumentation avant même d'avoir des données :
+
+1. **`LOG_DISARMED` mis à 1 *après* l'effacement de la puce, sans reboot.** Sur le backend
+   `AP_Logger_Block` (puce SPI), un nouveau log ne s'ouvre que sur `new_log_pending` —
+   c'est-à-dire à l'armement, après un effacement, ou au boot. Basculer le paramètre en cours
+   de session ne rouvre rien. Le drone n'ayant jamais été armé, **zéro octet écrit**.
+   → `LOG_DISARMED` exige un **redémarrage de la FC** pour prendre effet ici.
+2. **« Chip full, logging stopped » puis « PreArm: Logging failed ».** Avec `LOG_DISARMED=1`
+   *et* l'échantillonneur par lots à 989 Hz, la FC écrit ~27 ko/s **en permanence dès la mise
+   sous tension**, désarmée : les 8 Mo se remplissent en **~5 minutes**, avant même le début du
+   test. Parade : `LOG_BITMASK=136954` (sans GPS/compas/caméra/optflow/CMD) → ~7 ko/s, soit
+   ~20 min d'autonomie de puce. Et le nouveau log apparaît daté **1970/1980** (pas de pile
+   RTC) : prendre le **numéro le plus élevé**, jamais la date.
+
+Le log finalement obtenu (437 s, désarmé) ne montre **aucun impact exploitable** : le sampler
+n'écoute que **45 % du temps** (189 lots de 1,04 s, ~1,2 s de trou entre chaque) et l'énergie
+des pichenettes est **~100× sous** l'oscillation en vol (rms max 0,0155 rad/s contre 1,3 en
+vol). Les 3 seuls événements notables résonnent à 8,7 / 32,8 / 96,6 Hz — pas de 15,5 Hz.
+**Victor avait exprimé des doutes sur ce test : ils étaient fondés.**
+
+### Ce qui a tranché : les invariances, sur les logs déjà en main
+
+Plutôt que de renvoyer au banc, exploitation des logs existants.
+
+| on fait varier | facteur | fréquence de la raie gyro |
+|---|---|---|
+| gain de boucle (P, D) | ÷3 sur D, ÷1,5 sur P | **inchangée** |
+| régime moteur (fondamentale accéléro 235→256 Hz) | ±4 % | **inchangée, ±1,5 %** |
+| vols successifs (3 jours, params différents) | — | 15,44 / 15,83 / 16,22 Hz |
+
+La fondamentale hélice balaie 235-256 Hz pendant que la raie gyro reste à 15,45-15,93 Hz.
+→ **résonance structurelle à fréquence fixe (~15,7 Hz), excitée large bande par les rotors.**
+Élimine définitivement : la boucle de commande, le gyro (raie absente moteurs coupés, ×100
+entre arrêt et hover), le balourd et le battement entre moteurs (les deux suivraient le régime).
+
+**Indice sur le coupable** : dans le dernier vol — celui après lequel les écrous de la stack
+ont été trouvés manquants — la fréquence est de **15,44 Hz avec un écart-type de 0,00 Hz**
+(tous les lots dans le même bin FFT), et n'a pas bougé de plus de 5 % vs les vols précédents.
+Perdre deux écrous ramollit fortement le montage : si la stack était la masse résonante, la
+fréquence aurait chuté bien davantage. **Oriente vers la batterie plutôt que vers la FC** —
+mais l'instant exact de la perte des écrous est inconnu, donc non conclusif.
+
+### Prochaine étape : test différentiel, 2 vols de 30 s
+
+Principe : ne pas chercher à *réparer*, mais à **changer la raideur d'un élément et voir si la
+fréquence se déplace**. Une résonance qui bouge quand on rigidifie X prouve que X est dedans.
+
+- **Vol A** : remonter les écrous de la stack (nécessaire de toute façon) → hover 30 s.
+- **Vol B** : bloquer la batterie (sangle serrée + cale de mousse dense ou double-face) → 30 s.
+
+Un seul changement par vol ; métrique = fréquence + amplitude de la raie 13-19 Hz du gyro X.
+
+**Enjeu** : 1,28 rad/s rms à 15,5 Hz = oscillation d'assiette de **±0,75°**. Le drone vole
+correctement (erreur d'assiette 1,3°, commande moteur ÷5, maniable), donc ce n'est plus
+bloquant pour le vol — mais ça l'est pour la suite : **l'Autotune se calerait sur un gyro
+pollué**, et surtout c'est **une vibration à 15 Hz sur la caméra**, donc sur la chaîne de
+perception qui est le cœur d'ARGOS.
+
+**Leçon de méthode** : quand un test dédié échoue, regarder d'abord ce que les données déjà
+collectées peuvent dire. Les trois invariances étaient dans les logs depuis le 27/07 — faire
+varier une grandeur et vérifier si la fréquence suit est plus discriminant qu'un essai modal
+mal instrumenté.
