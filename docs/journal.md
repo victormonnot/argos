@@ -1571,3 +1571,330 @@ l'infra Gazebo tourne déjà.
 
 **Action parallèle** : commander la liste §9 du doc flow (~110 €, TFmini-S + Arducam OV9281 +
 Pi Zero 2W) en même temps que les pièces de cadre, pour que la pause serve à quelque chose.
+
+## 2026-07-29 — Le modèle est renversé par le test du notch, puis arrêt du hardware
+
+Journée de mesures fines (spectres d'amplitude, log à 400 Hz, notch), qui a d'abord **confirmé**
+ma conclusion de la veille puis l'a **réfutée**. Détail complet et autoportant désormais dans
+**`docs/diagnostic_complet.md`** — le journal ne garde que le fil et les corrections.
+
+### Victor teste ma principale hypothèse, et elle tombe
+
+Il scotche fermement la FC vers le bas (raideur ≈ celle des boulons) → **aucune différence en
+vol**. Ma piste « il manque des écrous sur la stack » ne tient pas. Il objecte aussi, à raison,
+que la visserie était en place lors des premiers vols et que la résonance y était déjà.
+
+### La mesure qui manquait : des spectres d'AMPLITUDE, pas des rms
+
+J'avais raisonné jusque-là sur des rms par bande. En sortant les vraies amplitudes de sinusoïde
+sur le gyro brut (989 Hz) :
+
+```
+GYRO  à 15,47 Hz : X = 101,0 deg/s   Y = 2,06   Z = 14,3    -> X/Y = 49
+ACCEL à 15,47 Hz : X = 0,037 m/s2    Y = 0,577  Z = 0,231
+```
+
+Ce n'est pas « à dominante roulis », c'est un **roulis pur**. Amplitude angulaire **±1,04°**.
+
+**Deux calculs neufs, jamais faits jusque-là :**
+
+1. **Localisation de l'axe.** `|a_y| = θ·|g − r·ω²|` → l'axe passe à **~4 mm de la puce IMU**
+   (2,3 et 4,8 mm sur deux vols indépendants). Si c'était la cellule qui roulait, l'axe passerait
+   par son CG, 10-25 mm plus haut, et l'accéléro verrait 1,9-4,5 m/s² au lieu de 0,577.
+2. **Argument énergétique.** Faire rouler la cellule de ±1,04° à 15,4 Hz demanderait
+   180 rad/s² → 0,072 N·m → **61 g de différentiel PAR MOTEUR à 15 Hz**, sur un hover de 70 g
+   par moteur, avec une constante de temps moteur de 10-20 ms. **Impossible.**
+
+Même raisonnement pour les câbles/RX/VTX : un câble de 3 g à 5 cm oscillant de ±2 mm à 15 Hz
+manque d'un **facteur ~50** en moment cinétique. En revanche une pièce qui *porte l'IMU* n'a
+besoin de faire tourner qu'elle-même — d'où 96 % de l'énergie dans le gyro contre ~1 % dans
+l'accéléro.
+
+→ Conclusion posée : **c'est la carte/stack sur son montage souple, pas la cellule.**
+
+### Le trou de raisonnement, bouché : log à 400 Hz
+
+`RATE`/`PIDR` étaient loggés à 10 Hz — je n'avais **jamais pu voir** si la FC commandait du
+roulis à 15,4 Hz. Avec `LOG_BITMASK` bit 0 (`ATTITUDE_FAST`), 267-400 Hz :
+
+```
+prédiction depuis P=0,09 / D=0,0009 :  ROut = -(P + jωD)·R  ->  0,0578, phase -136°
+mesuré :                                                        0,0633, phase -151°
+```
+
+À 10 % près, la sortie de la FC est **exactement la réponse linéaire de ses PID**, et sa phase
+est majoritairement **opposée** au mouvement (composante en phase −0,87 = amortissante).
+J'en ai conclu — trop vite — que la boucle était innocentée.
+
+### Le notch renverse tout
+
+Notch fixe `MODE=0, FREQ=15, BW=8, ATT=30` :
+
+```
+                                     avant        avec notch
+RATE.R   à 15,4 Hz (vu du contrôleur)  26,4 deg/s -> 3,13
+ROut     à 15,4 Hz (commande)           0,0633    -> 0,0063
+GYRO BRUT à 15,4 Hz (physique)        101,0 deg/s -> 1,6      <- !!
+nouveau pic (gyro brut)                    —      -> 7,72 Hz = 340,7 deg/s
+```
+
+Vérifié dans le source que l'échantillonneur reçoit bien `raw_gyro` (le driver Invensensev3
+n'active pas le chemin « sensor rate », donc passage par `log_gyro_raw()` avec
+`!doing_post_filter_logging() ? raw_gyro : ...`). **Le notch n'agit que sur ce que voit le
+contrôleur, et pourtant la raie a disparu du mouvement physique.** Une résonance purement
+externe serait restée.
+
+→ **La boucle participe. Ma conclusion « purement mécanique » était fausse.**
+
+Effet secondaire : phase mangée dans la bande de la boucle → **instabilité à 8 Hz, amplitude
+3× plus grande** (le pilote la décrit comme « lente et beaucoup plus ample, pire en
+maniabilité »). Notch annulé.
+
+### Modèle retenu : couplage mode mécanique ↔ boucle
+
+```
+la carte bascule sur ses silentblocs (mode propre ~15,4 Hz)
+ -> le gyro boulonné dessus le rapporte comme une rotation de l'appareil
+    -> la FC commande les moteurs -> la cellule bouge
+       -> le mouvement se réinjecte dans le montage -> entretient le basculement
+```
+
+Il explique enfin **toutes** les observations qui se contredisaient : fréquence figée malgré
+÷3 sur D (fixée par le mode mécanique), amplitude peu sensible au gain (cycle limite), absence
+moteurs coupés, insensibilité au régime, axe à 4 mm de l'IMU, et surtout **l'essai « batterie
+en travers » (amplitude ÷10, fréquence inchangée, intermittent)** = gain de boucle passé
+marginalement sous 1. Ce n'était pas une anomalie inexplicable.
+
+**⚠ Contradiction non résolue** : le §5.7 (commande amortissante, purement linéaire) et le
+§5.6 (le notch tue la raie physique) ne se concilient pas proprement. Possible que lors de la
+mesure « avec notch » le drone ait été dans un état si différent (8 Hz, 340 deg/s) que le mode
+à 15,4 Hz n'était plus excité. **Consigné comme incertitude n°1 du diagnostic.**
+
+### Arrêt du hardware
+
+Notch adouci (`BW=4, ATT=15`) essayé : « rien changé » d'après le pilote, **non vérifié** —
+téléchargement à 0 octet. Cause identifiée : les deux logs précédents faisaient **8,1 Mo**
+chacun (puce pleine à chaque session à cause de l'échantillonneur), et tirer 8 Mo sur MAVLink
+échoue systématiquement.
+
+Décision : **on arrête les itérations logicielles.** Rendements décroissants — le mécanisme est
+compris, les deux remèdes (montage rigide, ou notch correctement dosé) demandent soit l'accès
+au cadre soit un réglage qui déstabilise à chaque essai, et chaque tentative coûte une
+batterie + un téléchargement raté. Retour au jeu de paramètres connu bon :
+
+```
+INS_HNTCH_ENABLE = 0    LOG_BITMASK = 136954    INS_LOG_BAT_MASK = 0
+```
+
+Le drone reste dans un état correct : vole, erreur d'assiette 1,31°, maniable, dérive
+supprimée. Reste une vibration comprise et non dangereuse.
+
+### Livrable
+
+**`docs/diagnostic_complet.md`** — diagnostic autoportant (487 lignes) : matériel, piège de
+l'échantillonnage, les deux problèmes avec mécanismes vérifiés dans le source, tableau des
+hypothèses éliminées **avec la mesure qui les élimine**, jeu de paramètres commenté, questions
+formulées pour un forum, et **§7 : neuf points d'incertitude explicites**. `diagnostic_wobble.md`
+marqué comme historique.
+
+À faire à la reprise, par ordre : extraire les vis foirées de la plaque supérieure → entretoises
+M3 rigides → vol de 30 s → si la raie disparaît, dossier clos ; sinon test de masse ajoutée.
+Et **peser le drone** : l'inertie de roulis du §5.3 est calculée depuis une masse jamais mesurée.
+
+**Leçons.** (1) Un rms par bande n'est pas une amplitude : les deux calculs décisifs (axe de
+rotation, énergie nécessaire) n'ont été possibles qu'en passant à des spectres d'amplitude.
+(2) Vérifier *où* un signal est prélevé dans le code avant d'interpréter sa disparition — c'est
+ce qui rend le test du notch concluant. (3) Une conclusion tenue deux jours peut tomber sur une
+seule mesure : il faut la chercher activement, pas attendre qu'elle arrive.
+
+## 2026-07-29 (soir) — Poids latéraux : la fréquence ne bouge pas, l'intermittence se mesure enfin
+
+Victor colle quelques grammes **sur les côtés de la batterie** (pour reproduire l'effet du
+montage en travers) et rapporte un vol nettement plus lisse. Trois vols analysés.
+
+### Une conclusion posée puis retirée dans l'heure
+
+Le premier log exploitable montrait la raie à **9,83 Hz avec rms 179 deg/s** au lieu de
+15,6 Hz / 76 deg/s. J'en ai conclu que la masse ajoutée **déplaçait la fréquence** (`f ∝ √(k/m)`),
+donc que **la batterie faisait partie du résonateur** — et j'ai annoncé que ça contredisait le
+diagnostic.
+
+**C'était faux.** Le vol suivant, **mêmes poids en place et instrumentation complète**
+(`LOG_BITMASK=136955` + échantillonneur), donne le gyro brut lot par lot :
+
+```
+15.50  15.50  15.49  15.49  15.49  15.48  15.48  15.48  15.48  15.47  15.47 Hz
+```
+
+**Fréquence rigoureusement inchangée.** L'épisode à 9,8 Hz était un **phénomène distinct**
+(oscillation lente et ample, plausiblement induite par le pilote), pas un décalage de la raie.
+La conclusion d'origine tient : ajouter de la masse latérale ne déplace pas la fréquence.
+
+### Ce que ce vol apporte vraiment : l'intermittence, quantifiée
+
+À **fréquence constante**, l'amplitude varie d'un facteur **30** dans un même vol :
+
+```
+t=33,7s   9,2 deg/s    <- calme
+t=36,2s   9,0
+t=38,3s  79,0          <- ça s'accroche
+t=40,5s  74,6
+t=42,9s  21,7
+t=49,8s   2,8          <- très calme
+t=58,9s  52,1          <- reprend juste avant l'atterrissage
+```
+
+Correspond exactement au récit du pilote, dernières secondes comprises. **Aucune corrélation
+propre trouvée avec la position ou la vitesse des gaz** : son hypothèse « ça ne vibre que quand
+le régime est stable » n'est ni confirmée ni infirmée.
+
+Conséquence méthodologique majeure, désormais écrite dans le diagnostic : **sur ce système,
+une mesure isolée ne prouve rien.** Toute comparaison avant/après doit porter sur plusieurs
+dizaines de secondes et sur la *fraction de temps en résonance*, jamais sur un seul lot FFT ni
+sur une impression ponctuelle.
+
+### Mises à jour de `docs/diagnostic_complet.md`
+
+- **§5.4** : colonne « solidité » ajoutée au tableau des invariances. Le test « masse ajoutée
+  latéralement » (11 lots, forte) remplace comme preuve principale le test « batterie en
+  travers » (**un seul lot, faible**).
+- **§5.4bis** (nouveau) : l'intermittence, avec les chiffres et la consigne de méthode.
+- **§7** : encadré d'avertissement en tête, listant **les trois conclusions que j'ai dû
+  retirer** au cours de l'enquête (« c'est le tune », « c'est purement mécanique, la boucle est
+  innocentée », « la masse ajoutée déplace la fréquence ») et leur cause commune : conclure sur
+  une mesure unique, alors que l'amplitude varie spontanément d'un facteur 30. Deux nouveaux
+  points d'incertitude (§7.2 l'élimination mal étayée de la batterie, §7.3 l'épisode à 9,8 Hz).
+  Liste portée à **11 incertitudes explicites**.
+
+### État
+
+Rien ne change côté paramètres ni côté plan : `INS_HNTCH_ENABLE=0`, gains inchangés, blocage
+toujours sur l'accès à la stack. Les poids latéraux semblent augmenter la fraction de temps
+calme — **non démontré**, faute d'un vol de référence dans les mêmes conditions.
+
+**Leçon.** Ce système punit sévèrement l'inférence sur échantillon unique. Trois de mes
+conclusions sont tombées pour cette raison exacte. La parade est écrite dans le diagnostic :
+comparer des fractions de temps sur des dizaines de secondes, pas des pics isolés.
+
+## 2026-07-29 (nuit) — RÉSOLU : la résonance était un cycle limite entretenu par la boucle
+
+Test des gains réduits (`ATC_RAT_RLL/PIT_P = I = 0,06`, `D = 0,0005`) évalué sur la **bonne
+métrique** — le pourcentage de temps en résonance, pas l'amplitude des pics. Résultat sans
+ambiguïté.
+
+| | avant (P=0,09 / D=0,0009) | **après (P=0,06 / D=0,0005)** |
+|---|---|---|
+| lots gyro bruts | 16 (36 s de vol) | **21 (51 s)** |
+| amplitude de la raie, moyenne | 43,2 deg/s | **1,7** |
+| amplitude, max | 109,4 deg/s | **3,5** |
+| **temps en résonance (>40 deg/s)** | **44 %** | **0 %** (0/21) |
+| rms `RATE.R` en vol | 50,2 deg/s | **10,6** |
+
+Pilote : « aucun shaking, ultra smooth de A à Z ». Amplitude ÷25 sur **plus** de données que la
+référence — ce n'est pas une fenêtre calme par chance.
+
+**Aucune contrepartie, tout s'améliore simultanément :**
+
+```
+erreur assiette roulis  : std 0,71° -> 0,40°   moy -0,31° -> -0,02°   max 3,0° -> 1,0°
+erreur assiette tangage : std 2,40° -> 1,76°
+mélangeur saturé        : 11 %  ->  0 %
+écart instantané moteurs: 276 us -> 126 us     (p95 578 -> 153)
+```
+
+Le suivi d'attitude est **meilleur** avec des gains plus faibles : l'oscillation consommait
+l'autorité de commande, la supprimer a libéré la boucle.
+
+### Conclusion sur le mécanisme
+
+Le modèle du couplage mode mécanique ↔ boucle (entrée du 29/07) est **confirmé**, et le côté
+« boucle » est le levier actionnable : le gain de boucle à 15,5 Hz était au-dessus du seuil
+d'auto-entretien, une baisse d'un tiers l'a fait passer dessous.
+
+Ça explique rétrospectivement mes fausses pistes : les deux baisses de gains précédentes
+(0,135→0,09 puis D÷4) **réduisaient le gain sans franchir le seuil**, et je mesurais
+l'*amplitude* — laquelle, dans un cycle limite, est fixée par la non-linéarité et pas par le
+gain. D'où « aucun effet » alors qu'on s'approchait du seuil. À P=0,09 le système était pile
+dessus, d'où l'intermittence à 44 %.
+
+**Et l'ordre des opérations était contraint** : au départ, baisser les gains n'aurait rien
+donné du tout, puisque la saturation du mélangeur les annulait mathématiquement
+(`rpy_scale = -throttle_avg_max / rpy_low`, cf. §4.3 du diagnostic). Il fallait réparer la
+plage de poussée pour que les gains **existent**, puis les régler.
+
+### Réserves
+
+- **Le mode mécanique à 15,5 Hz existe toujours**, on a seulement cessé de l'exciter. On est
+  sous le seuil, mais pas loin.
+- **Ne pas lancer l'Autotune tel quel** : son principe est de monter les gains jusqu'à la
+  limite — il retrouverait ce cycle limite et calerait dessus. Soit rigidifier d'abord le
+  montage de la stack, soit `AUTOTUNE_AGGR` bas avec le doigt sur l'interrupteur.
+- Un seul vol (51 s, 4 segments). À reconfirmer, idéalement en extérieur.
+- Les **poids latéraux** sur la batterie sont désormais une variable inutile à tester : les
+  retirer et refaire 60 s pour voir si le 0 % tient.
+
+### Jeu de paramètres qui marche
+
+```
+MOT_SPIN_ARM 0,03   MOT_SPIN_MIN 0,05   MOT_THST_EXPO 0,43   MOT_THST_HOVER 0,179
+INS_GYRO_FILTER 101   INS_ACCEL_FILTER 10   ATC_RAT_*_FLTD/FLTT 50,5
+ATC_RAT_RLL_P = I = 0,06   ATC_RAT_RLL_D = 0,0005      (idem PIT)
+INS_HNTCH_ENABLE 0
+```
+
+**Leçon centrale de toute l'enquête** : choisir la bonne métrique. Pendant une semaine j'ai
+évalué les changements de gains sur l'amplitude de l'oscillation — la seule grandeur qui, dans
+un cycle limite, n'en dépend pas. La métrique qui a tout débloqué (fraction de temps en
+résonance) n'est apparue qu'en mesurant l'intermittence.
+
+## 2026-07-29 (nuit, suite) — Récapitulatif des deux correctifs + effet de chaque paramètre
+
+Vol de confirmation **sans les masses latérales** sur la batterie : comportement identique,
+toujours zéro shaking (rapport pilote, log non téléchargé). Les masses étaient donc bien une
+variable inutile — elles servaient à tester une hypothèse abandonnée. Retirées.
+
+### Les deux correctifs, en clair
+
+**FIX 1 — plage de poussée.** Corrige gros wobble lent, dérive permanente, envolée AltHold,
+manche des gaz utilisable sur 6 % de sa course, lacet incohérent.
+
+```
+MOT_SPIN_ARM     0.10   ->  0.03
+MOT_SPIN_MIN     0.15   ->  0.05
+MOT_THST_EXPO    0.65   ->  0.43
+MOT_THST_HOVER   0.35   ->  0.179     <- valeur MESUREE
+```
+
+**FIX 2 — gain de boucle.** Corrige le petit shaking rapide à 15,5 Hz.
+
+```
+ATC_RAT_RLL_P = ATC_RAT_RLL_I    0.135  ->  0.06
+ATC_RAT_RLL_D                    0.0036 ->  0.0005
+ATC_RAT_PIT_P = ATC_RAT_PIT_I    0.135  ->  0.06
+ATC_RAT_PIT_D                    0.0036 ->  0.0005
+```
+
+L'ordre est contraint : tant que le mélangeur saturait, les gains étaient annulés
+mathématiquement (`rpy_scale = -throttle_avg_max / rpy_low`).
+
+### Nouveau §0bis du diagnostic : effet de chaque paramètre
+
+Ajouté à la demande de Victor, hors contexte vibration — pour qu'il puisse régler le feeling
+sans casser ce qui marche. Points clés consignés :
+
+- **Les gains PID ne changent pas la puissance.** Ils changent la *répartition* de la poussée
+  entre moteurs, rien d'autre. La puissance vient du matériel et de la plage
+  `MOT_SPIN_MIN`↔`MOT_SPIN_MAX`.
+- `ATC_RAT_*_P/I` ↑ = assiette plus ferme ; ↓ = drone qui flotte. **Plafond connu sur cet
+  appareil : ~0,09, au-dessus le cycle limite revient.**
+- `ATC_RAT_*_D` ↑ = moins de dépassement mais amplifie le bruit gyro (moteurs chauds).
+- **`ATC_ANG_*_P` (4,5, jamais touché) = le levier de toucher au manche**, et il agit à
+  ~0,7 Hz donc **le monter ne réveille pas la résonance à 15,5 Hz**. C'est le réglage de
+  feeling sans risque.
+- **Throttle trop sensible → `MOT_SPIN_MAX`** (0,95). Le passer à ~0,70 : sortie max plafonnée
+  à 1700 µs, ~25 % moins sensible, T/W de 5,6 à 4,3 (excès largement suffisant), et remonte la
+  poussée de hover donc la marge de contrôle. ⚠ **`MOT_THST_HOVER` ne doit JAMAIS servir de
+  réglage de feeling** — c'est une mesure, utilisée en feed-forward par le contrôleur
+  d'altitude ; la fausser ramène le problème n°1 (c'est exactement ce qui a envoyé le drone au
+  plafond quand elle s'est retrouvée à 0,6864). Après tout changement de `MOT_SPIN_MAX`,
+  re-mesurer avec `tools/thrust_range.py`.
