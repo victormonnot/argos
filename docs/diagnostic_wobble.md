@@ -1,5 +1,9 @@
 # ARGOS — Diagnostic vol : wobble + envolée AltHold (topo complet)
 
+> **⚠ DOCUMENT HISTORIQUE — remplacé par [`diagnostic_complet.md`](diagnostic_complet.md).**
+> Ce fichier retrace l'enquête telle qu'elle s'est déroulée jusqu'au 2026-07-25. Le diagnostic
+> à jour, autoportant et avec les incertitudes explicitées, est dans `diagnostic_complet.md`.
+>
 > **RÉSOLU le 2026-07-25 — voir §9. Les §6-§8 ci-dessous sont conservés comme historique
 > des hypothèses, mais elles sont FAUSSES.**
 >
