@@ -1898,3 +1898,22 @@ sans casser ce qui marche. Points clés consignés :
   d'altitude ; la fausser ramène le problème n°1 (c'est exactement ce qui a envoyé le drone au
   plafond quand elle s'est retrouvée à 0,6864). Après tout changement de `MOT_SPIN_MAX`,
   re-mesurer avec `tools/thrust_range.py`.
+
+## 2026-07-29 (fin) — Configuration validée sauvegardée dans le dépôt
+
+Création de **`config/`** avec les sauvegardes Mission Planner, copiées **telles quelles**
+(rechargeables directement par *Load from file*, intégrité vérifiée par `diff`) :
+
+- `argos-drone-2026-07-27-avant-corrections.param` — état d'usine, référence historique ;
+- **`argos-drone-2026-07-29.param`** — ✅ configuration de vol validée, les deux correctifs.
+
+`config/README.md` documente le contenu, la bascule mode vol ↔ mode diagnostic du logging, et
+les quatre avertissements (ne jamais fausser `MOT_THST_HOVER`, plafond `ATC_RAT_*_P ≈ 0,09`,
+précaution Autotune, `AHRS_TRIM` propre à cet assemblage).
+
+Note : `AHRS_TRIM_X/Y` valent **+0,25° / +1,32°** dans le fichier final, alors que le log
+analysé plus tôt donnait −1,60° / +3,75°. L'autotrim a donc été rejoué depuis, et a convergé
+vers une correction plus faible. **Le fichier fait foi**, pas les valeurs du log intermédiaire.
+
+Cette config n'existait jusqu'ici que dans la FC et sur le PC fixe — une semaine de mesures.
+Elle est maintenant versionnée.
