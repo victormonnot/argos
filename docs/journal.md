@@ -5,6 +5,45 @@ memory cement: interview material, build-in-public content, and my own notes.
 
 ---
 
+## 📍 ÉTAT COURANT — mis à jour 2026-08-02
+
+> Bloc réécrit à chaque session. Répond à « j'en suis où ? », pas à « que s'est-il passé ? ».
+> L'historique est plus bas, il ne bouge jamais.
+
+**Où j'en suis.** Le drone 3,5" **vole stable** (résonance résolue le 29/07 : cycle limite
+entretenu par la boucle, `ATC_RAT_RLL/PIT_P = I = 0,06`, `D = 0,0005` → 0 % de temps en
+résonance). Config validée versionnée dans `config/argos-drone-2026-07-29.param`. Chapitre
+hardware **clos** pour l'instant.
+
+**Prochaine action concrète.** `GUIDED_NOGPS` en SITL + Gazebo : loi d'attitude à partir de
+l'erreur pixel, garde sur la taille de bbox, cap relatif. 100 % logiciel, aucune dépendance
+matérielle. Détail dans `PORTFOLIO.md` §1.1 et §1.4.
+
+**Périmètre de la fin de l'ARGOS mono-drone** (arrêté le 02/08) : drone pilotable à la main →
+la station sol reçoit la vidéo + HUD → l'opérateur déclenche le hover autonome → il lock une
+cible → le drone l'engage en terminal guidance. En SITL, puis HITL, puis sur le 3,5", puis
+éventuellement sur le whoop. Le tout avec un dialecte MAVLink maison.
+
+**Décisions actées.**
+- **Tout le calcul se fait au sol**, sur le fixe (RTX 4060). Pas de calculateur embarqué,
+  pas d'achat. La liaison de commande passera par ESP32-C3 / DroneBridge.
+- **Aucun achat** sur ce projet → hover sur flow en version FlowHold (gratuite, baro pour la
+  hauteur) sur le vrai drone ; la fusion EKF3 complète (qui veut un télémètre ~25 €) reste
+  en simu.
+- **Ordre imposé : engagement d'abord, hover autonome ensuite.** Le hover est le morceau où
+  les projets s'enlisent ; il ne doit pas bloquer l'artefact montrable.
+
+**Blocages / points ouverts.**
+- ⚠ Le hwdef `SpeedyBeeF405Mini` du fork ArduPilot (`argos-custom`) est **stagé mais pas
+  commité**, et il n'est pas certain que la FC tourne un build contenant le mode 20
+  (`GUIDED_NOGPS`). À vérifier avant tout vol qui en dépend.
+- Mousse cellules ouvertes sur le baro DPS310 : prérequis avant de compter sur l'altitude
+  tenue par `thrust = 0.5`.
+- Le mode mécanique à 15,5 Hz existe toujours, on est sous le seuil d'excitation mais pas
+  loin → pas d'Autotune tel quel.
+
+---
+
 ## 2026-06-13 — Setup & first SITL flight
 
 - **SITL is the *real* firmware.** ArduCopter's actual C++ code, compiled for the
