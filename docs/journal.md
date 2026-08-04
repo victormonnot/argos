@@ -27,9 +27,11 @@ cible → le drone l'engage en terminal guidance. En SITL, puis HITL, puis sur l
 **Décisions actées.**
 - **Tout le calcul se fait au sol**, sur le fixe (RTX 4060). Pas de calculateur embarqué,
   pas d'achat. La liaison de commande passera par ESP32-C3 / DroneBridge.
-- **Aucun achat** sur ce projet → hover sur flow en version FlowHold (gratuite, baro pour la
-  hauteur) sur le vrai drone ; la fusion EKF3 complète (qui veut un télémètre ~25 €) reste
-  en simu.
+- **Aucun achat** sur ce projet. Conséquence corrigée le 02/08 au soir : **le hover en flow est
+  matériellement impossible sur le 3,5"** — EKF3 exige une caméra au nadir, la Phoenix2 regarde
+  devant, et il n'y a ni companion ni caméra nadir. Donc hover en flow **en simu uniquement** ;
+  sur le vrai drone, soit hover **au GPS** (le M10 marche, à recâbler en série seule sans DA/CL),
+  soit pas de hover autonome du tout. **Décision ouverte.**
 - **Ordre imposé : engagement d'abord, hover autonome ensuite.** Le hover est le morceau où
   les projets s'enlisent ; il ne doit pas bloquer l'artefact montrable.
 
