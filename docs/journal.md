@@ -1958,3 +1958,122 @@ vers une correction plus faible. **Le fichier fait foi**, pas les valeurs du log
 
 Cette config n'existait jusqu'ici que dans la FC et sur le PC fixe — une semaine de mesures.
 Elle est maintenant versionnée.
+
+## 2026-08-04 — `GUIDED_NOGPS` en SITL : la commande passe de la vitesse à l'attitude
+
+Réécriture de `_drone_thread` (`perception/console.py`). Avant : une consigne de **vitesse NED**
+(`SET_POSITION_TARGET_LOCAL_NED`) en GUIDED — donc une boucle de position, donc du GPS.
+Maintenant : **`SET_ATTITUDE_TARGET` en `GUIDED_NOGPS` (mode 20)**, `thrust = 0,5`,
+cap **relatif**. Zéro estimation de position dans la commande. Les points A et B du
+`PORTFOLIO.md` §1.5 ont été faits au passage, puisqu'on touchait la fonction.
+
+### Ce qui a été construit
+
+Un paquet `perception/control/`, trois couches qui ne se mélangent plus :
+
+| fichier | rôle | ce qu'il n'a PAS le droit de faire |
+|---|---|---|
+| `guidance.py` | erreur pixel + taille de bbox -> `AttitudeCmd` | importer MAVLink, OpenCV, un simulateur |
+| `gate.py` | **porte de sortie unique** : écrête, garde de proximité, émet | décider quoi que ce soit de métier |
+| `vehicle.py` / `mavlink_backend.py` | traduire | décider |
+
+`console.py` n'orchestre plus que ça. Le seul fichier du projet qui appelle `mav.*_send` pour
+piloter est `mavlink_backend.py` — le jour où le backend CRSF du whoop arrive, il se pose à
+côté sans toucher à la loi.
+
+**Interface typée au niveau CTBR** (§2.3) : `send_ctbr()` est la primitive, `send_attitude()`
+la couche de confort au-dessus. La loi écrite à la main consomme l'attitude ; une politique
+apprise consommera la primitive. `send_ctbr()` est écrit et masqué correctement, mais **pas
+encore exercé en vol** — il exige `GUID_OPTIONS` bit 3, qu'on laisse à 0.
+
+### Les deux difficultés du §1.1, et ce qu'on a mis en face
+
+1. **Pas de retour de vitesse → pas d'amortissement.** Un P pur sur l'erreur pixel oscille.
+   Le terme **D sur l'erreur pixel EST le retour de vitesse** — c'est la vision qui le fournit,
+   pas l'EKF. Filtré (passe-bas, τ = 0,25 s) et **gelé pendant un coast** : sans ça, la reprise
+   après un scintillement de détection produit un pic de dérivée.
+2. **Cap qui dérive → jamais de cap absolu.** `dyaw` est recalculé à partir du cap **mesuré**
+   à chaque encodage, et écrêté à 5°. Effet de bord qu'on n'avait pas prévu et qui est précieux :
+   le cap commandé reste par construction à quelques degrés du cap réel, **même sur un véhicule
+   qui ne suit pas son lacet** (l'iris Gazebo n'a pas de couple de lacet). Le repère de
+   l'attitude commandée ne peut donc pas diverger de celui du corps.
+
+### Le piège trouvé par le test, et qui n'était trouvable qu'en volant
+
+`sitl/nogps_engage_test.py` : cible virtuelle à position connue, caméra simulée, mais **vrai
+firmware et vrai code de vol**. Premier run — le drone a **survolé la cible** sans jamais freiner.
+
+Cause : la taille de bbox est plafonnée par la **géométrie**. Un drone à `alt` au-dessus d'une
+cible de hauteur `h` ne verra jamais mieux que
+
+    taille_max ≈ h / (2 · alt · tan(demi-champ vertical))
+
+soit **0,147** pour une personne à 12 m. Le seuil était à **0,34** → la garde ne pouvait
+littéralement **jamais** se déclencher. Aucun test unitaire ne trouve ça : la loi est correcte,
+c'est le *réglage* qui est inatteignable. `size_near` n'est pas une constante, c'est une
+**calibration liée à l'altitude de vol** — le test la mesure et la rapporte maintenant, et
+`/tune?near=` la règle en vol.
+
+Corrigé à `size_near = 0,12`. Deuxième run, engagement de 28,9 m :
+
+| | |
+|---|---|
+| portée | 28,9 m → 14,7 m, **freine et se stabilise** |
+| distance sol finale | 8,2 m, amplitude résiduelle **0,2 m** (aucune oscillation) |
+| erreur horizontale | 0,40 → **0,02** |
+| altitude | **11,9 – 12,0 m** sur 47 s, sans GPS dans la boucle |
+
+Note importante sur ce résultat : **la porte n'a jamais eu à intervenir en phase 1**
+(`blocked = 0`). C'est la *rampe* de la loi qui a freiné. La porte est un filet, pas le
+mécanisme — si elle se déclenche en suivi normal, c'est que la loi est mal réglée.
+
+### La porte de sortie (§1.5-A), prouvée sur firmware réel
+
+Le défaut de conception qu'on corrige : la garde stop-when-close était un `if` **dans** la
+branche de suivi ; la branche de vol manuel ne la traversait pas. **La sécurité ne couvrait que
+la moitié des chemins** — l'opérateur pouvait pousser le drone dans une cible que le suivi, lui,
+refusait d'approcher.
+
+Le test a une **phase 2** dédiée : l'opérateur pousse « avancer » à fond sur une cible déjà à
+distance de garde. Résultat : **105 commandes bloquées**, piqué max concédé **−0,0°**, distance
+sol jamais sous 7,6 m. Rejoué en live dans la console (`/tune?near=0.06` pour descendre le seuil
+sous la taille courante) : le HUD affiche `proximité (0.14)` et le piqué opérateur tombe à zéro.
+
+C'est aussi, littéralement, la couture où ORCA / CBF-QP se branchera en swarm : une fonction qui
+prend une commande désirée et en rend une sûre.
+
+### Autres corrections faites en route
+
+- **Un décollage raté était déclaré réussi.** L'ancien code posait `flying = True`
+  inconditionnellement. Vu en vrai pendant l'intégration : `mode = GUIDED_NOGPS`, 33 commandes
+  émises, `armed = false`, `alt = -0.0`. En mode 20 un `thrust = 0,5` sur un drone posé n'est
+  pas neutre (`angle_control_run()` teste `land_complete`). `_takeoff()` rend maintenant un
+  booléen ; s'il est faux, `flying` reste faux et **la porte refuse tout**.
+- **L'armement était demandé une seule fois.** `ARMING_CHECK = 0` ne couvre pas
+  `Need Position Estimate` : cette exigence vient du mode GUIDED lui-même, pas des pre-arm.
+  On redemande pendant 60 s au lieu d'abandonner au premier refus.
+- **Le vol manuel change de nature.** En mode 20 il n'existe pas de consigne de vitesse :
+  « avancer » est un **angle de piqué**. `/fly` prend maintenant une intention normalisée
+  `fwd/right/up` ∈ [−1, 1] au lieu de m/s, et repart par la même porte que le suivi.
+- `GUID_TIMEOUT` posé à **0,5 s** (défaut 3 s) pour un flux à 10 Hz, et `GUID_OPTIONS = 0`
+  posé explicitement — c'est lui qui décide si `thrust` est un taux de montée ou une poussée
+  brute, et la console dépend du premier.
+
+### Tests
+
+- `perception/control/test_guidance.py` — **16 tests** au banc : symétrie de la loi, effet
+  amortisseur du D, absence de pic à la reprise après coast, rampe d'approche/freinage, zone
+  morte et écrêtage du cap, `dt` aberrant, écrêtage de la porte, **non-contournement de la garde
+  par l'opérateur**, unitarité et réversibilité du quaternion, et la règle du tout-ou-rien sur
+  les bits de `type_mask` (un mélange → `hold_position()` silencieux).
+- `sitl/nogps_engage_test.py` — la preuve en SITL, 9 vérifications, verte. Demande un SITL
+  **fraîchement démarré** (la cible virtuelle est posée en NED relatif à `home`).
+
+### Reste ouvert
+
+- Points **C** (instrumenter les liaisons) et **D** (sonde de coupure) du §1.5 : pas faits,
+  c'était hors périmètre de cette session.
+- **Rejouer sur la source Gazebo** : validé ici sur SITL nu (géométrie synthétique) et sur la
+  source vidéo. La caméra réelle du gimbal a d'autres échelles de bbox → `size_near` sera à
+  recalibrer, c'est exactement à ça que sert `/tune?near=`.
+- Le barreau 3 (CTBR) est codé mais jamais émis en vol.
