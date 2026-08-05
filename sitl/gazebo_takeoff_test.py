@@ -12,7 +12,7 @@ import time
 
 from pymavlink import mavutil
 
-CONN = os.environ.get("CONN", "tcp:127.0.0.1:5760")
+CONN = os.environ.get("CONN", "udp:127.0.0.1:14551")
 ALT = float(os.environ.get("ALT", "10"))
 
 
