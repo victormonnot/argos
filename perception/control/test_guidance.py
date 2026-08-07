@@ -65,6 +65,33 @@ def test_le_terme_D_amortit_une_cible_qui_revient_au_centre():
     assert c_mobile.roll < c_fixe.roll, "le D doit retenir l'inclinaison"
 
 
+def test_le_terme_D_freine_une_approche_rapide():
+    """Le pendant du test précédent, sur l'axe d'approche. Sans lui, un P pur sur
+    la distance oscille et l'oscillation DIVERGE : le drone arrive à la bonne
+    distance lancé, dépasse, corrige plus fort, et finit par perdre la cible.
+    À taille identique, une cible qui grossit vite doit produire moins de piqué."""
+    fixe = VisualGuidance()
+    for _ in range(20):
+        c_fixe = fixe.step(_far(0.0, size=0.09), engage=True, dt=0.1)
+
+    fonce = VisualGuidance()
+    for i in range(10):                          # 0,072 -> 0,090, soit 0,02 /s
+        c_fonce = fonce.step(_far(0.0, size=0.072 + 0.002 * i), engage=True, dt=0.1)
+
+    assert c_fonce.pitch > c_fixe.pitch, "s'approcher vite doit réduire le piqué"
+
+
+def test_sans_kd_size_le_freinage_disparait():
+    """Interrupteur du défaut : à kd_size = 0 on retrouve exactement le P pur."""
+    g = GuidanceGains(kd_size=0.0)
+    fonce = VisualGuidance(g)
+    for i in range(10):
+        c = fonce.step(_far(0.0, size=0.072 + 0.002 * i), engage=True, dt=0.1)
+    approach, brake = fonce._closure(0.09)
+    attendu = -g.k_pitch * approach + g.k_brake * brake
+    assert math.isclose(c.pitch, attendu, abs_tol=1e-9)
+
+
 def test_le_coast_ne_provoque_pas_de_pic_de_derivee():
     g = VisualGuidance()
     for _ in range(5):

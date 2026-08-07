@@ -50,6 +50,7 @@ class GuidanceGains:
     yaw_deadband: float = 0.08      # sous ça, on ne touche pas au cap (bruit)
     k_pitch: float = 5.5 * DEG      # piqué d'approche à pleine distance
     k_brake: float = 6.0 * DEG      # cabré de freinage quand on est trop près
+    kd_size: float = 10.0 * DEG     # amortissement d'approche, par rampe/seconde
     size_far: float = 0.05          # bbox <= : cible loin, approche à fond
     size_near: float = 0.12         # bbox >= : distance de garde, avance nulle
     size_brake: float = 0.05        # largeur de la rampe de freinage au-delà
@@ -71,17 +72,18 @@ class VisualGuidance:
 
     def __init__(self, gains: GuidanceGains | None = None):
         self.g = gains or GuidanceGains()
-        self._err_prev = 0.0
-        self._derr = 0.0            # dérivée filtrée de l'erreur horizontale
-        self._primed = False        # a-t-on déjà vu une détection ? (évite le pic initial)
-        self.telemetry = {"derr": 0.0, "approach": 0.0, "brake": 0.0}
+        self.reset()
+
 
     def reset(self):
         """À appeler à chaque nouveau lock : la cible précédente n'informe plus rien."""
         self._err_prev = 0.0
-        self._derr = 0.0
-        self._primed = False
-        self.telemetry = {"derr": 0.0, "approach": 0.0, "brake": 0.0}
+        self._size_prev = 0.0
+        self._derr = 0.0            # dérivée filtrée de l'erreur horizontale
+        self._dsize = 0.0           # dérivée filtrée de la TAILLE = vitesse d'approche
+        self._primed = False        # a-t-on déjà vu une détection ?
+        self.telemetry = {"derr": 0.0, "dsize": 0.0, "approach": 0.0, "brake": 0.0}
+
 
     # ── le capteur de distance : la taille de la bbox ────────────────────────
     def _closure(self, size: float) -> tuple[float, float]:
@@ -110,15 +112,18 @@ class VisualGuidance:
         # Dérivée : mise à jour uniquement sur une VRAIE détection. Pendant un
         # coast l'erreur est gelée — la dériver donnerait 0 puis un pic à la
         # reprise. On la laisse simplement décroître vers 0.
+        alpha = dt / (g.tau_d + dt)          # passe-bas du premier ordre
         if target.found:
-            raw = (err - self._err_prev) / dt if self._primed else 0.0
-            alpha = dt / (g.tau_d + dt)     # passe-bas du premier ordre
-            self._derr += alpha * (raw - self._derr)
-            self._err_prev = err
+            raw_e = (err - self._err_prev) / dt if self._primed else 0.0
+            raw_s = (target.size - self._size_prev) / dt if self._primed else 0.0
+            self._derr += alpha * (raw_e - self._derr)
+            self._dsize += alpha * (raw_s - self._dsize)
+            self._err_prev, self._size_prev = err, target.size
             self._primed = True
         else:
-            alpha = dt / (g.tau_d + dt)
             self._derr += alpha * (0.0 - self._derr)
+            self._dsize += alpha * (0.0 - self._dsize)
+
 
         # Latéral : P sur la position de la cible, D pour l'amortissement manquant.
         roll = _clamp(g.kp_roll * err + g.kd_roll * self._derr, -g.max_tilt, g.max_tilt)
@@ -131,12 +136,17 @@ class VisualGuidance:
         # freinage au-delà de la garde. Nez en haut = pitch positif -> avancer
         # est un pitch NÉGATIF.
         approach, brake = self._closure(target.size)
+        # La bbox grandit = on se rapproche. Normalisé par la largeur de la rampe
+        # pour que le gain reste en degrés, comme tous les autres.
+        closure = self._dsize / max(g.size_near - g.size_far, 1e-6)
         pitch = 0.0
         if engage:
-            pitch = _clamp(-g.k_pitch * approach + g.k_brake * brake,
+            pitch = _clamp(-g.k_pitch * approach + g.k_brake * brake
+                           + g.kd_size * closure,
                            -g.max_tilt, g.max_tilt)
 
         self.telemetry = {"derr": round(self._derr, 3),
+                          "dsize": round(self._dsize, 4),
                           "approach": round(approach, 2),
                           "brake": round(brake, 2)}
         # thrust laissé à 0,5 : ArduPilot tient l'altitude au baro pour nous.

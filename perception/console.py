@@ -73,8 +73,12 @@ RC8_YAW = 1500          # PWM RC8 : yaw gimbal neutre (caméra vers l'avant du d
 #   fait jamais diverger le repère de l'attitude commandée.
 # video : hack viewport (SITL nu, pas de caméra). Là le drone YAW pour de vrai et
 #   c'est le lacet qui fait paner la fenêtre -> gain de cap fort, roll inutile.
+# Les valeurs du profil gazebo ont été réglées EN VOL via /tune, pas calculées :
+# kp descendu (7 -> 4) et kd monté (9 -> 12) parce que le centrage était nerveux,
+# kd_size ajouté parce que sans lui l'oscillation d'approche divergeait.
 GAINS = {
-    GAZEBO:  GuidanceGains(kp_roll=7.0 * DEG, kd_roll=9.0 * DEG, kp_yaw=1.5 * DEG),
+    GAZEBO:  GuidanceGains(kp_roll=4.0 * DEG, kd_roll=12.0 * DEG, kp_yaw=1.5 * DEG,
+                           k_pitch=3.5 * DEG, kd_size=10.0 * DEG),
     "video": GuidanceGains(kp_roll=0.0, kd_roll=0.0, kp_yaw=5.0 * DEG, k_pitch=0.0),
 }
 LIMITS = Limits(size_stop=GAINS[GAZEBO].size_near)   # bornes dures de la porte de
@@ -322,13 +326,54 @@ def worker():
             _video_loop(visdrone, name)
 
 
-def _takeoff(m):
-    """Décollage en GUIDED (donc au GPS) : monter est un problème de position, et
-    ce n'est pas celui qu'on démontre. GUIDED_NOGPS vient juste après.
+def _absorb(m, msg):
+    """Range un message de telemetrie dans `_drone`. Appele partout ou on lit la
+    liaison, y compris pendant le decollage : sinon le HUD gele."""
+    if not msg:
+        return
+    t = msg.get_type()
+    with _lock:
+        if t == "ATTITUDE":
+            _drone["hdg"] = round(math.degrees(msg.yaw) % 360, 1)
+            if _drone["href"] is None and _drone["flying"]:
+                _drone["href"] = _drone["hdg"]      # cap de reference (viewport centre)
+        elif t == "GLOBAL_POSITION_INT":
+            _drone["alt"] = round(msg.relative_alt / 1000.0, 1)
+        elif t == "HEARTBEAT":
+            _drone["armed"] = bool(m.motors_armed())
+            _drone["mode"] = m.flightmode
 
-    Rend True seulement si le drone est RÉELLEMENT en l'air. Un décollage raté
-    qu'on déclare réussi, c'est un flux d'attitude envoyé à un drone au sol —
-    et en mode 20 `thrust = 0,5` sur un drone posé, c'est un ordre de décollage
+
+def _gimbal_hold(m, tick):
+    """Tient la consigne du gimbal a 5 Hz, EN PERMANENCE.
+
+    Un override RC expire cote ArduPilot au bout de `RC_OVERRIDE_TIME` (3 s) : il
+    faut le reemettre en continu. Et il faut le faire **avant et pendant** le
+    decollage, sinon la camera pend librement jusqu'a ce que la boucle de vol
+    demarre — c'est l'image de travers observee au sol puis redressee en l'air.
+
+    C'est une commande de CHARGE UTILE : elle ne peut pas deplacer le drone, elle
+    ne passe donc pas par la porte de sortie.
+    """
+    now = time.time()
+    if now - tick["t"] < 0.2:
+        return
+    tick["t"] = now
+    with _lock:
+        if _sel["name"] != GAZEBO:
+            return
+        rc7, rc8 = _gimbal["rc7"], _gimbal["rc8"]
+    m.mav.rc_channels_override_send(m.target_system, m.target_component,
+        65535, 65535, 65535, 65535, 65535, RC6_ROLL, rc7, rc8)
+
+
+def _takeoff(m, tick):
+    """Decollage en GUIDED (donc au GPS) : monter est un probleme de position, et
+    ce n'est pas celui qu'on demontre. GUIDED_NOGPS vient juste apres.
+
+    Rend True seulement si le drone est REELLEMENT en l'air. Un decollage rate
+    qu'on declare reussi, c'est un flux d'attitude envoye a un drone au sol —
+    et en mode 20 `thrust = 0,5` sur un drone pose, c'est un ordre de decollage
     en attente (`angle_control_run()` teste `land_complete`).
     """
     m.mav.request_data_stream_send(m.target_system, m.target_component,
@@ -336,26 +381,27 @@ def _takeoff(m):
     m.mav.param_set_send(m.target_system, m.target_component, b"ARMING_CHECK", 0,
                          mavutil.mavlink.MAV_PARAM_TYPE_INT32)
     # WP_YAW_BEHAVIOR=0 : le drone NE tourne PAS le nez vers sa vitesse (sinon chaque
-    # correction ferait pivoter la caméra hors cible). Indispensable en gimbal fixe.
+    # correction ferait pivoter la camera hors cible). Indispensable en gimbal fixe.
     m.mav.param_set_send(m.target_system, m.target_component, b"WP_YAW_BEHAVIOR", 0,
                          mavutil.mavlink.MAV_PARAM_TYPE_INT32)
     time.sleep(0.3)
     with _lock:
-        _drone["status"] = "connecté · attente GPS..."
-    # attendre un fix GPS 3D (EKF prêt) — sinon le décollage GUIDED ne monte pas
+        _drone["status"] = "connecte - attente GPS..."
+    # attendre un fix GPS 3D (EKF pret) — sinon le decollage GUIDED ne monte pas
     t0 = time.time()
     while time.time() - t0 < 40:
         g = m.recv_match(type="GPS_RAW_INT", blocking=True, timeout=1)
+        _gimbal_hold(m, tick)
         if g and g.fix_type >= 3:
             break
     with _lock:
-        _drone["status"] = "connecté · décollage..."
+        _drone["status"] = "connecte - decollage..."
 
     m.set_mode(m.mode_mapping()["GUIDED"])
     time.sleep(1)
     # L'EKF peut encore converger ("Need Position Estimate") : on redemande au lieu
-    # d'abandonner sur un seul refus. ARMING_CHECK=0 ne couvre pas cette exigence-là,
-    # elle vient du mode GUIDED lui-même.
+    # d'abandonner sur un seul refus. ARMING_CHECK=0 ne couvre pas cette exigence-la,
+    # elle vient du mode GUIDED lui-meme.
     t0 = time.time()
     while time.time() - t0 < 60 and not m.motors_armed():
         m.mav.command_long_send(m.target_system, m.target_component,
@@ -363,7 +409,8 @@ def _takeoff(m):
                                 1, 0, 0, 0, 0, 0, 0)
         t1 = time.time()
         while time.time() - t1 < 3:
-            m.recv_match(type="HEARTBEAT", blocking=True, timeout=1)
+            _absorb(m, m.recv_match(type="HEARTBEAT", blocking=True, timeout=1))
+            _gimbal_hold(m, tick)
     if not m.motors_armed():
         return False
 
@@ -372,73 +419,60 @@ def _takeoff(m):
     t0 = time.time()
     while time.time() - t0 < 30:
         p = m.recv_match(type="GLOBAL_POSITION_INT", blocking=True, timeout=2)
+        _absorb(m, p)
+        _gimbal_hold(m, tick)
         if p and p.relative_alt / 1000.0 >= TAKEOFF_ALT * 0.9:
             return True
     return False
 
 
-def _drone_thread():
-    """Orchestre. Ne décide de rien et n'encode rien.
+def _wait_request(m, tick):
+    """Au sol : on draine la liaison et on tient le gimbal, en attendant que
+    l'operateur appuie sur « Decoller ». Aucune commande de vol n'est emise."""
+    while True:
+        with _lock:
+            if _drone["req"]:
+                _drone["req"] = False
+                return
+        _absorb(m, m.recv_match(type=["ATTITUDE", "GLOBAL_POSITION_INT", "HEARTBEAT"],
+                                blocking=True, timeout=0.05))
+        _gimbal_hold(m, tick)
 
-    Décolle en GUIDED, **bascule en GUIDED_NOGPS (mode 20)**, puis fait tourner à
-    CMD_HZ la boucle du §1.1 :
+
+def _fly(m, backend, gate, tick):
+    """La boucle de vol, a CMD_HZ. Rend la main quand le drone n'est plus en l'air.
 
         erreur pixel + taille de bbox  ->  loi (guidance.py)  ->  AttitudeCmd
                                        ->  porte de sortie (gate.py)
                                        ->  backend MAVLink    ->  SET_ATTITUDE_TARGET
 
-    À partir de la bascule, **aucune estimation de position n'entre dans la
-    commande** : ni GPS, ni flow, ni vitesse. L'altitude est fermée par ArduPilot
-    au baro (`thrust = 0,5`), le reste vient de la caméra.
+    Aucune estimation de position n'entre dans la commande : ni GPS, ni flow, ni
+    vitesse. L'altitude est fermee par ArduPilot au baro (`thrust = 0,5`).
     """
-    m = mavutil.mavlink_connection(DRONE_CONN)
-    if not m.wait_heartbeat(timeout=10):
-        with _lock:
-            _drone["status"] = "pas de SITL (tcp:5760)"
-        _drone_started["v"] = False
-        return
-
-    backend = MavlinkBackend(m)
-    gate = CommandGate(backend, LIMITS)
-    backend.configure_nogps(GUID_TIMEOUT)
-    if not _takeoff(m):
-        with _lock:
-            _drone["status"] = "décollage ÉCHOUÉ — rien n'est émis"
-        _drone_started["v"] = False
-        return                      # `flying` reste False : la porte refuse tout
-
-    # La bascule. `ModeGuidedNoGPS::requires_position()` est false -> pas de blocage
-    # EKF ; le handler SET_ATTITUDE_TARGET n'accepte que si `in_guided_mode()`.
-    src = _sel["name"]
-    profile = GAZEBO if src == GAZEBO else "video"
-    guidance = VisualGuidance(GAINS[profile])
-    ok_mode = backend.set_mode("GUIDED_NOGPS")
-    time.sleep(0.5)
     with _lock:
-        _drone["status"] = ("EN VOL · GUIDED_NOGPS" if ok_mode
-                            else "EN VOL · mode 20 INDISPONIBLE")
-        _drone["flying"] = True
-
+        src = _sel["name"]
+    guidance = VisualGuidance(GAINS[GAZEBO if src == GAZEBO else "video"])
     t_cmd = time.time()
-    t_gimbal = 0.0
     seq_seen = -1
+    t_disarm = 0.0
     while True:
-        msg = m.recv_match(type=["ATTITUDE", "GLOBAL_POSITION_INT", "HEARTBEAT"],
-                           blocking=True, timeout=0.02)
-        if msg:
-            t = msg.get_type()
-            with _lock:
-                if t == "ATTITUDE":
-                    _drone["hdg"] = round(math.degrees(msg.yaw) % 360, 1)
-                    if _drone["href"] is None and _drone["flying"]:
-                        _drone["href"] = _drone["hdg"]      # cap de référence (viewport centré)
-                elif t == "GLOBAL_POSITION_INT":
-                    _drone["alt"] = round(msg.relative_alt / 1000.0, 1)
-                elif t == "HEARTBEAT":
-                    _drone["armed"] = bool(m.motors_armed())
-                    _drone["mode"] = m.flightmode
-
+        _absorb(m, m.recv_match(type=["ATTITUDE", "GLOBAL_POSITION_INT", "HEARTBEAT"],
+                                blocking=True, timeout=0.02))
         now = time.time()
+        _gimbal_hold(m, tick)
+
+        # Fin de vol. Les moteurs coupes sont le seul signe qui ne ment pas :
+        # atterrissage volontaire, failsafe, ou contact avec le sol. Sans ca, la
+        # console continuait d'afficher « EN VOL » sur un drone pose et desarme.
+        with _lock:
+            armed = _drone["armed"]
+        if armed:
+            t_disarm = 0.0
+        elif t_disarm == 0.0:
+            t_disarm = now
+        elif now - t_disarm > 2.0:
+            return
+
         if now - t_cmd < 1.0 / CMD_HZ:
             continue
         dt, t_cmd = now - t_cmd, now
@@ -452,17 +486,9 @@ def _drone_thread():
                                 found=_track["found"], error_x=_track["error"],
                                 size=_track["size"])
             engage, seq = _track["engage"], _track["seq"]
-            rc7, rc8 = _gimbal["rc7"], _gimbal["rc8"]
             man = dict(_manual)
 
-        # Le gimbal est une commande de CHARGE UTILE, pas de vol : il ne peut pas
-        # déplacer le drone, il ne passe donc pas par la porte de sortie.
-        if src == GAZEBO and now - t_gimbal >= 0.2:
-            t_gimbal = now
-            m.mav.rc_channels_override_send(m.target_system, m.target_component,
-                65535, 65535, 65535, 65535, 65535, RC6_ROLL, rc7, rc8)
-
-        # profil de gains suivi de la source ; nouveau lock -> mémoire du D remise à zéro
+        # profil de gains suivi de la source ; nouveau lock -> memoire du D remise a zero
         want = GAZEBO if src == GAZEBO else "video"
         if GAINS[want] is not guidance.g:
             guidance.g = GAINS[want]
@@ -471,14 +497,14 @@ def _drone_thread():
             guidance.reset()
 
         # ── QUI commande ce cycle ─────────────────────────────────────────────
-        # Un seul émetteur à la fois, et tous sortent par la même porte.
+        # Un seul emetteur a la fois, et tous sortent par la meme porte.
         if now < man["until"]:
             cmd = operator_command(man["fwd"], man["right"], man["up"],
                                    max_tilt=LIMITS.max_tilt)
         elif target.has:
             cmd = guidance.step(target, engage, dt)
         else:
-            cmd = guidance.step(TargetView(has=False), False, dt)   # remet la loi à zéro
+            cmd = guidance.step(TargetView(has=False), False, dt)   # remet la loi a zero
 
         res = gate.submit(cmd, state, target)
         with _lock:
@@ -490,6 +516,49 @@ def _drone_thread():
                          "reasons": res.reasons, "sent": backend.sent,
                          "approach": guidance.telemetry["approach"],
                          "size": round(target.size, 2)})
+
+
+def _drone_thread():
+    """Orchestre, et rien d'autre : ne decide pas, n'encode pas.
+
+    Cycle de vie complet, en boucle : attendre l'ordre -> decoller en GUIDED ->
+    basculer en GUIDED_NOGPS -> voler -> detecter le retour au sol -> recommencer.
+    Le fil vit tant que la console vit, donc on peut redecoller autant de fois
+    qu'on veut sans redemarrer.
+    """
+    m = mavutil.mavlink_connection(DRONE_CONN)
+    if not m.wait_heartbeat(timeout=10):
+        with _lock:
+            _drone["status"] = f"pas de drone sur {DRONE_CONN}"
+        _drone_started["v"] = False
+        return
+
+    backend = MavlinkBackend(m)
+    gate = CommandGate(backend, LIMITS)
+    backend.configure_nogps(GUID_TIMEOUT)
+    tick = {"t": 0.0}                     # cadence propre au gimbal
+
+    while True:
+        _wait_request(m, tick)
+        if not _takeoff(m, tick):
+            with _lock:
+                _drone["status"] = "decollage ECHOUE - reappuyer pour reessayer"
+            continue                      # `flying` reste False : la porte refuse tout
+
+        # La bascule. `ModeGuidedNoGPS::requires_position()` est false -> pas de
+        # blocage EKF ; le handler SET_ATTITUDE_TARGET n'accepte que si `in_guided_mode()`.
+        ok_mode = backend.set_mode("GUIDED_NOGPS")
+        time.sleep(0.5)
+        with _lock:
+            _drone["status"] = ("EN VOL - GUIDED_NOGPS" if ok_mode
+                                else "EN VOL - mode 20 INDISPONIBLE")
+            _drone["flying"] = True
+
+        _fly(m, backend, gate, tick)
+
+        with _lock:
+            _drone.update({"flying": False, "href": None,
+                           "status": "pose - pret a redecoller"})
 
 
 @asynccontextmanager
@@ -626,13 +695,17 @@ def gimbal(pitch: int = None, yaw: int = None):
 
 @app.get("/tune")
 def tune(gate: float = None, coast: float = None, kp: float = None, kd: float = None,
-         kpitch: float = None, near: float = None):
+         kpitch: float = None, kdsize: float = None, near: float = None):
     """Réglage live, sans redémarrer la console.
 
     Suivi : `gate` (rayon de raccroche), `coast` (s de maintien après perte).
-    Loi (degrés, sur le profil de la source courante) : `kp`/`kd` = inclinaison
-    latérale P et D, `kpitch` = piqué d'approche, `near` = taille de bbox à
-    laquelle on arrête d'avancer (le capteur de distance)."""
+    Loi (degrés, sur le profil de la source courante) :
+      `kp`/`kd`  = inclinaison latérale, P et D
+      `kpitch`   = piqué d'approche
+      `kdsize`   = amortissement de l'approche (D sur la vitesse de grossissement
+                   de la bbox). À 0, l'axe avant/arrière n'a aucun frein et
+                   l'oscillation d'approche diverge.
+      `near`     = taille de bbox à laquelle on arrête d'avancer."""
     with _lock:
         g = GAINS[GAZEBO if _sel["name"] == GAZEBO else "video"]
         if gate is not None:
@@ -645,11 +718,14 @@ def tune(gate: float = None, coast: float = None, kp: float = None, kd: float = 
             g.kd_roll = max(0.0, min(30.0, kd)) * DEG
         if kpitch is not None:
             g.k_pitch = max(0.0, min(15.0, kpitch)) * DEG
+        if kdsize is not None:
+            g.kd_size = max(0.0, min(40.0, kdsize)) * DEG
         if near is not None:
             g.size_near = max(0.05, min(0.9, near))
             LIMITS.size_stop = g.size_near      # la garde dure suit le réglage
         return {**_tune, "kp": round(g.kp_roll / DEG, 1), "kd": round(g.kd_roll / DEG, 1),
-                "kpitch": round(g.k_pitch / DEG, 1), "near": round(g.size_near, 2)}
+                "kpitch": round(g.k_pitch / DEG, 1),
+                "kdsize": round(g.kd_size / DEG, 1), "near": round(g.size_near, 2)}
 
 
 @app.get("/fly")
