@@ -2135,18 +2135,34 @@ Autre piège WSL, pour mémoire : en SSH depuis le Mac, `DISPLAY` est vide et **
 Gazebo meurt** (`qt.qpa.xcb: could not connect to display`). `export DISPLAY=:0` suffit, la
 fenêtre s'ouvre sur l'écran du fixe. Ajouté au `.bashrc`.
 
-### Défauts repérés en vol, pas encore corrigés
+### Défauts repérés en vol — et corrigés dans la foulée
 
-- **Le gimbal n'est commandé qu'après le décollage.** La commande RC est dans la boucle
-  principale, qui ne démarre qu'une fois l'altitude atteinte → au sol et pendant la montée la
-  caméra pend librement, puis se redresse d'un coup. Cosmétique, trois lignes à déplacer.
-- **La console affiche « EN VOL » sur un drone désarmé au sol.** Rien ne surveille l'état réel
-  après le décollage. Vu en vrai après une sortie de champ suivie d'un contact au sol.
-- **La console ne sait décoller qu'une fois par lancement** (`_drone_started`), donc il faut la
-  redémarrer après chaque atterrissage.
-- **`run_gazebo.sh` continue quand Gazebo n'est jamais monté** : il attend 30 s le topic
-  `/stats`, puis lance le firmware quand même. Résultat observé : un firmware orphelin qui
-  répète `No JSON sensor message received` — un cerveau sans corps.
+Tous trouvés en volant, aucun n'était visible depuis les tests. Le correctif des trois
+premiers tient dans une même idée : **`_drone_thread` ne gérait qu'un seul vol**, du
+décollage à l'infini. Il gère maintenant un *cycle de vie* complet et rebouclé —
+`_wait_request` → `_takeoff` → bascule mode 20 → `_fly` → détection du retour au sol →
+retour à l'attente. Le fil ne meurt plus jamais, donc on redécolle sans redémarrer.
+
+- **Le gimbal n'était commandé qu'après le décollage.** L'override RC vivait dans la boucle
+  de vol, qui ne démarrait qu'une fois l'altitude atteinte → au sol et pendant la montée la
+  caméra pendait librement, puis se redressait d'un coup. Extrait en `_gimbal_hold()`, appelé
+  aussi depuis toutes les boucles d'attente de `_takeoff`. À noter : un override RC **expire**
+  côté ArduPilot au bout de `RC_OVERRIDE_TIME` (3 s), il ne suffit donc pas de l'envoyer une
+  fois — il faut le réémettre en continu.
+- **La console affichait « EN VOL » sur un drone désarmé au sol.** Mesuré :
+  `status="EN VOL · GUIDED_NOGPS"` avec `armed=false, alt=0.0`. Rien ne surveillait l'état réel
+  après le décollage. `_fly()` rend maintenant la main quand les moteurs sont coupés depuis 2 s
+  — le désarmement est le seul signe qui ne ment pas, qu'il vienne d'un atterrissage voulu,
+  d'un failsafe ou d'un contact avec le sol.
+- **La console ne savait décoller qu'une fois par lancement.** `/drone/takeoff` pose maintenant
+  un drapeau `req` que le fil consomme à chaque cycle. (Contournement trouvé entre-temps :
+  réarmer et redécoller depuis QGC marche, la boucle de commande reprend la main en vol.)
+- **`run_gazebo.sh` continuait quand Gazebo n'était jamais monté** : il attendait 30 s le topic
+  `/stats`, puis lançait le firmware quand même. Résultat observé : un firmware orphelin qui
+  répète `No JSON sensor message received` — un cerveau sans corps, symptôme bruyant dont la
+  cause réelle était en **ligne 1** du log Gazebo (`qt.qpa.xcb: could not connect to display`).
+  Le script s'arrête maintenant, et **affiche les 5 premières lignes du log** au lieu de laisser
+  chercher.
 - **Champ de la caméra trop étroit** (1,2 rad, rétréci en juin pour la détection) : la cible
   sort vite du cadre. Arbitraire réel — champ large = cible trop petite pour YOLO. La troisième
   voie serait de faire bouger le gimbal au lieu du drone ; il ne sert quasiment à rien pour
