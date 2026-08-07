@@ -111,6 +111,7 @@ _lock = threading.Lock()
 DRONE_CONN = os.environ.get("ARGOS_DRONE_CONN", "udp:127.0.0.1:14551")
 TAKEOFF_ALT = 12.0      # cadre les cibles dans la POV gimbal (validé à 12 m)
 _drone = {"status": "déconnecté", "armed": False, "alt": 0.0, "hdg": 0.0,
+          "roll": 0.0, "pitch": 0.0,
           "flying": False, "href": None, "mode": "-", "req": False}
                         # req : l'opérateur a appuyé sur « Décoller ». Le fil de vol
                         # le consomme et repart pour un cycle complet — c'est ce qui
@@ -124,6 +125,15 @@ _manual = {"fwd": 0.0, "right": 0.0, "up": 0.0, "until": 0.0}
 # Dernière commande réellement émise — c'est ce que le HUD affiche (pas l'intention).
 _cmd = {"src": "idle", "roll": 0.0, "pitch": 0.0, "dyaw": 0.0, "thrust": 0.5,
         "reasons": [], "sent": 0, "approach": 0.0, "size": 0.0}
+
+# Sonde de coupure (PORTFOLIO §1.5-D). On cesse volontairement d'émettre pendant
+# `cut_ms`, et on enregistre ce que le drone fait — pendant la coupure et après.
+# `GUID_TIMEOUT` (0,5 s) dit ce qu'ArduPilot est CENSÉ faire : remettre l'attitude
+# à plat au cap courant, annuler les rates, et forcer `use_thrust = false`
+# (mode_guided.cpp:983). Cette sonde vérifie ce qu'il fait VRAIMENT, et en combien
+# de temps. C'est la phase 3 du plan swarm, acquise sur un seul drone.
+CUT_TAIL = 3.0          # s d'enregistrement APRÈS la reprise (voir la récupération)
+_cut = {"until": 0.0, "end": 0.0, "t0": 0.0, "ms": 0, "trace": [], "running": False}
 
 
 def angdiff(a, b):
@@ -338,6 +348,10 @@ def _absorb(m, msg):
     with _lock:
         if t == "ATTITUDE":
             _drone["hdg"] = round(math.degrees(msg.yaw) % 360, 1)
+            # Assiette RÉELLE, distincte de l'assiette commandée : c'est l'écart
+            # entre les deux que mesure la sonde de coupure.
+            _drone["roll"] = round(math.degrees(msg.roll), 1)
+            _drone["pitch"] = round(math.degrees(msg.pitch), 1)
             if _drone["href"] is None and _drone["flying"]:
                 _drone["href"] = _drone["hdg"]      # cap de reference (viewport centre)
         elif t == "GLOBAL_POSITION_INT":
@@ -345,6 +359,25 @@ def _absorb(m, msg):
         elif t == "HEARTBEAT":
             _drone["armed"] = bool(m.motors_armed())
             _drone["mode"] = m.flightmode
+
+
+def _cut_sample(now, cmd):
+    """Un point de la trace de coupure. `cmd` vaut None quand on est en train de
+    se taire — c'est ce qui distingue les deux phases dans l'enregistrement."""
+    with _lock:
+        if not _cut["running"]:
+            return
+        if now > _cut["end"]:
+            _cut["running"] = False
+            return
+        _cut["trace"].append({
+            "t": round(now - _cut["t0"], 2),
+            "emis": cmd is not None,
+            "roll_cmd": None if cmd is None else round(math.degrees(cmd.roll), 1),
+            "pitch_cmd": None if cmd is None else round(math.degrees(cmd.pitch), 1),
+            "roll": _drone["roll"], "pitch": _drone["pitch"],
+            "alt": _drone["alt"], "mode": _drone["mode"],
+        })
 
 
 def _gimbal_hold(m, tick):
@@ -509,7 +542,20 @@ def _fly(m, backend, gate, tick):
         else:
             cmd = guidance.step(TargetView(has=False), False, dt)   # remet la loi a zero
 
+        # ── Sonde de coupure : on n'emet RIEN, volontairement ─────────────────
+        # Une coupure ne se simule pas en envoyant des zeros : envoyer une
+        # attitude nulle, c'est encore parler. Il faut vraiment se taire, et
+        # laisser `GUID_TIMEOUT` expirer cote firmware.
+        with _lock:
+            coupe = now < _cut["until"]
+            trace_on = _cut["running"]
+        if coupe:
+            _cut_sample(now, None)
+            continue
+
         res = gate.submit(cmd, state, target)
+        if trace_on:
+            _cut_sample(now, res.cmd)
         with _lock:
             _cmd.update({"src": res.cmd.source,
                          "roll": round(math.degrees(res.cmd.roll), 1),
@@ -746,6 +792,58 @@ def fly(fwd: float = 0.0, right: float = 0.0, up: float = 0.0, dur: float = 1.2)
         _manual.update({"fwd": fwd, "right": right, "up": up,
                         "until": time.time() + max(0.2, min(3.0, dur))})
     return {"manual": True, "fwd": fwd, "right": right, "up": up}
+
+
+@app.get("/cut")
+def cut(ms: int = 800):
+    """Sonde de coupure (PORTFOLIO §1.5-D) : cesse d'émettre pendant `ms` ms.
+
+    Ne pas confondre avec « envoyer une commande nulle » : envoyer des zéros,
+    c'est encore parler, et le firmware continue de nous croire vivants. Ici on
+    se tait vraiment, et on laisse `GUID_TIMEOUT` expirer.
+
+    L'enregistrement couvre la coupure ET la reprise, pour voir les deux : ce que
+    le drone fait quand on disparaît, et s'il repart proprement quand on revient.
+    """
+    ms = max(100, min(5000, ms))
+    now = time.time()
+    with _lock:
+        if not _drone["flying"]:
+            return {"erreur": "pas en vol"}
+        _cut.update({"until": now + ms / 1000.0, "t0": now, "ms": ms,
+                     "end": now + ms / 1000.0 + CUT_TAIL,
+                     "trace": [], "running": True})
+    return {"coupure_ms": ms, "guid_timeout_s": GUID_TIMEOUT,
+            "relire": f"/cut/trace dans {ms / 1000.0 + CUT_TAIL:.1f} s"}
+
+
+@app.get("/cut/trace")
+def cut_trace():
+    """La trace de la dernière coupure, plus le résumé qui compte : combien de
+    temps le drone a mis à se remettre à plat après notre dernier message."""
+    with _lock:
+        trace, ms, en_cours = list(_cut["trace"]), _cut["ms"], _cut["running"]
+    if not trace:
+        return {"trace": [], "note": "aucune coupure enregistrée"}
+    muet = [p for p in trace if not p["emis"]]
+    apres = [p for p in trace if p["emis"] and muet and p["t"] > muet[-1]["t"]]
+    # temps entre le dernier message émis et le retour à plat (< 2° sur les deux axes)
+    t_plat = next((p["t"] for p in muet
+                   if abs(p["roll"]) < 2.0 and abs(p["pitch"]) < 2.0), None)
+    alts = [p["alt"] for p in trace]
+    return {
+        "en_cours": en_cours,
+        "coupure_ms": ms,
+        "guid_timeout_s": GUID_TIMEOUT,
+        "points": len(trace),
+        "retour_a_plat_s": t_plat,
+        "assiette_max_pendant_coupure": max(
+            (max(abs(p["roll"]), abs(p["pitch"])) for p in muet), default=None),
+        "derive_altitude_m": round(max(alts) - min(alts), 1),
+        "modes_vus": sorted({p["mode"] for p in trace}),
+        "reprise_ok": bool(apres),
+        "trace": trace,
+    }
 
 
 @app.get("/drone/status")
