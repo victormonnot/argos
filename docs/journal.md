@@ -2077,3 +2077,80 @@ prend une commande désirée et en rend une sûre.
   source vidéo. La caméra réelle du gimbal a d'autres échelles de bbox → `size_near` sera à
   recalibrer, c'est exactement à ça que sert `/tune?near=`.
 - Le barreau 3 (CTBR) est codé mais jamais émis en vol.
+
+## 2026-08-07 — Le mode 20 volé en Gazebo : ce que le SITL n'avait pas pu montrer
+
+Session pilotée depuis la simu 3D, avec fenêtre. Le code `GUIDED_NOGPS` de l'entrée précédente
+n'avait été validé que sur SITL nu (cible virtuelle) et sur les sources vidéo. Passage sur la
+source Gazebo — caméra réelle, détection réelle, opérateur réel.
+
+### Un défaut de conception que seul le vol a montré
+
+**L'axe d'approche n'avait aucun amortissement.** Symptôme observé en vol : le drone se cale à
+la bonne distance, puis fait des allers-retours avant/arrière **de plus en plus grands** à chaque
+correction, jusqu'à perdre la cible du champ. Effet boule de neige.
+
+La cause est structurelle, pas un réglage : s'incliner commande une **accélération**, pas une
+position. Un P pur sur un double intégrateur ne se stabilise pas — baisser `k_pitch` ralentit la
+divergence sans jamais la supprimer.
+
+Or la parade était déjà écrite dans la loi… **sur un seul axe** :
+
+| axe | correction | amortissement |
+|---|---|---|
+| latéral | `kp_roll` | `kd_roll` (D sur l'erreur pixel) ✅ |
+| approche | `k_pitch` | **rien** ❌ |
+
+Correctif : `kd_size`, le D sur la **vitesse de grossissement de la bbox**. Même principe que
+sur l'axe latéral — la caméra fournit le retour de vitesse que l'EKF ne donne pas. La dérivée
+est filtrée et normalisée par la largeur de la rampe (`size_near − size_far`), pour que le gain
+reste exprimé en degrés comme tous les autres.
+
+Vérifié dans les deux sens en vol : `kdsize=10` → le drone tient la cible centrée, immobile,
+longtemps. `kdsize=0` → la boule de neige revient à l'identique. Deux tests au banc figent ça,
+dont un qui garantit que `kd_size = 0` reproduit exactement l'ancien calcul (donc que la
+comparaison A/B est honnête). **18 tests verts.**
+
+**Leçon de méthode :** le test SITL de l'entrée précédente approchait une cible virtuelle et
+concluait « pas d'oscillation ». Il ne pouvait pas voir ce défaut — la géométrie synthétique
+amenait le drone à la distance de garde par un chemin trop propre, sans jamais exciter le mode
+divergent. Un banc de test vert n'est pas une preuve de stabilité.
+
+### Réglages arrêtés en vol (profil gazebo)
+
+`kp_roll` 7 → **4**, `kd_roll` 9 → **12** (centrage trop nerveux), `k_pitch` 5,5 → **3,5**,
+`kd_size` = **10**. Réglés via `/tune` sans redémarrer, puis inscrits dans `console.py`.
+`size_near` reste à 0,12 — c'est la distance de garde, encore à balayer.
+
+### Piège d'environnement : Gazebo tournait sur le CPU
+
+`GL_RENDERER = llvmpipe` dans `~/.gz/rendering/ogre2.log` = rendu 100 % logiciel, la RTX 4060
+inutilisée. Symptôme : `shapes.sdf` fluide mais `argos_demo.sdf` saccadé (maquettes texturées +
+la caméra du drone qui refait un rendu complet à 10 Hz). Corrigé par
+`MESA_LOADER_DRIVER_OVERRIDE=d3d12` + `GALLIUM_DRIVER=d3d12` → `D3D12 (NVIDIA GeForce RTX 4060)`.
+`run_gazebo.sh` posait déjà ces variables ; le trou était sur les lancements `gz sim` à la main.
+**L'instrument de mesure à retenir :** `grep GL_RENDERER ~/.gz/rendering/ogre2.log | tail -1`.
+
+Autre piège WSL, pour mémoire : en SSH depuis le Mac, `DISPLAY` est vide et **toute fenêtre
+Gazebo meurt** (`qt.qpa.xcb: could not connect to display`). `export DISPLAY=:0` suffit, la
+fenêtre s'ouvre sur l'écran du fixe. Ajouté au `.bashrc`.
+
+### Défauts repérés en vol, pas encore corrigés
+
+- **Le gimbal n'est commandé qu'après le décollage.** La commande RC est dans la boucle
+  principale, qui ne démarre qu'une fois l'altitude atteinte → au sol et pendant la montée la
+  caméra pend librement, puis se redresse d'un coup. Cosmétique, trois lignes à déplacer.
+- **La console affiche « EN VOL » sur un drone désarmé au sol.** Rien ne surveille l'état réel
+  après le décollage. Vu en vrai après une sortie de champ suivie d'un contact au sol.
+- **La console ne sait décoller qu'une fois par lancement** (`_drone_started`), donc il faut la
+  redémarrer après chaque atterrissage.
+- **`run_gazebo.sh` continue quand Gazebo n'est jamais monté** : il attend 30 s le topic
+  `/stats`, puis lance le firmware quand même. Résultat observé : un firmware orphelin qui
+  répète `No JSON sensor message received` — un cerveau sans corps.
+- **Champ de la caméra trop étroit** (1,2 rad, rétréci en juin pour la détection) : la cible
+  sort vite du cadre. Arbitraire réel — champ large = cible trop petite pour YOLO. La troisième
+  voie serait de faire bouger le gimbal au lieu du drone ; il ne sert quasiment à rien pour
+  l'instant.
+
+`gazebo_takeoff_test.py` visait par défaut `tcp:5760`, déjà occupé par mavproxy (le port série
+émulé n'accepte qu'un client). Défaut changé pour `udp:14551`, la sortie du fan-out.
