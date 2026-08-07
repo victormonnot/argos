@@ -23,7 +23,8 @@ from pathlib import Path
 
 import cv2
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
+                               StreamingResponse)
 from pymavlink import mavutil
 from ultralytics import YOLO
 
@@ -817,14 +818,12 @@ def cut(ms: int = 800):
             "relire": f"/cut/trace dans {ms / 1000.0 + CUT_TAIL:.1f} s"}
 
 
-@app.get("/cut/trace")
-def cut_trace():
-    """La trace de la dernière coupure, plus le résumé qui compte : combien de
-    temps le drone a mis à se remettre à plat après notre dernier message."""
+def _cut_resume():
+    """Le résumé de la dernière coupure. Séparé du rendu pour servir les deux formats."""
     with _lock:
         trace, ms, en_cours = list(_cut["trace"]), _cut["ms"], _cut["running"]
     if not trace:
-        return {"trace": [], "note": "aucune coupure enregistrée"}
+        return None, []
     muet = [p for p in trace if not p["emis"]]
     apres = [p for p in trace if p["emis"] and muet and p["t"] > muet[-1]["t"]]
     # temps entre le dernier message émis et le retour à plat (< 2° sur les deux axes)
@@ -842,8 +841,41 @@ def cut_trace():
         "derive_altitude_m": round(max(alts) - min(alts), 1),
         "modes_vus": sorted({p["mode"] for p in trace}),
         "reprise_ok": bool(apres),
-        "trace": trace,
-    }
+    }, trace
+
+
+@app.get("/cut/trace", response_class=PlainTextResponse)
+def cut_trace(json: int = 0):
+    """La trace de la dernière coupure. Texte aligné par défaut (lisible dans un
+    navigateur), `?json=1` pour la structure brute."""
+    r, trace = _cut_resume()
+    if r is None:
+        return "aucune coupure enregistrée — lance /cut?ms=800 pendant un vol"
+    if json:
+        return JSONResponse({**r, "trace": trace})
+
+    plat = "jamais" if r["retour_a_plat_s"] is None else f"{r['retour_a_plat_s']:.2f} s"
+    tete = [
+        f"SONDE DE COUPURE — silence de {r['coupure_ms']} ms   "
+        f"(GUID_TIMEOUT = {r['guid_timeout_s']} s)",
+        f"  retour a plat ............. {plat}",
+        f"  assiette max pendant coupure {r['assiette_max_pendant_coupure']}°",
+        f"  derive d'altitude ......... {r['derive_altitude_m']} m",
+        f"  modes traverses ........... {', '.join(r['modes_vus'])}",
+        f"  reprise apres silence ..... {'oui' if r['reprise_ok'] else 'non'}"
+        + ("   (enregistrement en cours)" if r["en_cours"] else ""),
+        "",
+        f"{'t':>6} {'emis':>5} {'roll_cmd':>9} {'roll':>7} "
+        f"{'pitch_cmd':>10} {'pitch':>7} {'alt':>6}  mode",
+    ]
+    lignes = []
+    for p in trace:
+        rc = "  —  " if p["roll_cmd"] is None else f"{p['roll_cmd']:+.1f}"
+        pc = "  —  " if p["pitch_cmd"] is None else f"{p['pitch_cmd']:+.1f}"
+        lignes.append(f"{p['t']:6.2f} {'oui' if p['emis'] else 'NON':>5} "
+                      f"{rc:>9} {p['roll']:+7.1f} {pc:>10} {p['pitch']:+7.1f} "
+                      f"{p['alt']:6.1f}  {p['mode']}")
+    return "\n".join(tete + lignes)
 
 
 @app.get("/drone/status")
