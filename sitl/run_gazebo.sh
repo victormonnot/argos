@@ -62,10 +62,23 @@ GZ_PID=$!
 
 # attendre que le monde publie /stats (physique prete) avant de lancer le SITL
 echo -n "[run_gazebo] attente de Gazebo"
+GZ_OK=0
 for _ in $(seq 1 60); do
-  if gz topic -l 2>/dev/null | grep -q "/stats"; then echo " ok"; break; fi
+  if gz topic -l 2>/dev/null | grep -q "/stats"; then echo " ok"; GZ_OK=1; break; fi
   echo -n "."; sleep 0.5
 done
+
+# Sans ce garde-fou, le script continuait et lancait le firmware dans le vide : un
+# cerveau sans corps, qui repete "No JSON sensor message received" a l'infini. Le
+# symptome etait bruyant et la cause invisible (elle est en ligne 1 du log Gazebo).
+if [[ "$GZ_OK" != "1" ]]; then
+  echo
+  echo "[run_gazebo] ECHEC : Gazebo n'a jamais publie /stats, il n'a pas demarre."
+  echo "[run_gazebo] Premieres lignes de $GZ_LOG (la cause est presque toujours la) :"
+  sed 's/\x1b\[[0-9;]*m//g' "$GZ_LOG" 2>/dev/null | head -5 | sed 's/^/      /'
+  echo "[run_gazebo] Cause frequente en SSH : DISPLAY vide -> 'export DISPLAY=:0'"
+  exit 1
+fi
 
 # Camera ISR : pitch le gimbal vers l'avant-bas (~ -0.8 rad) pour cadrer le sol ahead.
 # Tenu par le JointPositionController -> rigide avec le corps (yaw drone = yaw camera).

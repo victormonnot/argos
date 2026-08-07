@@ -111,7 +111,10 @@ _lock = threading.Lock()
 DRONE_CONN = os.environ.get("ARGOS_DRONE_CONN", "udp:127.0.0.1:14551")
 TAKEOFF_ALT = 12.0      # cadre les cibles dans la POV gimbal (validé à 12 m)
 _drone = {"status": "déconnecté", "armed": False, "alt": 0.0, "hdg": 0.0,
-          "flying": False, "href": None, "mode": "-"}
+          "flying": False, "href": None, "mode": "-", "req": False}
+                        # req : l'opérateur a appuyé sur « Décoller ». Le fil de vol
+                        # le consomme et repart pour un cycle complet — c'est ce qui
+                        # permet de redécoller sans redémarrer la console.
 _drone_started = {"v": False}
 _gimbal = {"rc7": RC7_PITCH, "rc8": RC8_YAW}   # réglable en live via /gimbal?pitch=..&yaw=..
 # Vol manuel : une INTENTION normalisée -1..1, pas une vitesse. En GUIDED_NOGPS il
@@ -386,7 +389,7 @@ def _takeoff(m, tick):
                          mavutil.mavlink.MAV_PARAM_TYPE_INT32)
     time.sleep(0.3)
     with _lock:
-        _drone["status"] = "connecte - attente GPS..."
+        _drone["status"] = "connecté · attente GPS..."
     # attendre un fix GPS 3D (EKF pret) — sinon le decollage GUIDED ne monte pas
     t0 = time.time()
     while time.time() - t0 < 40:
@@ -395,7 +398,7 @@ def _takeoff(m, tick):
         if g and g.fix_type >= 3:
             break
     with _lock:
-        _drone["status"] = "connecte - decollage..."
+        _drone["status"] = "connecté · décollage..."
 
     m.set_mode(m.mode_mapping()["GUIDED"])
     time.sleep(1)
@@ -542,7 +545,7 @@ def _drone_thread():
         _wait_request(m, tick)
         if not _takeoff(m, tick):
             with _lock:
-                _drone["status"] = "decollage ECHOUE - reappuyer pour reessayer"
+                _drone["status"] = "décollage ÉCHOUÉ · réappuyer pour réessayer"
             continue                      # `flying` reste False : la porte refuse tout
 
         # La bascule. `ModeGuidedNoGPS::requires_position()` est false -> pas de
@@ -550,15 +553,15 @@ def _drone_thread():
         ok_mode = backend.set_mode("GUIDED_NOGPS")
         time.sleep(0.5)
         with _lock:
-            _drone["status"] = ("EN VOL - GUIDED_NOGPS" if ok_mode
-                                else "EN VOL - mode 20 INDISPONIBLE")
+            _drone["status"] = ("EN VOL · GUIDED_NOGPS" if ok_mode
+                                else "EN VOL · mode 20 INDISPONIBLE")
             _drone["flying"] = True
 
         _fly(m, backend, gate, tick)
 
         with _lock:
             _drone.update({"flying": False, "href": None,
-                           "status": "pose - pret a redecoller"})
+                           "status": "posé · prêt à redécoller"})
 
 
 @asynccontextmanager
@@ -675,6 +678,10 @@ def command():
 
 @app.get("/drone/takeoff")
 def drone_takeoff():
+    """Demande un décollage. Le premier appel démarre le fil de vol ; les suivants
+    ne font que reposer le drapeau — le fil, lui, ne meurt jamais."""
+    with _lock:
+        _drone["req"] = True
     if not _drone_started["v"]:
         _drone_started["v"] = True
         threading.Thread(target=_drone_thread, daemon=True).start()
