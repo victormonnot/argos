@@ -856,13 +856,20 @@ def _cut_resume():
     depart = incl(avant[-1]) if avant else (incl(muet[0]) if muet else 0.0)
     valide = depart >= 3.0
 
-    # Deux durées différentes, et c'est la première qui prouve le mécanisme :
-    #  - tenue  : combien de temps il GARDE l'inclinaison malgré le silence
-    #             (doit valoir ~GUID_TIMEOUT)
-    #  - a_plat : quand il est vraiment revenu à l'horizontale
-    t0_silence = muet[0]["t"] if muet else 0.0
-    tenue = next((p["t"] - t0_silence for p in muet if incl(p) < depart * 0.5), None)
-    a_plat = next((p["t"] - t0_silence for p in muet if incl(p) < 2.0), None)
+    # Le compte à rebours de GUID_TIMEOUT part du DERNIER MESSAGE REÇU côté
+    # firmware, pas du premier échantillon silencieux. C'est de là qu'on mesure.
+    t_dernier = avant[-1]["t"] if avant else (muet[0]["t"] if muet else 0.0)
+
+    # « Lâcher » = s'écarter de plus de 1° de l'assiette qu'il tenait. Chercher une
+    # division par deux serait trop grossier : si le silence dure à peine plus que
+    # le délai, la chute n'a pas le temps d'aller si loin, et on conclurait à tort
+    # qu'il ne s'est rien passé.
+    lache = next((round(p["t"] - t_dernier, 2) for p in muet
+                  if abs(incl(p) - depart) > 1.0), None)
+    # La mise à plat se poursuit souvent APRÈS la reprise (le firmware a déjà
+    # basculé sa consigne) : on cherche donc le minimum sur toute la suite.
+    suite = [p for p in trace if p["t"] >= t_dernier]
+    mini = min((incl(p) for p in suite), default=None)
 
     # Le plus grand trou entre deux commandes réellement émises. S'il dépasse
     # GUID_TIMEOUT, la boucle déclenche le failsafe toute seule, sans le savoir.
@@ -877,9 +884,10 @@ def _cut_resume():
         "guid_timeout_s": GUID_TIMEOUT,
         "points": len(trace),
         "valide": valide,
-        "inclinaison_au_moment_du_silence": round(depart, 1),
-        "tenue_avant_mise_a_plat_s": tenue,
-        "retour_a_plat_s": a_plat,
+        "inclinaison_tenue": round(depart, 1),
+        "lachee_apres_s": lache,
+        "inclinaison_mini_atteinte": None if mini is None else round(mini, 1),
+        "inclinaison_finale": round(incl(trace[-1]), 1),
         "derive_altitude_m": round(max(alts) - min(alts), 1),
         "modes_vus": sorted({p["mode"] for p in trace}),
         "reprise_ok": bool(apres),
@@ -906,10 +914,14 @@ def cut_trace(json: int = 0):
         f"SONDE DE COUPURE — silence de {r['coupure_ms']} ms   "
         f"(GUID_TIMEOUT = {r['guid_timeout_s']} s)",
         f"  {verdict}",
-        f"  inclinaison au moment du silence  {r['inclinaison_au_moment_du_silence']}°",
-        f"  tenue malgre le silence ......... {duree(r['tenue_avant_mise_a_plat_s'])}"
-        f"   <- doit valoir ~{r['guid_timeout_s']} s",
-        f"  retour a plat complet ........... {duree(r['retour_a_plat_s'])}",
+        f"  inclinaison tenue avant silence . {r['inclinaison_tenue']}°",
+        f"  LACHEE apres .................... {duree(r['lachee_apres_s'])}"
+        + (f"   <- GUID_TIMEOUT = {r['guid_timeout_s']} s + reponse physique"
+           if r['lachee_apres_s'] is not None
+           else f"   <- silence trop court : il n'a jamais lache"),
+        f"  descend jusqu'a ................. {r['inclinaison_mini_atteinte']}°",
+        f"  inclinaison a la fin ............ {r['inclinaison_finale']}°"
+        f"   (reprise)",
         f"  derive d'altitude ............... {r['derive_altitude_m']} m",
         f"  modes traverses ................. {', '.join(r['modes_vus'])}",
         f"  reprise apres silence ........... {'oui' if r['reprise_ok'] else 'non'}"
