@@ -5,44 +5,51 @@ memory cement: interview material, build-in-public content, and my own notes.
 
 ---
 
-## 📍 ÉTAT COURANT — mis à jour 2026-08-02
+## 📍 ÉTAT COURANT — mis à jour 2026-08-07
 
 > Bloc réécrit à chaque session. Répond à « j'en suis où ? », pas à « que s'est-il passé ? ».
 > L'historique est plus bas, il ne bouge jamais.
 
-**Où j'en suis.** Le drone 3,5" **vole stable** (résonance résolue le 29/07 : cycle limite
-entretenu par la boucle, `ATC_RAT_RLL/PIT_P = I = 0,06`, `D = 0,0005` → 0 % de temps en
-résonance). Config validée versionnée dans `config/argos-drone-2026-07-29.param`. Chapitre
-hardware **clos** pour l'instant.
+**Où j'en suis.** `GUIDED_NOGPS` **vole en Gazebo**. La console verrouille une cible, la centre,
+l'approche, freine à la distance de garde et tient — sans qu'aucune estimation de position
+n'entre dans la commande. Les points **A, B et D** du `PORTFOLIO.md` §1.5 sont faits ; **C reste
+à faire**. Chapitre hardware toujours clos (résonance résolue le 29/07,
+`config/argos-drone-2026-07-29.param`).
 
-**Prochaine action concrète.** `GUIDED_NOGPS` en SITL + Gazebo : loi d'attitude à partir de
-l'erreur pixel, garde sur la taille de bbox, cap relatif. 100 % logiciel, aucune dépendance
-matérielle. Détail dans `PORTFOLIO.md` §1.1 et §1.4.
+**Prochaine action concrète.** §1.5-**C** : instrumenter la liaison — perte de paquets (les
+messages MAVLink sont numérotés, les trous dans la séquence la donnent gratuitement), octets/s,
+latence, Hz par message. Quatre chiffres au HUD.
 
-**Périmètre de la fin de l'ARGOS mono-drone** (arrêté le 02/08) : drone pilotable à la main →
-la station sol reçoit la vidéo + HUD → l'opérateur déclenche le hover autonome → il lock une
-cible → le drone l'engage en terminal guidance. En SITL, puis HITL, puis sur le 3,5", puis
-éventuellement sur le whoop. Le tout avec un dialecte MAVLink maison.
+**Comment relancer la démo** (l'ordre compte) :
+1. `export DISPLAY=:0` doit valoir `:0` — sinon Gazebo meurt en silence (piège SSH depuis le Mac)
+2. terminal 1 : `GUI=1 ./sitl/run_gazebo.sh`
+3. terminal 2 : `cd perception && make console` → `http://localhost:8088`
+4. source **Gazebo** → **Décoller** → cliquer une cible → **ENGAGER**
+- frein d'urgence : QGC sur le Mac → **RTL**
+- réglages live, sans redémarrer : `/tune`, `/gimbal`, `/cut`, `/cut/trace`, `/command`
+- **le fichier n'est pas le processus** : toute modif de `console.py` exige un redémarrage
 
-**Décisions actées.**
-- **Tout le calcul se fait au sol**, sur le fixe (RTX 4060). Pas de calculateur embarqué,
-  pas d'achat. La liaison de commande passera par ESP32-C3 / DroneBridge.
-- **Aucun achat** sur ce projet. Conséquence corrigée le 02/08 au soir : **le hover en flow est
-  matériellement impossible sur le 3,5"** — EKF3 exige une caméra au nadir, la Phoenix2 regarde
-  devant, et il n'y a ni companion ni caméra nadir. Donc hover en flow **en simu uniquement** ;
-  sur le vrai drone, soit hover **au GPS** (le M10 marche, à recâbler en série seule sans DA/CL),
-  soit pas de hover autonome du tout. **Décision ouverte.**
-- **Ordre imposé : engagement d'abord, hover autonome ensuite.** Le hover est le morceau où
-  les projets s'enlisent ; il ne doit pas bloquer l'artefact montrable.
+**Chiffres acquis.**
+- failsafe mesuré : le drone tient sa dernière consigne **1,28 s** après le dernier message
+  (`GUID_TIMEOUT` = 1,0 s + réponse physique) ; à 0,5 s c'était 0,63 s. Altitude tenue à 0,0 m.
+- gains réglés en vol (profil gazebo) : `kp_roll` 4°, `kd_roll` 12°, `k_pitch` 3,5°,
+  `kd_size` 10°, `size_near` 0,12.
 
 **Blocages / points ouverts.**
-- ⚠ Le hwdef `SpeedyBeeF405Mini` du fork ArduPilot (`argos-custom`) est **stagé mais pas
-  commité**, et il n'est pas certain que la FC tourne un build contenant le mode 20
-  (`GUIDED_NOGPS`). À vérifier avant tout vol qui en dépend.
-- Mousse cellules ouvertes sur le baro DPS310 : prérequis avant de compter sur l'altitude
-  tenue par `thrust = 0.5`.
-- Le mode mécanique à 15,5 Hz existe toujours, on est sous le seuil d'excitation mais pas
-  loin → pas d'Autotune tel quel.
+- ⚠ **La boucle de commande bégaie jusqu'à 0,8 s** (elle partage GPU et GIL avec YOLO), ce qui
+  déclenchait le failsafe toute seule. Pansement : `GUID_TIMEOUT` remonté à 1,0 s. Le vrai
+  correctif — sortir la boucle du processus d'inférence — n'est pas fait.
+- **Champ de la caméra trop étroit** (1,2 rad) : la cible sort vite du cadre. Arbitrage réel
+  (champ large = cible trop petite pour YOLO). Troisième voie non explorée : bouger le gimbal
+  au lieu du drone.
+- **Pas d'amortissement sur l'axe vertical de l'image** ; `size_near` est une calibration liée à
+  l'altitude, à refaire si l'altitude de vol change.
+- Le freinage inertiel de la sonde **sur-corrige légèrement** (traînée non modélisée) — connu,
+  accepté.
+- Mousse cellules ouvertes sur le baro DPS310 : prérequis avant tout vol réel qui dépend de
+  `thrust = 0,5`.
+- Le hwdef `SpeedyBeeF405Mini` du fork (`argos-custom`) est stagé mais pas commité.
+- Mode mécanique à 15,5 Hz toujours présent → pas d'Autotune tel quel.
 
 ---
 
