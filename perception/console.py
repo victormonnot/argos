@@ -134,7 +134,8 @@ _cmd = {"src": "idle", "roll": 0.0, "pitch": 0.0, "dyaw": 0.0, "thrust": 0.5,
 # (mode_guided.cpp:983). Cette sonde vérifie ce qu'il fait VRAIMENT, et en combien
 # de temps. C'est la phase 3 du plan swarm, acquise sur un seul drone.
 CUT_TAIL = 3.0          # s d'enregistrement APRÈS la reprise (voir la récupération)
-_cut = {"until": 0.0, "end": 0.0, "t0": 0.0, "ms": 0, "trace": [], "running": False}
+_cut = {"t0": 0.0, "silence": 0.0, "until": 0.0, "end": 0.0, "ms": 0,
+        "trace": [], "running": False}
 
 
 def angdiff(a, b):
@@ -548,7 +549,7 @@ def _fly(m, backend, gate, tick):
         # attitude nulle, c'est encore parler. Il faut vraiment se taire, et
         # laisser `GUID_TIMEOUT` expirer cote firmware.
         with _lock:
-            coupe = now < _cut["until"]
+            coupe = _cut["silence"] <= now < _cut["until"]
             trace_on = _cut["running"]
         if coupe:
             _cut_sample(now, None)
@@ -796,26 +797,44 @@ def fly(fwd: float = 0.0, right: float = 0.0, up: float = 0.0, dur: float = 1.2)
 
 
 @app.get("/cut")
-def cut(ms: int = 800):
+def cut(ms: int = 800, roll: float = 1.0, fwd: float = 0.0, pre: float = 1.5):
     """Sonde de coupure (PORTFOLIO §1.5-D) : cesse d'émettre pendant `ms` ms.
 
     Ne pas confondre avec « envoyer une commande nulle » : envoyer des zéros,
     c'est encore parler, et le firmware continue de nous croire vivants. Ici on
     se tait vraiment, et on laisse `GUID_TIMEOUT` expirer.
 
-    L'enregistrement couvre la coupure ET la reprise, pour voir les deux : ce que
-    le drone fait quand on disparaît, et s'il repart proprement quand on revient.
+    **La sonde pose elle-même sa condition d'expérience.** Couper alors que le
+    drone est déjà à plat ne montre rien : il n'y a rien à remettre à plat, et on
+    ne peut pas distinguer « ArduPilot a réagi » de « il n'y avait rien à faire ».
+    Donc on impose d'abord une inclinaison franche pendant `pre` secondes, **et on
+    maintient la même intention pendant tout l'enregistrement**. L'intention étant
+    constante, tout ce qui bouge dans la trace vient du firmware, pas de nous.
+
+    Signature attendue : le drone tient l'inclinaison -> silence -> il la tient
+    encore pendant `GUID_TIMEOUT` -> il se remet à plat tout seul -> on reparle
+    -> il y retourne. Un plateau, une marche, un plateau.
+
+    Par défaut on incline en ROULIS : la garde de proximité peut annuler un piqué
+    (c'est son travail), ce qui fausserait la mesure. Le roulis, lui, n'est jamais
+    bridé.
     """
     ms = max(100, min(5000, ms))
+    pre = max(0.5, min(5.0, pre))
     now = time.time()
+    duree = pre + ms / 1000.0 + CUT_TAIL
     with _lock:
         if not _drone["flying"]:
             return {"erreur": "pas en vol"}
-        _cut.update({"until": now + ms / 1000.0, "t0": now, "ms": ms,
-                     "end": now + ms / 1000.0 + CUT_TAIL,
-                     "trace": [], "running": True})
+        # L'intention opérateur couvre TOUT l'enregistrement (avant, pendant, après).
+        _manual.update({"fwd": fwd, "right": roll, "up": 0.0, "until": now + duree})
+        _cut.update({"t0": now, "silence": now + pre,
+                     "until": now + pre + ms / 1000.0, "end": now + duree,
+                     "ms": ms, "trace": [], "running": True})
     return {"coupure_ms": ms, "guid_timeout_s": GUID_TIMEOUT,
-            "relire": f"/cut/trace dans {ms / 1000.0 + CUT_TAIL:.1f} s"}
+            "inclinaison_imposee": {"roulis": roll, "avant": fwd},
+            "pre_roll_s": pre,
+            "relire": f"/cut/trace dans {duree:.1f} s"}
 
 
 def _cut_resume():
@@ -825,22 +844,46 @@ def _cut_resume():
     if not trace:
         return None, []
     muet = [p for p in trace if not p["emis"]]
+    avant = [p for p in trace if p["emis"] and (not muet or p["t"] < muet[0]["t"])]
     apres = [p for p in trace if p["emis"] and muet and p["t"] > muet[-1]["t"]]
-    # temps entre le dernier message émis et le retour à plat (< 2° sur les deux axes)
-    t_plat = next((p["t"] for p in muet
-                   if abs(p["roll"]) < 2.0 and abs(p["pitch"]) < 2.0), None)
     alts = [p["alt"] for p in trace]
+
+    def incl(p):                       # inclinaison réelle, tous axes confondus
+        return max(abs(p["roll"]), abs(p["pitch"]))
+
+    # L'assiette au moment EXACT où l'on s'est tu. Si elle est faible, la mesure
+    # ne vaut rien : il n'y avait rien à remettre à plat.
+    depart = incl(avant[-1]) if avant else (incl(muet[0]) if muet else 0.0)
+    valide = depart >= 3.0
+
+    # Deux durées différentes, et c'est la première qui prouve le mécanisme :
+    #  - tenue  : combien de temps il GARDE l'inclinaison malgré le silence
+    #             (doit valoir ~GUID_TIMEOUT)
+    #  - a_plat : quand il est vraiment revenu à l'horizontale
+    t0_silence = muet[0]["t"] if muet else 0.0
+    tenue = next((p["t"] - t0_silence for p in muet if incl(p) < depart * 0.5), None)
+    a_plat = next((p["t"] - t0_silence for p in muet if incl(p) < 2.0), None)
+
+    # Le plus grand trou entre deux commandes réellement émises. S'il dépasse
+    # GUID_TIMEOUT, la boucle déclenche le failsafe toute seule, sans le savoir.
+    # On ne compte que des points CONSÉCUTIFS tous deux émis : sinon le silence
+    # volontaire serait compté comme un bégaiement, et la mesure dirait n'importe quoi.
+    trou = max((b["t"] - a["t"] for a, b in zip(trace, trace[1:])
+                if a["emis"] and b["emis"]), default=0.0)
+
     return {
         "en_cours": en_cours,
         "coupure_ms": ms,
         "guid_timeout_s": GUID_TIMEOUT,
         "points": len(trace),
-        "retour_a_plat_s": t_plat,
-        "assiette_max_pendant_coupure": max(
-            (max(abs(p["roll"]), abs(p["pitch"])) for p in muet), default=None),
+        "valide": valide,
+        "inclinaison_au_moment_du_silence": round(depart, 1),
+        "tenue_avant_mise_a_plat_s": tenue,
+        "retour_a_plat_s": a_plat,
         "derive_altitude_m": round(max(alts) - min(alts), 1),
         "modes_vus": sorted({p["mode"] for p in trace}),
         "reprise_ok": bool(apres),
+        "plus_grand_trou_entre_commandes_s": round(trou, 2),
     }, trace
 
 
@@ -854,16 +897,26 @@ def cut_trace(json: int = 0):
     if json:
         return JSONResponse({**r, "trace": trace})
 
-    plat = "jamais" if r["retour_a_plat_s"] is None else f"{r['retour_a_plat_s']:.2f} s"
+    def duree(v):
+        return "jamais" if v is None else f"{v:.2f} s"
+
+    verdict = ("MESURE VALIDE" if r["valide"] else
+               "MESURE VIDE — le drone etait deja a plat, rien a observer")
     tete = [
         f"SONDE DE COUPURE — silence de {r['coupure_ms']} ms   "
         f"(GUID_TIMEOUT = {r['guid_timeout_s']} s)",
-        f"  retour a plat ............. {plat}",
-        f"  assiette max pendant coupure {r['assiette_max_pendant_coupure']}°",
-        f"  derive d'altitude ......... {r['derive_altitude_m']} m",
-        f"  modes traverses ........... {', '.join(r['modes_vus'])}",
-        f"  reprise apres silence ..... {'oui' if r['reprise_ok'] else 'non'}"
+        f"  {verdict}",
+        f"  inclinaison au moment du silence  {r['inclinaison_au_moment_du_silence']}°",
+        f"  tenue malgre le silence ......... {duree(r['tenue_avant_mise_a_plat_s'])}"
+        f"   <- doit valoir ~{r['guid_timeout_s']} s",
+        f"  retour a plat complet ........... {duree(r['retour_a_plat_s'])}",
+        f"  derive d'altitude ............... {r['derive_altitude_m']} m",
+        f"  modes traverses ................. {', '.join(r['modes_vus'])}",
+        f"  reprise apres silence ........... {'oui' if r['reprise_ok'] else 'non'}"
         + ("   (enregistrement en cours)" if r["en_cours"] else ""),
+        f"  plus grand trou entre commandes . {r['plus_grand_trou_entre_commandes_s']} s"
+        + ("   <-- DEPASSE GUID_TIMEOUT : la boucle declenche le failsafe seule"
+           if r["plus_grand_trou_entre_commandes_s"] > r["guid_timeout_s"] else ""),
         "",
         f"{'t':>6} {'emis':>5} {'roll_cmd':>9} {'roll':>7} "
         f"{'pitch_cmd':>10} {'pitch':>7} {'alt':>6}  mode",
