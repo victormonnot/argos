@@ -86,8 +86,13 @@ LIMITS = Limits(size_stop=GAINS[GAZEBO].size_near)   # bornes dures de la porte 
                         # sortie : indépendantes des gains, SAUF la garde de proximité
                         # qu'on aligne sur la loi pour qu'elles ne divergent pas.
 CMD_HZ = 10.0           # cadence du flux SET_ATTITUDE_TARGET
-GUID_TIMEOUT = 0.5      # s — au-delà, ArduPilot remet à plat (mode_guided.cpp:983).
-                        # Doit rester >> 1/CMD_HZ, sinon on tombe dans le filet.
+GUID_TIMEOUT = 1.0      # s — au-delà, ArduPilot remet à plat (mode_guided.cpp:983).
+                        # Était à 0,5 s (valeur recommandée au §1.1). Remonté après
+                        # MESURE : la boucle de commande, qui partage le GPU et le GIL
+                        # avec YOLO, bégaie jusqu'à 0,8 s — donc elle déclenchait le
+                        # filet toute seule, en plein vol normal, sans aucun message.
+                        # 1,0 s couvre le bégaiement observé. Le vrai correctif est de
+                        # fiabiliser la boucle ; celui-ci n'est qu'un pansement mesuré.
 
 VIDEOS = {
     "gazebo": ("POV drone · Gazebo (live)", None),
@@ -831,10 +836,28 @@ def cut(ms: int = 800, roll: float = 1.0, fwd: float = 0.0, pre: float = 1.5):
         _cut.update({"t0": now, "silence": now + pre,
                      "until": now + pre + ms / 1000.0, "end": now + duree,
                      "ms": ms, "trace": [], "running": True})
+    # FREINAGE. Incliner pendant 5 s, c'est ACCÉLÉRER pendant 5 s ; se remettre à
+    # plat ensuite ne freine rien (pas de retour de vitesse, cf. §1.1) et le drone
+    # s'en va indéfiniment. Un outil de diagnostic qui laisse le véhicule dans un
+    # état pire qu'il ne l'a trouvé n'est pas un outil de diagnostic. On rend donc
+    # la même inclinaison en sens inverse, pendant la même durée.
+    threading.Thread(target=_cut_freinage, args=(duree, roll, fwd), daemon=True).start()
     return {"coupure_ms": ms, "guid_timeout_s": GUID_TIMEOUT,
             "inclinaison_imposee": {"roulis": roll, "avant": fwd},
-            "pre_roll_s": pre,
-            "relire": f"/cut/trace dans {duree:.1f} s"}
+            "pre_roll_s": pre, "freinage_apres_s": duree,
+            "relire": f"/cut/trace dans {duree:.1f} s (le freinage suit)"}
+
+
+def _cut_freinage(duree, roll, fwd):
+    """Annule la vitesse accumulée par la sonde : même inclinaison, sens opposé,
+    même durée. Approximatif — sans retour de vitesse on ne peut pas viser zéro,
+    seulement rendre ce qu'on a pris."""
+    time.sleep(duree)
+    with _lock:
+        if not _drone["flying"]:
+            return
+        _manual.update({"fwd": -fwd, "right": -roll, "up": 0.0,
+                        "until": time.time() + duree})
 
 
 def _cut_resume():
