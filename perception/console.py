@@ -117,7 +117,7 @@ _lock = threading.Lock()
 DRONE_CONN = os.environ.get("ARGOS_DRONE_CONN", "udp:127.0.0.1:14551")
 TAKEOFF_ALT = 12.0      # cadre les cibles dans la POV gimbal (validé à 12 m)
 _drone = {"status": "déconnecté", "armed": False, "alt": 0.0, "hdg": 0.0,
-          "roll": 0.0, "pitch": 0.0,
+          "roll": 0.0, "pitch": 0.0, "vN": 0.0, "vE": 0.0,
           "flying": False, "href": None, "mode": "-", "req": False}
                         # req : l'opérateur a appuyé sur « Décoller ». Le fil de vol
                         # le consomme et repart pour un cycle complet — c'est ce qui
@@ -363,6 +363,10 @@ def _absorb(m, msg):
                 _drone["href"] = _drone["hdg"]      # cap de reference (viewport centre)
         elif t == "GLOBAL_POSITION_INT":
             _drone["alt"] = round(msg.relative_alt / 1000.0, 1)
+            # Vitesse sol, en m/s. La loi de guidage n'y touche JAMAIS — c'est tout
+            # le sujet du §1.1. Elle ne sert qu'aux instruments (freinage de la sonde).
+            _drone["vN"] = msg.vx / 100.0
+            _drone["vE"] = msg.vy / 100.0
         elif t == "HEARTBEAT":
             _drone["armed"] = bool(m.motors_armed())
             _drone["mode"] = m.flightmode
@@ -849,15 +853,40 @@ def cut(ms: int = 800, roll: float = 1.0, fwd: float = 0.0, pre: float = 1.5):
 
 
 def _cut_freinage(duree, roll, fwd):
-    """Annule la vitesse accumulée par la sonde : même inclinaison, sens opposé,
-    même durée. Approximatif — sans retour de vitesse on ne peut pas viser zéro,
-    seulement rendre ce qu'on a pris."""
+    """Ramène le drone au repos après un tir, en BOUCLE FERMÉE sur sa vitesse réelle.
+
+    Première version : rendre la même inclinaison pendant la même durée. Faux, et
+    mesuré comme tel — la phase d'accélération perd du temps (rampe initiale, mise
+    à plat pendant une partie du silence, remontée après), donc le freinage à durée
+    égale sur-corrige, et d'autant plus que le silence est long.
+
+    Ce freinage lit la VITESSE, donc le GPS. C'est délibéré et ça ne contredit pas
+    le §1.1 : **l'instrument a le droit d'utiliser des capteurs que le système
+    mesuré n'a pas.** La loi de guidage, elle, n'y touche jamais — c'est justement
+    ce qu'on démontre. Même logique que le GPS gardé comme règle de mesure et non
+    comme composant de navigation.
+    """
     time.sleep(duree)
+    t0 = time.time()
+    while time.time() - t0 < 25:
+        with _lock:
+            if not _drone["flying"]:
+                return
+            vn, ve = _drone["vN"], _drone["vE"]
+            cap = math.radians(_drone["hdg"])
+        if math.hypot(vn, ve) < 0.4:            # assez proche du repos
+            break
+        # vitesse sol -> repère corps (le drone s'incline dans SON repère)
+        v_avant = vn * math.cos(cap) + ve * math.sin(cap)
+        v_droite = -vn * math.sin(cap) + ve * math.cos(cap)
+        k = 0.25                                # intention par m/s, saturée à 1
+        with _lock:
+            _manual.update({"fwd": max(-1.0, min(1.0, -k * v_avant)),
+                            "right": max(-1.0, min(1.0, -k * v_droite)),
+                            "up": 0.0, "until": time.time() + 0.5})
+        time.sleep(0.2)
     with _lock:
-        if not _drone["flying"]:
-            return
-        _manual.update({"fwd": -fwd, "right": -roll, "up": 0.0,
-                        "until": time.time() + duree})
+        _manual["until"] = 0.0                  # on rend la main à la loi
 
 
 def _cut_resume():
