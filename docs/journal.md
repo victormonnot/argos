@@ -2225,3 +2225,14 @@ de la boucle actuelle, qui partage le GPU et le GIL avec YOLO. **Tension de conc
 trancher :** le §1.1 recommande `GUID_TIMEOUT` bas (0,2-0,5 s) ; la boucle observée ne le tient
 pas. Soit on fiabilise la boucle (fil séparé, priorité, découplage de l'inférence), soit on
 remonte le délai — mais alors le filet de sécurité se relâche. Non tranché.
+
+**Tranché dans la foulée : `GUID_TIMEOUT` 0,5 → 1,0 s.** Le bégaiement mesuré (0,7-0,8 s) est
+au-dessus de 0,5 s, donc le filet se déclenchait tout seul en vol normal. 1,0 s le couvre.
+C'est un pansement, pas le correctif : le vrai travail est de fiabiliser la boucle (la sortir du
+processus qui porte l'inférence). Consigné pour ne pas oublier que la valeur n'est pas un choix
+théorique mais le résultat d'une mesure — et que la sonde permet de la revalider à tout moment.
+
+**Défaut de la sonde elle-même, corrigé :** incliner 5 s = accélérer 5 s, et se remettre à plat
+ensuite ne freine rien (pas de retour de vitesse). Le drone partait donc indéfiniment après
+chaque tir. La sonde rend maintenant l'inclinaison en sens inverse, même durée. Un outil de
+diagnostic ne doit pas laisser le véhicule dans un état pire qu'il ne l'a trouvé.
