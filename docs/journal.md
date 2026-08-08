@@ -2232,7 +2232,24 @@ C'est un pansement, pas le correctif : le vrai travail est de fiabiliser la bouc
 processus qui porte l'inférence). Consigné pour ne pas oublier que la valeur n'est pas un choix
 théorique mais le résultat d'une mesure — et que la sonde permet de la revalider à tout moment.
 
-**Défaut de la sonde elle-même, corrigé :** incliner 5 s = accélérer 5 s, et se remettre à plat
-ensuite ne freine rien (pas de retour de vitesse). Le drone partait donc indéfiniment après
-chaque tir. La sonde rend maintenant l'inclinaison en sens inverse, même durée. Un outil de
-diagnostic ne doit pas laisser le véhicule dans un état pire qu'il ne l'a trouvé.
+**Défaut de la sonde elle-même, en deux temps.** Incliner 5 s = accélérer 5 s, et se remettre à
+plat ensuite ne freine rien (pas de retour de vitesse) : le drone partait indéfiniment après
+chaque tir. Un outil de diagnostic ne doit pas laisser le véhicule dans un état pire qu'il ne
+l'a trouvé.
+
+Premier correctif — rendre la même inclinaison pendant la même durée — **faux, et mesuré comme
+tel** : le drone repartait alors lentement dans l'autre sens, *et plus vite avec un silence long
+qu'avec un silence court*. Cause : la phase d'accélération perd du temps que la phase de
+freinage n'a pas (rampe initiale ~0,5 s, mise à plat pendant une partie du silence, remontée
+après la reprise), donc le freinage à durée égale sur-corrige — d'autant plus que le silence est
+long. L'asymétrie observée était la signature exacte du défaut.
+
+Deuxième correctif, retenu : **freinage en boucle fermée sur la vitesse mesurée**, projetée dans
+le repère corps. Cela utilise le GPS — délibérément. **L'instrument a le droit d'utiliser des
+capteurs que le système mesuré n'a pas** ; la loi de guidage, elle, n'y touche jamais, et c'est
+précisément ce qu'on démontre. Même logique que le GPS conservé comme règle de mesure et non
+comme composant de navigation.
+
+**Mesures finales, après passage de `GUID_TIMEOUT` à 1,0 s :** silence de 1500 ms → lâche à
+**1,28 s** ; silence de 800 ms → **ne lâche jamais**. Le seuil s'est déplacé exactement là où le
+paramètre l'a mis. Altitude tenue à 0,0 m près dans les deux cas, aucun changement de mode.
