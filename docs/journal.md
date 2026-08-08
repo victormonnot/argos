@@ -2170,3 +2170,58 @@ retour à l'attente. Le fil ne meurt plus jamais, donc on redécolle sans redém
 
 `gazebo_takeoff_test.py` visait par défaut `tcp:5760`, déjà occupé par mavproxy (le port série
 émulé n'accepte qu'un client). Défaut changé pour `udp:14551`, la sortie du fan-out.
+
+### La sonde de coupure (§1.5-D) — le failsafe mesuré, et un défaut de la boucle
+
+Point D du §1.5 fait : cesser d'émettre volontairement, et regarder. Deux pièges de méthode
+rencontrés avant d'obtenir une mesure exploitable, les deux instructifs.
+
+**Piège 1 — envoyer des zéros n'est pas se taire.** Une attitude nulle est encore un message :
+le firmware continue de nous croire vivants et n'entre jamais dans son failsafe. Il faut
+réellement ne rien émettre et laisser `GUID_TIMEOUT` expirer.
+
+**Piège 2 — couper sur un drone déjà à plat ne mesure rien.** Les trois premiers tirs sont
+sortis vides : ils ont été faits pendant un suivi stabilisé, donc à assiette ≈ 1°. Il n'y avait
+rien à remettre à plat, et surtout on ne pouvait pas distinguer « ArduPilot a réagi » de « il
+n'y avait rien à faire ». **La sonde impose donc elle-même sa condition** : 1,5 s d'inclinaison
+à 15° en roulis, puis le silence, puis la reprise — **avec la même intention opérateur du début
+à la fin**. L'intention étant constante, tout ce qui bouge dans la trace vient du firmware.
+Roulis et pas piqué : la garde de proximité peut annuler un piqué, ce qui fausserait la mesure.
+Un `MESURE VIDE` en tête du rapport refuse maintenant explicitement les tirs non concluants.
+
+**Le résultat, silence de 800 ms :**
+
+```
+1.50   oui   +15.0     <- dernier message emis
+1.60   NON   +15.0     ┐
+1.92   NON   +15.0     │  il TIENT, alors que plus personne ne parle
+2.03   NON   +15.0     ┘
+2.13   NON   +13.6     <- il lache
+2.45   oui    +2.7     <- presque a plat
+4.11   oui   +15.0     <- revenu, la reprise est propre
+```
+
+| | |
+|---|---|
+| inclinaison tenue | 15,0° |
+| **lâchée après** | **0,63 s** (= `GUID_TIMEOUT` 0,5 s + réponse physique) |
+| descend jusqu'à | 2,7° |
+| dérive d'altitude | **0,0 m** — la boucle verticale, elle, ne dépend pas de nous |
+| mode traversé | `GUID_NOGPS` du début à la fin, aucun changement de mode |
+
+**Le témoin à 300 ms** (sous le seuil) : `15,1 → 15,1 → 15,0`, il ne lâche **jamais**. Même code,
+même drone, seule la durée du silence change, et le comportement bascule au seuil annoncé par le
+firmware. C'est la comparaison qui fait la preuve, pas le tir isolé.
+
+**Deuxième résultat, non cherché : la boucle de commande bégaie.** Le rapport mesure aussi le
+plus grand intervalle entre deux commandes *réellement émises* (en excluant le silence
+volontaire, sinon la métrique se compte elle-même). Relevé : **0,70 s et 0,82 s** sur deux tirs
+différents, alors que la cadence nominale est 10 Hz. C'est **plus long que `GUID_TIMEOUT`** →
+le drone est tombé dans son failsafe sans que personne ne l'ait décidé, et sans aucun message.
+
+C'est exactement le piège décrit au §1.1 (« une politique dont la boucle bégaie sort
+silencieusement du régime de contrôle »), sauf qu'il ne s'agit pas d'une politique apprise mais
+de la boucle actuelle, qui partage le GPU et le GIL avec YOLO. **Tension de conception à
+trancher :** le §1.1 recommande `GUID_TIMEOUT` bas (0,2-0,5 s) ; la boucle observée ne le tient
+pas. Soit on fiabilise la boucle (fil séparé, priorité, découplage de l'inférence), soit on
+remonte le délai — mais alors le filet de sécurité se relâche. Non tranché.
