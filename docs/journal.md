@@ -2244,11 +2244,25 @@ freinage n'a pas (rampe initiale ~0,5 s, mise à plat pendant une partie du sile
 après la reprise), donc le freinage à durée égale sur-corrige — d'autant plus que le silence est
 long. L'asymétrie observée était la signature exacte du défaut.
 
-Deuxième correctif, retenu : **freinage en boucle fermée sur la vitesse mesurée**, projetée dans
-le repère corps. Cela utilise le GPS — délibérément. **L'instrument a le droit d'utiliser des
-capteurs que le système mesuré n'a pas** ; la loi de guidage, elle, n'y touche jamais, et c'est
-précisément ce qu'on démontre. Même logique que le GPS conservé comme règle de mesure et non
-comme composant de navigation.
+Deuxième essai : boucle fermée sur la **vitesse GPS**, projetée dans le repère corps. Ça marche,
+et l'argument « l'instrument a le droit d'utiliser des capteurs que le système mesuré n'a pas »
+est valable en général — mais **Victor l'a refusé, avec raison**. L'argument décisif n'est pas
+le discours no-GPS, il est opérationnel : **cette sonde doit tourner sur le vrai drone, en
+GNSS-denied.** Un nettoyage qui exige le GPS rend la procédure de test injouable dans
+l'environnement même pour lequel le système est conçu. Un banc qui ne fonctionne que là où le
+système n'a pas besoin d'être testé ne sert à rien.
+
+Troisième correctif, retenu : **comptabilité de quantité de mouvement, sans aucun GPS.** On ne
+mesure jamais la vitesse, on sait ce qu'on a fait pour la créer —
+
+    Δv = g · ∫ tan(inclinaison) dt
+
+— et l'inclinaison vient de l'IMU. On intègre ce que le tir accumule, puis on rend la même
+intégrale en sens inverse ; le gain sature l'intention tant que la dette est grande et la relâche
+près de zéro, donc pas de dépassement. C'est du dead-reckoning inertiel sur deux axes et quelques
+secondes. Imparfait par construction (traînée non modélisée, intégrale échantillonnée à la
+cadence de la télémétrie d'attitude) — on vise l'ordre de grandeur, pas le zéro. **Précision
+perdue, transférabilité gagnée.**
 
 **Mesures finales, après passage de `GUID_TIMEOUT` à 1,0 s :** silence de 1500 ms → lâche à
 **1,28 s** ; silence de 800 ms → **ne lâche jamais**. Le seuil s'est déplacé exactement là où le
