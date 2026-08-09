@@ -2274,3 +2274,75 @@ perdue, transférabilité gagnée.**
 **Mesures finales, après passage de `GUID_TIMEOUT` à 1,0 s :** silence de 1500 ms → lâche à
 **1,28 s** ; silence de 800 ms → **ne lâche jamais**. Le seuil s'est déplacé exactement là où le
 paramètre l'a mis. Altitude tenue à 0,0 m près dans les deux cas, aucun changement de mode.
+
+
+## 2026-08-08 — §1.5-C : la liaison devient un objet mesuré
+
+Dernier point du §1.5. Quatre chiffres au HUD — cadence, perte, débit, latence — plus ce qu'il a
+fallu comprendre pour qu'ils veuillent dire quelque chose.
+
+### Le principe : la perte de paquets est gratuite
+
+Chaque message MAVLink porte un **numéro de séquence sur 8 bits**, incrémenté par son émetteur.
+Les trous dans la suite donnent la perte **sans rien ajouter au protocole** : pas de champ, pas
+de message de test, aucun accord avec l'autre bout. On lit ce qui passe déjà.
+
+Trois pièges, tous rencontrés :
+
+1. **Le compteur boucle à 255.** Le passage 255 → 0 n'est pas une perte de 255 paquets.
+   `(seq - precedent - 1) % 256` règle ça ; un test le fige.
+2. **Un saut aberrant n'est pas une perte.** Un doublon ou un émetteur qui redémarre son
+   compteur produit un saut apparent de ~255 : le compter gonflerait la mesure d'un facteur
+   énorme sur un seul événement. Au-delà de 64, c'est rangé dans un compteur `desordres` séparé.
+3. **Chaque émetteur a sa propre suite.** L'autopilote (`1:1`) et la station sol (`255:190`)
+   comptent indépendamment ; les mélanger fabriquerait des pertes qui n'existent pas.
+
+### Le piège qui a forcé une vraie correction dans `console.py`
+
+`recv_match(type=[...])` ne filtre pas : il **lit et jette** (`pymavlink/mavutil.py`,
+`if type is not None and not m.get_type() in type: continue`). La console ne voyait donc que
+3 types sur la quinzaine qui circulent — et les ~80 % de messages jetés auraient été comptés
+comme des pertes. **On ne peut pas mesurer une liaison qu'on ne lit qu'à moitié.** Le filtre par
+type a sauté partout dans le chemin de vol ; `_absorb()` compte d'abord, range ensuite.
+
+### La latence : `TIMESYNC`, pas `PING`
+
+`PING` n'existe plus dans ce firmware (vérifié, aucun handler). `TIMESYNC` si
+(`GCS_Common.cpp:4401`) : on envoie `tc1 = 0, ts1 = notre horloge`, ArduPilot répond avec son
+temps dans `tc1` et **notre `ts1` tel quel**. Comparer `ts1` est indispensable — QGC émet aussi
+des TIMESYNC sur la même liaison, et sans ce filtre on mesurerait l'écho de quelqu'un d'autre.
+
+C'est un aller-retour **applicatif**, pas un ping ICMP : il traverse la file d'attente MAVLink et
+la charge du firmware, donc il mesure ce qui compte pour la boucle de commande.
+
+### Étalonner, sinon le chiffre ne vaut rien
+
+Sur TCP en local, la perte est **nulle par construction**. Lire « 0 % » ne prouve donc ni que la
+liaison est bonne, ni que l'outil fonctionne. D'où `/degrade?perte=0.1` : un robinet qui jette
+une fraction des messages **avant tout comptage**, donc le trou apparaît dans la suite des
+séquences exactement comme une vraie perte radio — et la boucle de vol en souffre pour de bon.
+
+| demandé | mesuré |
+|---|---|
+| 0 % | 0,00 % (0 sur 1 116) |
+| 20 % | **21,8 %** (237 sur 1 086) — dans le bruit, ±1,2 % à un sigma pour n ≈ 1 100 |
+
+Un test au banc fige l'étalonnage à 5 %, 20 % et 50 %.
+
+### Mesures de référence — SITL nu, TCP local
+
+```
+  rx        181.4 msg/s   5.8 kio/s
+  perte     0.00 %
+  latence   p50 5.7 ms    p95 23.1 ms
+  top msg   AHRS 7.4 Hz, ATTITUDE 7.2, GLOBAL_POSITION_INT 7.2, VFR_HUD 7.2
+```
+
+C'est la **ligne de base**. Les deux vraies liaisons du §1.2 se compareront à ces chiffres, et
+`/degrade` permet de balayer la dégradation sans matériel — le banc que réclame la phase 2 du
+swarm, obtenu sans rien acheter.
+
+Le « plus grand silence en émission » du §1.5-D est maintenant mesuré **en continu**, et plus
+seulement pendant une sonde : c'est le chiffre qui avait révélé le bégaiement de la boucle.
+
+**§1.5 terminé : A, B, C, D.**
