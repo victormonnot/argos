@@ -2346,3 +2346,50 @@ Le « plus grand silence en émission » du §1.5-D est maintenant mesuré **en 
 seulement pendant une sonde : c'est le chiffre qui avait révélé le bégaiement de la boucle.
 
 **§1.5 terminé : A, B, C, D.**
+
+### La deuxième liaison : la vidéo — et pourquoi c'est elle qui comptait
+
+Le balayage de dégradation a donné un résultat inattendu et plus utile que la courbe attendue :
+**à 80 % de perte MAVLink, l'engagement continue de fonctionner.** Ce n'est pas un raté du test,
+c'est le résultat — et il dit quelque chose sur l'architecture qui n'avait jamais été formulé.
+
+**La boucle de perception ne passe pas par MAVLink.** L'image vient de la caméra (transport
+Gazebo ici, liaison vidéo analogique sur le réel) ; MAVLink ne porte que les commandes vers le
+bas et la télémétrie vers le haut. Donc jeter 80 % de la descente ne touche ni la détection, ni
+l'erreur pixel, ni la taille de bbox, ni les commandes émises. La **seule** victime est le cap,
+utilisé pour convertir le `Δcap` relatif en cap absolu au moment de l'encodage — et il n'a rien
+coûté ici parce que **l'iris Gazebo ne yaw pas** : cap constant, donc périmé ou frais, identique.
+Sur le vrai drone, un cap vieux d'une seconde pendant que l'appareil tourne fausserait le repère
+de l'attitude commandée. C'est le seul endroit où la perte de télémétrie mord la loi.
+
+⚠ **Ne pas conclure « MAVLink ne sert à rien ».** `/degrade` ne dégrade que la **descente**. La
+**montée** porte chaque commande d'attitude à 10 Hz et reste totalement vitale — c'est `/cut` qui
+la teste, et le drone lâche en 1,28 s. Deux robinets, deux sens, deux verdicts opposés.
+
+**Chiffre exploitable au passage :** ~180 msg/s reçus, dont la console n'utilise que `ATTITUDE`,
+`GLOBAL_POSITION_INT` et `HEARTBEAT` — une quinzaine. Le reste (`RAW_IMU`, `VIBRATION`,
+`SCALED_PRESSURE`, `MEMINFO`…) est du gaspillage pur, conséquence du `MAV_DATA_STREAM_ALL`
+demandé au décollage. Indifférent sur WiFi local, décisif sur une radio à 57 600 baud (§1.2).
+
+**Défaut trouvé dans l'instrument lui-même :** `emetteurs vus` et `desordres` étaient cumulés
+depuis le démarrage, tout le reste étant fenêtré. Un `0:0` fantôme apparu à la connexion restait
+donc affiché pour toujours à côté de chiffres portant sur 3 secondes. **Mélanger deux échelles de
+temps dans un même tableau le rend ininterprétable.** Les deux lignes sont maintenant fenêtrées,
+avec une table Hz par émetteur — après correction, il ne reste que `1:1`, l'autopilote.
+
+**D'où `VisionStats`** (`control/link.py`), qui mesure le canal qui compte vraiment :
+
+| | ce que ça dit |
+|---|---|
+| Hz caméra | ce qu'on reçoit vraiment, pas ce que le SDF promet |
+| âge de la dernière image | **détecte un flux mort** — rien ne le signalait |
+| taux de détection | fraction d'images où la cible est vue ; le reste est du coast |
+| **latence image → commande** | **la mesure qui compte** |
+
+La latence est horodatée à la **capture**, pas à l'affichage : le temps d'inférence en fait
+partie, puisque la commande sera calculée sur une image déjà vieille de tout ça. Dans une boucle
+de vision, ce retard **plafonne le gain utilisable** — au-delà, le terme dérivé cesse d'amortir et
+se met à déstabiliser. Autrement dit, ce nombre borne les réglages de `guidance.py`, et les
+oscillations réglées à tâtons avaient une limite théorique qu'on ne mesurait pas.
+
+`/vision` pour le détail, trois lignes au HUD. 20 tests au banc sur `link.py`.
