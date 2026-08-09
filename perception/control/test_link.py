@@ -6,7 +6,7 @@ et pas en vol, parce qu'en vol on ne connaît justement pas la vérité.
 
     perception/.venv/bin/python -m control.test_link      # depuis perception/
 """
-from .link import LinkStats
+from .link import LinkStats, VisionStats
 
 
 def _flux(stats, seqs, t0=0.0, dt=0.01, octets=20, mtype="HEARTBEAT", src=(1, 1)):
@@ -149,6 +149,48 @@ def test_liaison_muette():
     s = LinkStats().snapshot(123.0)
     assert s.rx_hz == 0.0 and s.perte_pct == 0.0
     assert s.latence_p50_ms is None
+
+
+# ── la deuxieme liaison : la video ──────────────────────────────────────────
+def test_video_cadence_et_age():
+    v = VisionStats(fenetre=2.0)
+    for i in range(30):
+        v.on_frame(i * 0.05)                 # 20 images/s pendant 1,5 s
+    s = v.snapshot(1.45)
+    assert s.cam_hz == 15.0                  # 30 images sur la fenetre de 2 s
+    assert abs(s.age_image_ms - 0.0) < 1.0
+
+
+def test_video_un_flux_mort_se_voit():
+    """Aujourd'hui rien ne signale une camera qui s'arrete : l'age de la derniere
+    image est le seul indicateur qui monte tout seul quand plus rien n'arrive."""
+    v = VisionStats(fenetre=2.0)
+    v.on_frame(0.0)
+    assert v.snapshot(3.0).age_image_ms == 3000.0
+    assert v.snapshot(3.0).cam_hz == 0.0, "plus aucune image dans la fenetre"
+
+
+def test_video_taux_de_detection_ignore_les_images_sans_lock():
+    v = VisionStats(fenetre=10.0)
+    for _ in range(4):
+        v.on_frame(0.0, None)                # pas de cible verrouillee -> hors calcul
+    for vue in (True, True, True, False):
+        v.on_frame(0.0, vue)
+    assert v.snapshot(0.1).detection_pct == 75.0
+
+
+def test_video_latence_p50_p95():
+    v = VisionStats(fenetre=10.0)
+    for ms in (40, 45, 50, 55, 300):
+        v.on_command(0.0, ms)
+    s = v.snapshot(0.1)
+    assert s.latence_p50_ms == 50
+    assert s.latence_p95_ms == 300
+
+
+def test_video_muette():
+    s = VisionStats().snapshot(9.0)
+    assert s.cam_hz == 0.0 and s.age_image_ms is None and s.detection_pct is None
 
 
 if __name__ == "__main__":

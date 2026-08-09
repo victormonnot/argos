@@ -32,7 +32,7 @@ from ultralytics import YOLO
 from control import (CommandGate, GuidanceGains, Limits, TargetView, VehicleState,
                      VisualGuidance)
 from control.guidance import DEG, operator_command
-from control.link import LinkStats
+from control.link import LinkStats, VisionStats
 from control.mavlink_backend import MavlinkBackend
 
 try:
@@ -108,7 +108,7 @@ _state = {"jpeg": None, "dets": [], "fps": 0.0, "dims": None}
 _sel = {"name": DEFAULT}
 _track = {"locked": False, "cx": 0.0, "cy": 0.0, "error": 0.0, "size": 0.0,
           "has": False, "found": False, "engage": False, "gimbal_yaw": 0.0,
-          "cls_id": None, "last_found": 0.0, "seq": 0}
+          "cls_id": None, "last_found": 0.0, "seq": 0, "t_cap": 0.0}
 # réglages de suivi ajustables en live via /tune (sans redémarrer la console)
 _tune = {"gate": 0.35, "coast": 1.5}   # coast = secondes de maintien après perte
 _view = {"pan_x": 0, "vp_w": 0}
@@ -143,6 +143,11 @@ PING_HZ = 2.0           # cadence des requetes TIMESYNC (mesure de latence)
 # compteur de pertes ne serait jamais ni etalonne ni exerce. Et ca donne le banc
 # de degradation que reclame la phase 2 du swarm, sans materiel.
 _degrade = {"perte": 0.0}
+
+# La DEUXIEME liaison : la video. C'est elle qui porte l'information dont depend
+# la loi ; couper MAVLink en descente ne change presque rien au suivi, couper la
+# video l'arrete net. Elle etait le seul canal critique non mesure.
+_vision = VisionStats(fenetre=3.0)
 
 # Sonde de coupure (PORTFOLIO §1.5-D). On cesse volontairement d'émettre pendant
 # `cut_ms`, et on enregistre ce que le drone fait — pendant la coupure et après.
@@ -249,7 +254,11 @@ def track_update(view, dets_full, pan_x, vp_w):
                        "size": round(size, 3), "has": has, "found": found})
 
 
-def _publish(view, dets_full, fps, w, h, pan_x, vp_w):
+def _publish(view, dets_full, fps, w, h, pan_x, vp_w, t_cap):
+    """`t_cap` = instant de CAPTURE de l'image, pas d'affichage.
+
+    C'est de la que part la latence utile : le temps d'inference en fait partie,
+    puisque la commande sera calculee sur une image deja vieille de tout ca."""
     ok, buf = cv2.imencode(".jpg", view)
     if ok:
         with _lock:
@@ -258,6 +267,9 @@ def _publish(view, dets_full, fps, w, h, pan_x, vp_w):
             _state["fps"] = fps
             _state["dims"] = (w, h)
             _view.update({"pan_x": pan_x, "vp_w": vp_w})
+            _track["t_cap"] = t_cap
+            _vision.on_frame(time.time(),
+                             _track["found"] if _track["locked"] else None)
 
 
 def _video_loop(model, name):
@@ -275,6 +287,7 @@ def _video_loop(model, name):
         ok, frame = cap.read()
         if not ok:
             break
+        t_cap = time.time()                  # l'image existe a partir d'ici
         H_full, W_full = frame.shape[:2]
         result = model.predict(frame, imgsz=IMGSZ, conf=CONF, device=0, verbose=False)[0]
         dets_full = detect(result, VISDRONE_MAP)
@@ -296,7 +309,7 @@ def _video_loop(model, name):
         t_prev = now
         draw_boxes(view, dets_full, pan_x, fps)
         track_update(view, dets_full, pan_x, vp_w)
-        _publish(view, dets_full, fps, W_full, H_full, pan_x, vp_w)
+        _publish(view, dets_full, fps, W_full, H_full, pan_x, vp_w, t_cap)
     cap.release()
 
 
@@ -312,6 +325,7 @@ def _gazebo_loop(coco, cam):
         if not ok:
             time.sleep(0.03)
             continue
+        t_cap = time.time()                  # l'image existe a partir d'ici
         H, W = frame.shape[:2]
         view = frame[int(GZ_CROP_TOP * H):, :].copy()        # retire le haut (airframe)
         Hc, Wc = view.shape[:2]
@@ -324,7 +338,7 @@ def _gazebo_loop(coco, cam):
         t_prev = now
         draw_boxes(view, dets_full, pan_x, fps)
         track_update(view, dets_full, pan_x, vp_w)
-        _publish(view, dets_full, fps, Wc, Hc, pan_x, vp_w)
+        _publish(view, dets_full, fps, Wc, Hc, pan_x, vp_w, t_cap)
 
 
 
@@ -561,6 +575,7 @@ def _fly(m, backend, gate, tick):
                                 found=_track["found"], error_x=_track["error"],
                                 size=_track["size"])
             engage, seq = _track["engage"], _track["seq"]
+            t_cap = _track["t_cap"]
             man = dict(_manual)
 
         # profil de gains suivi de la source ; nouveau lock -> memoire du D remise a zero
@@ -598,6 +613,11 @@ def _fly(m, backend, gate, tick):
         # de la boucle — il se mesure maintenant en continu, pas seulement en sonde.
         _link.on_tx(now, backend.bytes_sent - octets_tx)
         octets_tx = backend.bytes_sent
+        # Age de l'information visuelle au moment PRECIS ou la commande part.
+        # Capture + inference + attente du cycle : c'est le retard total de la
+        # boucle de vision, et c'est lui qui plafonne les gains de guidance.py.
+        if target.has and t_cap:
+            _vision.on_command(now, (now - t_cap) * 1000.0)
         if trace_on:
             _cut_sample(now, res.cmd)
         with _lock:
@@ -872,6 +892,40 @@ def link(json: int = 0):
     lignes += ["", f"  {'message':<26} {'Hz':>6}"]
     lignes += [f"  {t:<26} {hz:>6.1f}" for t, hz in s.par_message]
     return "\n".join(lignes)
+
+
+@app.get("/vision", response_class=PlainTextResponse)
+def vision(json: int = 0):
+    """Etat de la liaison VIDEO — le canal dont depend reellement la loi.
+
+    MAVLink a des numeros de sequence et des accuses ; la video n'a rien de tout
+    ca. On mesure donc autre chose : ce qui arrive, a quelle fraicheur, et
+    surtout **l'age de l'information au moment ou la commande part**."""
+    v = _vision.snapshot(time.time())
+    if json:
+        return JSONResponse(v.__dict__)
+
+    def ms(x):
+        return "—" if x is None else f"{x:.0f} ms"
+
+    def pct(x):
+        return "—" if x is None else f"{x:.1f} %"
+
+    mort = v.age_image_ms is not None and v.age_image_ms > 1000
+    return "\n".join([
+        f"LIAISON VIDEO   (fenetre glissante {v.fenetre_s:.0f} s)",
+        "",
+        f"  CAMERA         {v.cam_hz:8.1f} img/s   ({v.images} images)",
+        f"  AGE DERNIERE   {ms(v.age_image_ms):>12}"
+        + ("   <-- FLUX MORT" if mort else ""),
+        f"  DETECTION      {pct(v.detection_pct):>12}   (le reste = coast)",
+        "",
+        f"  LATENCE IMAGE -> COMMANDE      p50 {ms(v.latence_p50_ms)}"
+        f"     p95 {ms(v.latence_p95_ms)}",
+        "    capture + inference + attente du cycle de commande.",
+        "    C'est ce retard qui plafonne les gains utilisables dans guidance.py :",
+        "    au-dela, le terme derive cesse d'amortir et se met a destabiliser.",
+    ])
 
 
 @app.get("/degrade")
@@ -1180,6 +1234,10 @@ HTML = """<!doctype html><html><head><meta charset="utf-8"><title>ARGOS — Mode
     <div class="stat"><span>Perte</span><b id="lloss">–</b></div>
     <div class="stat"><span>Débit</span><b id="lbps">–</b></div>
     <div class="stat"><span>Latence p50</span><b id="llat">–</b></div>
+    <div class="lbl">VIDÉO — <a href="/vision" target="_blank" style="color:#5ec8ff">détail</a></div>
+    <div class="stat"><span>Caméra</span><b id="vhz">–</b></div>
+    <div class="stat"><span>Détection</span><b id="vdet">–</b></div>
+    <div class="stat"><span>Latence img→cmd</span><b id="vlat">–</b></div>
     <div class="lbl">TÉLÉMÉTRIE</div>
     <div class="stat"><span>FPS</span><b id="fps">–</b></div>
     <div class="stat"><span>Personnes</span><b id="np">0</b></div>
@@ -1228,6 +1286,11 @@ async function poll(){
     lloss.style.color=(L.perte_pct>1)?'#ff5a4d':'#fff';
     lbps.textContent=((L.rx_bps||0)/1024).toFixed(1)+' kio/s';
     llat.textContent=(L.latence_p50_ms==null)?'–':L.latence_p50_ms.toFixed(0)+' ms';
+    const V=await (await fetch('/vision?json=1')).json();
+    vhz.textContent=(V.cam_hz??0).toFixed(0)+' img/s';
+    vdet.textContent=(V.detection_pct==null)?'–':V.detection_pct.toFixed(0)+' %';
+    vlat.textContent=(V.latence_p50_ms==null)?'–':V.latence_p50_ms.toFixed(0)+' ms';
+    vlat.style.color=(V.latence_p50_ms>250)?'#ff5a4d':'#fff';
     const c=await (await fetch('/command')).json();
     csrc.textContent=c.src; croll.textContent=(c.roll??0).toFixed(1)+'°';
     cpit.textContent=(c.pitch??0).toFixed(1)+'°'; cyaw.textContent=(c.dyaw??0).toFixed(1)+'°';

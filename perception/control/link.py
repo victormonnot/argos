@@ -139,3 +139,68 @@ class LinkStats:
             par_source=sorted(((f"{a}:{b}", round(n / f, 1))
                                for (a, b), n in par_src.items()), key=lambda x: -x[1]),
         )
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  La deuxième liaison : la vidéo
+# ═════════════════════════════════════════════════════════════════════════
+# Elle n'a ni numéro de séquence ni accusé de réception — donc rien de ce qui
+# précède ne s'y applique. Mais c'est ELLE qui porte l'information dont dépend
+# toute la loi de guidage : couper MAVLink en descente ne change presque rien au
+# suivi, couper la vidéo l'arrête net. Le canal le plus critique était le seul
+# qui n'était pas mesuré.
+
+
+@dataclass(frozen=True)
+class VisionSnapshot:
+    fenetre_s: float = 0.0
+    cam_hz: float = 0.0             # images réellement reçues par seconde
+    age_image_ms: float | None = None   # depuis la dernière image (flux mort ?)
+    detection_pct: float | None = None  # % d'images où la cible est VUE (hors coast)
+    images: int = 0
+    latence_p50_ms: float | None = None   # âge de l'info au moment d'émettre
+    latence_p95_ms: float | None = None
+
+
+class VisionStats:
+    """Instrumentation du flux vidéo -> détection -> commande.
+
+    La mesure qui compte est la **latence image → commande** : l'âge de
+    l'information sur laquelle la commande est calculée, capture comprise,
+    inférence comprise. Dans une boucle de vision, c'est ce retard qui plafonne
+    le gain utilisable — au-delà, le terme dérivé cesse d'amortir et se met à
+    déstabiliser. Autrement dit : ce nombre borne les réglages de `guidance.py`.
+    """
+
+    def __init__(self, fenetre: float = 3.0):
+        self.fenetre = fenetre
+        self._img = deque()          # (t, vue) ; vue vaut None si aucune cible verrouillée
+        self._lat = deque()          # (t, ms)
+        self._derniere = None        # horodatage de la dernière image reçue
+
+    def on_frame(self, now: float, vue=None):
+        self._derniere = now
+        self._img.append((now, vue))
+
+    def on_command(self, now: float, age_ms: float):
+        self._lat.append((now, age_ms))
+
+    def snapshot(self, now: float) -> VisionSnapshot:
+        limite = now - self.fenetre
+        for d in (self._img, self._lat):
+            while d and d[0][0] < limite:
+                d.popleft()
+        f = self.fenetre
+        avec_lock = [v for _, v in self._img if v is not None]
+        lat = [ms for _, ms in self._lat]
+        return VisionSnapshot(
+            fenetre_s=f,
+            cam_hz=round(len(self._img) / f, 1),
+            age_image_ms=None if self._derniere is None
+            else round((now - self._derniere) * 1000, 1),
+            detection_pct=None if not avec_lock
+            else round(100.0 * sum(avec_lock) / len(avec_lock), 1),
+            images=len(self._img),
+            latence_p50_ms=None if not lat else round(_pct(lat, 0.50), 1),
+            latence_p95_ms=None if not lat else round(_pct(lat, 0.95), 1),
+        )
