@@ -865,10 +865,11 @@ def link(json: int = 0):
         + ("   <-- DEPASSE GUID_TIMEOUT" if s.tx_trou_max_s > GUID_TIMEOUT else ""),
         f"  sauts de sequence non credibles  {s.desordres}"
         "   (doublons, reordonnancements, redemarrages)",
-        f"  emetteurs vus .................. {', '.join(s.sources) or '—'}",
         "",
-        f"  {'message':<26} {'Hz':>6}",
+        f"  {'emetteur':<26} {'Hz':>6}",
     ]
+    lignes += [f"  {src:<26} {hz:>6.1f}" for src, hz in s.par_source] or ["  —"]
+    lignes += ["", f"  {'message':<26} {'Hz':>6}"]
     lignes += [f"  {t:<26} {hz:>6.1f}" for t, hz in s.par_message]
     return "\n".join(lignes)
 

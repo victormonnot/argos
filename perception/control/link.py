@@ -34,14 +34,19 @@ class LinkSnapshot:
     recus: int = 0
     perdus: int = 0
     perte_pct: float = 0.0
-    desordres: int = 0              # sauts de séquence jugés non crédibles
+    desordres: int = 0              # sauts de séquence jugés non crédibles (fenêtre)
     tx_hz: float = 0.0
     tx_bps: float = 0.0
     tx_trou_max_s: float = 0.0      # plus grand silence entre deux émissions
     latence_p50_ms: float | None = None
     latence_p95_ms: float | None = None
     par_message: list = field(default_factory=list)   # [(type, hz), ...]
-    sources: list = field(default_factory=list)       # ["1:1", "255:190", ...]
+    par_source: list = field(default_factory=list)    # [("1:1", hz), ...] — sur la
+                                    # FENÊTRE, comme tout le reste. Un émetteur vu
+                                    # une seule fois au démarrage ne doit pas rester
+                                    # affiché pour toujours : mélanger « depuis
+                                    # toujours » et « ces 3 secondes » dans le même
+                                    # tableau rend le tableau ininterprétable.
 
 
 def _pct(valeurs, p):
@@ -62,11 +67,11 @@ class LinkStats:
 
     def __init__(self, fenetre: float = 3.0):
         self.fenetre = fenetre
-        self._rx = deque()          # (t, octets, type, perdus_avant_ce_message)
+        self._rx = deque()          # (t, octets, type, perdus_avant_ce_message, src)
         self._tx = deque()          # (t, octets)
         self._rtt = deque()         # (t, ms)
+        self._desordres = deque()   # (t,) — horodatés, donc fenêtrables eux aussi
         self._dernier_seq = {}      # (sysid, compid) -> dernier seq vu
-        self.desordres = 0
 
     # ── entrées ─────────────────────────────────────────────────────────────
     def on_rx(self, now: float, sysid: int, compid: int, seq: int,
@@ -81,11 +86,11 @@ class LinkStats:
                 # Réordonnancement, doublon, ou émetteur qui a redémarré son
                 # compteur. Compter ça comme des pertes gonflerait la mesure d'un
                 # facteur énorme sur un seul événement.
-                self.desordres += 1
+                self._desordres.append((now,))
             else:
                 perdus = saut
         self._dernier_seq[cle] = seq
-        self._rx.append((now, octets, mtype, perdus))
+        self._rx.append((now, octets, mtype, perdus, cle))
 
     def on_tx(self, now: float, octets: int):
         self._tx.append((now, octets))
@@ -96,7 +101,7 @@ class LinkStats:
     # ── sortie ──────────────────────────────────────────────────────────────
     def _elaguer(self, now):
         limite = now - self.fenetre
-        for d in (self._rx, self._tx, self._rtt):
+        for d in (self._rx, self._tx, self._rtt, self._desordres):
             while d and d[0][0] < limite:
                 d.popleft()
 
@@ -104,12 +109,13 @@ class LinkStats:
         self._elaguer(now)
         f = self.fenetre
         recus = len(self._rx)
-        perdus = sum(p for _, _, _, p in self._rx)
+        perdus = sum(p for _, _, _, p, _ in self._rx)
         attendus = recus + perdus
 
-        par_type = {}
-        for _, _, mtype, _ in self._rx:
+        par_type, par_src = {}, {}
+        for _, _, mtype, _, src in self._rx:
             par_type[mtype] = par_type.get(mtype, 0) + 1
+            par_src[src] = par_src.get(src, 0) + 1
 
         t_tx = [t for t, _ in self._tx]
         trou = max((b - a for a, b in zip(t_tx, t_tx[1:])), default=0.0)
@@ -118,11 +124,11 @@ class LinkStats:
         return LinkSnapshot(
             fenetre_s=f,
             rx_hz=round(recus / f, 1),
-            rx_bps=round(sum(o for _, o, _, _ in self._rx) / f, 1),
+            rx_bps=round(sum(o for _, o, _, _, _ in self._rx) / f, 1),
             recus=recus,
             perdus=perdus,
             perte_pct=round(100.0 * perdus / attendus, 2) if attendus else 0.0,
-            desordres=self.desordres,
+            desordres=len(self._desordres),
             tx_hz=round(len(self._tx) / f, 1),
             tx_bps=round(sum(o for _, o in self._tx) / f, 1),
             tx_trou_max_s=round(trou, 2),
@@ -130,5 +136,6 @@ class LinkStats:
             latence_p95_ms=None if not lat else round(_pct(lat, 0.95), 1),
             par_message=sorted(((t, round(n / f, 1)) for t, n in par_type.items()),
                                key=lambda x: -x[1])[:8],
-            sources=[f"{s}:{c}" for s, c in sorted(self._dernier_seq)],
+            par_source=sorted(((f"{a}:{b}", round(n / f, 1))
+                               for (a, b), n in par_src.items()), key=lambda x: -x[1]),
         )

@@ -64,7 +64,7 @@ def test_deux_emetteurs_ont_chacun_leur_compteur():
         st.on_rx(i * 0.01, 255, 190, 200 + i, 20, "HEARTBEAT")  # station sol
     s = st.snapshot(1.0)
     assert s.perdus == 0
-    assert s.sources == ["1:1", "255:190"]
+    assert sorted(src for src, _ in s.par_source) == ["1:1", "255:190"]
 
 
 def test_debit_et_cadence():
@@ -122,6 +122,26 @@ def test_le_compteur_retrouve_un_taux_de_perte_connu():
             st.on_rx(0.0, 1, 1, seq % 256, 20, "ATTITUDE")
         mesure = st.snapshot(0.0).perte_pct
         assert abs(mesure - 100 * taux) < 1.5, f"demande {taux}, mesure {mesure}"
+
+
+def test_les_emetteurs_sont_fenetres_comme_le_reste():
+    """Un émetteur vu une fois au démarrage ne doit pas rester listé pour toujours :
+    sinon le tableau mélange « depuis toujours » et « ces 3 dernières secondes »,
+    et plus aucune ligne n'est interprétable à côté des autres."""
+    st = LinkStats(fenetre=1.0)
+    st.on_rx(0.0, 0, 0, 0, 20, "HEARTBEAT")          # un fantome au demarrage
+    for i in range(10):
+        st.on_rx(5.0 + i * 0.01, 1, 1, i, 20, "ATTITUDE")
+    srcs = [src for src, _ in st.snapshot(5.2).par_source]
+    assert srcs == ["1:1"], f"le fantome 0:0 ne doit plus etre la : {srcs}"
+
+
+def test_les_desordres_sont_fenetres_aussi():
+    st = LinkStats(fenetre=1.0)
+    st.on_rx(0.0, 1, 1, 10, 20, "A")
+    st.on_rx(0.1, 1, 1, 10, 20, "A")                 # doublon -> 1 desordre
+    assert st.snapshot(0.5).desordres == 1
+    assert st.snapshot(9.0).desordres == 0, "un vieux desordre ne compte plus"
 
 
 def test_liaison_muette():
