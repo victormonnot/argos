@@ -15,6 +15,7 @@ sur un forum : plusieurs posts racontent des choses fausses sur ce handler.
     pour les barreaux 1-2. Le barreau 3 (CTBR) exige le bit à 1.
 """
 import math
+import time
 
 from pymavlink import mavutil
 
@@ -55,7 +56,40 @@ class MavlinkBackend(VehicleBackend):
 
     def __init__(self, conn):
         self.m = conn
-        self.sent = 0                  # compteur brut (le §1.5-C viendra s'y greffer)
+        self.sent = 0                  # commandes de vol émises
+        self._ts1 = None               # jeton de la requête TIMESYNC en cours
+
+    # ── mesure de latence (§1.5-C) ──────────────────────────────────────────
+    def ping(self):
+        """Envoie une requête `TIMESYNC` et retient son jeton.
+
+        C'est le seul aller-retour que le protocole offre sans rien inventer :
+        ArduPilot répond en renvoyant notre `ts1` tel quel, avec son propre temps
+        dans `tc1` (`GCS_Common.cpp`, `handle_timesync`). On mesure donc un vrai
+        aller-retour applicatif — pas un ping ICMP, qui ne dirait rien de la file
+        d'attente MAVLink ni de la charge du firmware.
+
+        (`PING` n'existe plus dans ce firmware : vérifié, aucun handler.)
+        """
+        self._ts1 = time.time_ns()
+        self.m.mav.timesync_send(0, self._ts1)
+
+    def pong(self, msg):
+        """Rend l'aller-retour en ms si `msg` est la réponse à NOTRE requête.
+
+        Le filtre compte : `tc1 != 0` distingue une réponse d'une requête, et
+        comparer `ts1` évite de mesurer l'écho d'une requête émise par quelqu'un
+        d'autre sur la même liaison (QGC en fait aussi)."""
+        if self._ts1 is None or msg.tc1 == 0 or msg.ts1 != self._ts1:
+            return None
+        rtt = (time.time_ns() - self._ts1) / 1e6
+        self._ts1 = None
+        return rtt
+
+    @property
+    def bytes_sent(self):
+        """Total d'octets écrits sur la liaison, compteur de pymavlink."""
+        return self.m.mav.total_bytes_sent
 
     # ── setup du mode 20 ────────────────────────────────────────────────────
     def _param(self, name: bytes, value: float, ptype=_M.MAV_PARAM_TYPE_INT32):

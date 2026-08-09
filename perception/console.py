@@ -15,6 +15,7 @@ Lance : make console   (+ un binaire ArduCopter SITL sur tcp:5760 pour Mode B)
 """
 import math
 import os
+import random
 import subprocess
 import threading
 import time
@@ -31,6 +32,7 @@ from ultralytics import YOLO
 from control import (CommandGate, GuidanceGains, Limits, TargetView, VehicleState,
                      VisualGuidance)
 from control.guidance import DEG, operator_command
+from control.link import LinkStats
 from control.mavlink_backend import MavlinkBackend
 
 try:
@@ -131,6 +133,16 @@ _manual = {"fwd": 0.0, "right": 0.0, "up": 0.0, "until": 0.0}
 # Dernière commande réellement émise — c'est ce que le HUD affiche (pas l'intention).
 _cmd = {"src": "idle", "roll": 0.0, "pitch": 0.0, "dyaw": 0.0, "thrust": 0.5,
         "reasons": [], "sent": 0, "approach": 0.0, "size": 0.0}
+
+# Instrumentation de la liaison (PORTFOLIO §1.5-C). Une instance = une liaison ;
+# le jour ou il y en a deux (§1.2 : vraie radio + WiFi), on en met deux.
+_link = LinkStats(fenetre=3.0)
+PING_HZ = 2.0           # cadence des requetes TIMESYNC (mesure de latence)
+# Degradation VOLONTAIRE de la reception, reglable en vol via /degrade?perte=0.1.
+# Sur TCP en local la perte est nulle par construction : sans ce robinet, le
+# compteur de pertes ne serait jamais ni etalonne ni exerce. Et ca donne le banc
+# de degradation que reclame la phase 2 du swarm, sans materiel.
+_degrade = {"perte": 0.0}
 
 # Sonde de coupure (PORTFOLIO §1.5-D). On cesse volontairement d'émettre pendant
 # `cut_ms`, et on enregistre ce que le drone fait — pendant la coupure et après.
@@ -346,12 +358,27 @@ def worker():
             _video_loop(visdrone, name)
 
 
-def _absorb(m, msg):
-    """Range un message de telemetrie dans `_drone`. Appele partout ou on lit la
-    liaison, y compris pendant le decollage : sinon le HUD gele."""
+def _absorb(m, msg, backend=None):
+    """Compte le message pour la liaison, puis range ce qu'on sait ranger.
+
+    L'ordre importe : on COMPTE d'abord, tous types confondus. Mesurer une
+    liaison en n'en lisant qu'une partie fabriquerait des trous de sequence
+    indiscernables de vraies pertes (§1.5-C).
+    """
     if not msg:
         return
+    if _degrade["perte"] and random.random() < _degrade["perte"]:
+        return              # jete AVANT tout comptage : le trou apparait donc dans
+                            # la suite des sequences, exactement comme une vraie
+                            # perte radio. Et la boucle de vol en souffre pour de bon.
     t = msg.get_type()
+    if t != "BAD_DATA":
+        _link.on_rx(time.time(), msg.get_srcSystem(), msg.get_srcComponent(),
+                    msg.get_seq(), len(msg.get_msgbuf()), t)
+        if t == "TIMESYNC" and backend is not None:
+            rtt = backend.pong(msg)
+            if rtt is not None:
+                _link.on_rtt(time.time(), rtt)
     with _lock:
         if t == "ATTITUDE":
             _drone["hdg"] = round(math.degrees(msg.yaw) % 360, 1)
@@ -410,7 +437,7 @@ def _gimbal_hold(m, tick):
         65535, 65535, 65535, 65535, 65535, RC6_ROLL, rc7, rc8)
 
 
-def _takeoff(m, tick):
+def _takeoff(m, tick, backend):
     """Decollage en GUIDED (donc au GPS) : monter est un probleme de position, et
     ce n'est pas celui qu'on demontre. GUIDED_NOGPS vient juste apres.
 
@@ -433,9 +460,10 @@ def _takeoff(m, tick):
     # attendre un fix GPS 3D (EKF pret) — sinon le decollage GUIDED ne monte pas
     t0 = time.time()
     while time.time() - t0 < 40:
-        g = m.recv_match(type="GPS_RAW_INT", blocking=True, timeout=1)
+        msg = m.recv_match(blocking=True, timeout=1)
+        _absorb(m, msg, backend)
         _gimbal_hold(m, tick)
-        if g and g.fix_type >= 3:
+        if msg and msg.get_type() == "GPS_RAW_INT" and msg.fix_type >= 3:
             break
     with _lock:
         _drone["status"] = "connecté · décollage..."
@@ -452,7 +480,7 @@ def _takeoff(m, tick):
                                 1, 0, 0, 0, 0, 0, 0)
         t1 = time.time()
         while time.time() - t1 < 3:
-            _absorb(m, m.recv_match(type="HEARTBEAT", blocking=True, timeout=1))
+            _absorb(m, m.recv_match(blocking=True, timeout=1), backend)
             _gimbal_hold(m, tick)
     if not m.motors_armed():
         return False
@@ -461,15 +489,16 @@ def _takeoff(m, tick):
                             mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 0, 0, 0, 0, 0, TAKEOFF_ALT)
     t0 = time.time()
     while time.time() - t0 < 30:
-        p = m.recv_match(type="GLOBAL_POSITION_INT", blocking=True, timeout=2)
-        _absorb(m, p)
+        msg = m.recv_match(blocking=True, timeout=2)
+        _absorb(m, msg, backend)
         _gimbal_hold(m, tick)
-        if p and p.relative_alt / 1000.0 >= TAKEOFF_ALT * 0.9:
+        if (msg and msg.get_type() == "GLOBAL_POSITION_INT"
+                and msg.relative_alt / 1000.0 >= TAKEOFF_ALT * 0.9):
             return True
     return False
 
 
-def _wait_request(m, tick):
+def _wait_request(m, tick, backend):
     """Au sol : on draine la liaison et on tient le gimbal, en attendant que
     l'operateur appuie sur « Decoller ». Aucune commande de vol n'est emise."""
     while True:
@@ -477,8 +506,7 @@ def _wait_request(m, tick):
             if _drone["req"]:
                 _drone["req"] = False
                 return
-        _absorb(m, m.recv_match(type=["ATTITUDE", "GLOBAL_POSITION_INT", "HEARTBEAT"],
-                                blocking=True, timeout=0.05))
+        _absorb(m, m.recv_match(blocking=True, timeout=0.05), backend)
         _gimbal_hold(m, tick)
 
 
@@ -496,13 +524,17 @@ def _fly(m, backend, gate, tick):
         src = _sel["name"]
     guidance = VisualGuidance(GAINS[GAZEBO if src == GAZEBO else "video"])
     t_cmd = time.time()
+    t_ping = 0.0
     seq_seen = -1
     t_disarm = 0.0
+    octets_tx = backend.bytes_sent
     while True:
-        _absorb(m, m.recv_match(type=["ATTITUDE", "GLOBAL_POSITION_INT", "HEARTBEAT"],
-                                blocking=True, timeout=0.02))
+        _absorb(m, m.recv_match(blocking=True, timeout=0.02), backend)
         now = time.time()
         _gimbal_hold(m, tick)
+        if now - t_ping >= 1.0 / PING_HZ:      # mesure de latence (§1.5-C)
+            t_ping = now
+            backend.ping()
 
         # Fin de vol. Les moteurs coupes sont le seul signe qui ne ment pas :
         # atterrissage volontaire, failsafe, ou contact avec le sol. Sans ca, la
@@ -561,6 +593,11 @@ def _fly(m, backend, gate, tick):
             continue
 
         res = gate.submit(cmd, state, target)
+        # Comptage TX : tout ce qui est parti depuis le cycle precedent (commande,
+        # gimbal, ping). Le "trou max" qui en sort est ce qui a revele le begaiement
+        # de la boucle — il se mesure maintenant en continu, pas seulement en sonde.
+        _link.on_tx(now, backend.bytes_sent - octets_tx)
+        octets_tx = backend.bytes_sent
         if trace_on:
             _cut_sample(now, res.cmd)
         with _lock:
@@ -595,8 +632,8 @@ def _drone_thread():
     tick = {"t": 0.0}                     # cadence propre au gimbal
 
     while True:
-        _wait_request(m, tick)
-        if not _takeoff(m, tick):
+        _wait_request(m, tick, backend)
+        if not _takeoff(m, tick, backend):
             with _lock:
                 _drone["status"] = "décollage ÉCHOUÉ · réappuyer pour réessayer"
             continue                      # `flying` reste False : la porte refuse tout
@@ -799,6 +836,59 @@ def fly(fwd: float = 0.0, right: float = 0.0, up: float = 0.0, dur: float = 1.2)
         _manual.update({"fwd": fwd, "right": right, "up": up,
                         "until": time.time() + max(0.2, min(3.0, dur))})
     return {"manual": True, "fwd": fwd, "right": right, "up": up}
+
+
+@app.get("/link", response_class=PlainTextResponse)
+def link(json: int = 0):
+    """État de la liaison (PORTFOLIO §1.5-C). Texte par défaut, `?json=1` sinon.
+
+    La perte de paquets ne coûte rien à mesurer : les messages MAVLink sont
+    numérotés, les trous dans la suite la donnent. Aucun champ ajouté, aucun
+    message de test, aucun accord avec l'autre bout."""
+    s = _link.snapshot(time.time())
+    if json:
+        return JSONResponse(s.__dict__)
+
+    def ms(v):
+        return "—" if v is None else f"{v:.1f} ms"
+
+    lignes = [
+        f"LIAISON {DRONE_CONN}   (fenetre glissante {s.fenetre_s:.0f} s)",
+        "",
+        f"  RECEPTION      {s.rx_hz:8.1f} msg/s   {s.rx_bps / 1024:7.1f} kio/s",
+        f"  PERTE          {s.perte_pct:8.2f} %       "
+        f"{s.perdus} manquants sur {s.recus + s.perdus} attendus",
+        f"  EMISSION       {s.tx_hz:8.1f} msg/s   {s.tx_bps / 1024:7.1f} kio/s",
+        f"  LATENCE        p50 {ms(s.latence_p50_ms):>10}     p95 {ms(s.latence_p95_ms)}",
+        "",
+        f"  plus grand silence en emission . {s.tx_trou_max_s} s"
+        + ("   <-- DEPASSE GUID_TIMEOUT" if s.tx_trou_max_s > GUID_TIMEOUT else ""),
+        f"  sauts de sequence non credibles  {s.desordres}"
+        "   (doublons, reordonnancements, redemarrages)",
+        f"  emetteurs vus .................. {', '.join(s.sources) or '—'}",
+        "",
+        f"  {'message':<26} {'Hz':>6}",
+    ]
+    lignes += [f"  {t:<26} {hz:>6.1f}" for t, hz in s.par_message]
+    return "\n".join(lignes)
+
+
+@app.get("/degrade")
+def degrade(perte: float = None):
+    """Robinet de dégradation : jette une fraction des messages reçus.
+
+    Sert à deux choses. **Étalonner l'instrument** — on demande 10 %, le compteur
+    de pertes doit lire 10 %, sinon il ne mesure pas ce qu'il prétend. Et
+    **observer le système sous liaison dégradée** sans avoir besoin d'une vraie
+    radio ni de s'éloigner : c'est le banc que réclame la phase 2 du swarm.
+
+    N'agit que sur la réception. Simuler la perte montante demanderait de ne pas
+    émettre, ce que fait déjà `/cut` — en tout ou rien plutôt qu'en proportion.
+    """
+    with _lock:
+        if perte is not None:
+            _degrade["perte"] = max(0.0, min(0.95, perte))
+        return dict(_degrade)
 
 
 @app.get("/cut")
@@ -1084,6 +1174,11 @@ HTML = """<!doctype html><html><head><meta charset="utf-8"><title>ARGOS — Mode
       <button onclick="fly(-1,0,0)">Reculer</button>
       <button onclick="fly(0,1,0)">Droite</button>
     </div>
+    <div class="lbl">LIAISON — <a href="/link" target="_blank" style="color:#5ec8ff">détail</a></div>
+    <div class="stat"><span>Reçu</span><b id="lrx">–</b></div>
+    <div class="stat"><span>Perte</span><b id="lloss">–</b></div>
+    <div class="stat"><span>Débit</span><b id="lbps">–</b></div>
+    <div class="stat"><span>Latence p50</span><b id="llat">–</b></div>
     <div class="lbl">TÉLÉMÉTRIE</div>
     <div class="stat"><span>FPS</span><b id="fps">–</b></div>
     <div class="stat"><span>Personnes</span><b id="np">0</b></div>
@@ -1126,6 +1221,12 @@ async function poll(){
     dst.textContent=ds.status; dmod.textContent=ds.mode??'–';
     dmod.style.color=(ds.mode==='GUIDED_NOGPS')?'#5ec8ff':'#ff5a4d';
     dhdg.textContent=(ds.hdg??0)+'°'; dalt.textContent=(ds.alt??0)+' m';
+    const L=await (await fetch('/link?json=1')).json();
+    lrx.textContent=(L.rx_hz??0).toFixed(0)+' msg/s';
+    lloss.textContent=(L.perte_pct??0).toFixed(2)+' %';
+    lloss.style.color=(L.perte_pct>1)?'#ff5a4d':'#fff';
+    lbps.textContent=((L.rx_bps||0)/1024).toFixed(1)+' kio/s';
+    llat.textContent=(L.latence_p50_ms==null)?'–':L.latence_p50_ms.toFixed(0)+' ms';
     const c=await (await fetch('/command')).json();
     csrc.textContent=c.src; croll.textContent=(c.roll??0).toFixed(1)+'°';
     cpit.textContent=(c.pitch??0).toFixed(1)+'°'; cyaw.textContent=(c.dyaw??0).toFixed(1)+'°';
