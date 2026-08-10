@@ -5,51 +5,66 @@ memory cement: interview material, build-in-public content, and my own notes.
 
 ---
 
-## 📍 ÉTAT COURANT — mis à jour 2026-08-07
+## 📍 ÉTAT COURANT — mis à jour 2026-08-08
 
 > Bloc réécrit à chaque session. Répond à « j'en suis où ? », pas à « que s'est-il passé ? ».
 > L'historique est plus bas, il ne bouge jamais.
 
-**Où j'en suis.** `GUIDED_NOGPS` **vole en Gazebo**. La console verrouille une cible, la centre,
+**Où j'en suis.** `GUIDED_NOGPS` **vole en Gazebo** : la console verrouille une cible, la centre,
 l'approche, freine à la distance de garde et tient — sans qu'aucune estimation de position
-n'entre dans la commande. Les points **A, B et D** du `PORTFOLIO.md` §1.5 sont faits ; **C reste
-à faire**. Chapitre hardware toujours clos (résonance résolue le 29/07,
-`config/argos-drone-2026-07-29.param`).
+n'entre dans la commande. **Le §1.5 du `PORTFOLIO.md` est terminé (A, B, C, D).** Chapitre
+hardware toujours clos (résonance résolue le 29/07, `config/argos-drone-2026-07-29.param`).
 
-**Prochaine action concrète.** §1.5-**C** : instrumenter la liaison — perte de paquets (les
-messages MAVLink sont numérotés, les trous dans la séquence la donnent gratuitement), octets/s,
-latence, Hz par message. Quatre chiffres au HUD.
+**Prochaine action concrète.** `PORTFOLIO.md` §1.6 étape 3 : **le dialecte MAVLink maison +
+l'inspecteur/composeur**. La moitié du chemin existe déjà — les compteurs du §1.5-C
+(`control/link.py`) sont l'ossature de l'inspecteur.
 
 **Comment relancer la démo** (l'ordre compte) :
-1. `export DISPLAY=:0` doit valoir `:0` — sinon Gazebo meurt en silence (piège SSH depuis le Mac)
+1. `echo $DISPLAY` doit dire `:0` — sinon Gazebo meurt en silence (piège SSH depuis le Mac)
 2. terminal 1 : `GUI=1 ./sitl/run_gazebo.sh`
 3. terminal 2 : `cd perception && make console` → `http://localhost:8088`
 4. source **Gazebo** → **Décoller** → cliquer une cible → **ENGAGER**
 - frein d'urgence : QGC sur le Mac → **RTL**
-- réglages live, sans redémarrer : `/tune`, `/gimbal`, `/cut`, `/cut/trace`, `/command`
 - **le fichier n'est pas le processus** : toute modif de `console.py` exige un redémarrage
 
-**Chiffres acquis.**
-- failsafe mesuré : le drone tient sa dernière consigne **1,28 s** après le dernier message
-  (`GUID_TIMEOUT` = 1,0 s + réponse physique) ; à 0,5 s c'était 0,63 s. Altitude tenue à 0,0 m.
-- gains réglés en vol (profil gazebo) : `kp_roll` 4°, `kd_roll` 12°, `k_pitch` 3,5°,
-  `kd_size` 10°, `size_near` 0,12.
+**Robinets et instruments, réglables en vol :**
+`/tune` (gains + `cmdhz`) · `/gimbal` · `/link` (liaison MAVLink) · `/vision` (liaison vidéo) ·
+`/cut` (sonde de coupure) · `/degrade` (perte volontaire en réception) · `/command` · `/fly`
+
+**Lignes de base mesurées** — c'est à ces chiffres que le HITL puis le réel se compareront,
+et l'écart sera le coût du matériel :
+
+| | |
+|---|---|
+| failsafe | lâche **1,28 s** après le dernier message (`GUID_TIMEOUT` = 1,0 s) |
+| liaison MAVLink | 180 msg/s, 5,8 kio/s, aller-retour p50 **5,7 ms** / p95 23 ms |
+| étalonnage perte | 20 % demandés → **21,8 %** mesurés |
+| liaison vidéo | 30 img/s, image → commande p50 **34 ms** / p95 46 ms |
+| boucle de commande | silence max **0,12 s** |
+| gains (profil gazebo) | `kp_roll` 4°, `kd_roll` 12°, `k_pitch` 3,5°, `kd_size` 10°, `size_near` 0,12 |
 
 **Blocages / points ouverts.**
-- ⚠ **La boucle de commande bégaie jusqu'à 0,8 s** (elle partage GPU et GIL avec YOLO), ce qui
-  déclenchait le failsafe toute seule. Pansement : `GUID_TIMEOUT` remonté à 1,0 s. Le vrai
-  correctif — sortir la boucle du processus d'inférence — n'est pas fait.
-- **Champ de la caméra trop étroit** (1,2 rad) : la cible sort vite du cadre. Arbitrage réel
-  (champ large = cible trop petite pour YOLO). Troisième voie non explorée : bouger le gimbal
-  au lieu du drone.
-- **Pas d'amortissement sur l'axe vertical de l'image** ; `size_near` est une calibration liée à
-  l'altitude, à refaire si l'altitude de vol change.
-- Le freinage inertiel de la sonde **sur-corrige légèrement** (traînée non modélisée) — connu,
-  accepté.
-- Mousse cellules ouvertes sur le baro DPS310 : prérequis avant tout vol réel qui dépend de
+- **`kd` optimal non déterminé.** L'essai à 16-20 a été jugé à l'œil et n'a rien conclu.
+  L'observable manque : écart-type de l'erreur en régime établi + dépassement après une
+  perturbation calibrée. `kd = 12` est un défaut raisonnable, pas un optimum démontré.
+- **La boucle de commande a bégayé jusqu'à 0,8 s** (GPU et GIL partagés avec YOLO), ce qui
+  déclenchait le failsafe toute seule. Deux pansements posés : `GUID_TIMEOUT` à 1,0 s, et fin du
+  gaspillage d'inférence (on ne repasse plus YOLO sur une image déjà traitée, ~84 % économisés).
+  Ne se reproduit plus — mais le vrai correctif, sortir la boucle du processus d'inférence, n'est
+  pas fait.
+- **`MAV_DATA_STREAM_ALL`** : ~180 msg/s reçus dont une quinzaine servent. Indifférent sur WiFi
+  local, décisif sur une radio à 57 600 baud (§1.2).
+- **Champ caméra étroit** (1,2 rad) : la cible sort vite du cadre. Arbitrage réel — champ large =
+  cible trop petite pour YOLO. Troisième voie non explorée : bouger le gimbal au lieu du drone.
+- `size_near` est une **calibration liée à l'altitude de vol**, à refaire si l'altitude change.
+- Le freinage inertiel de la sonde de coupure **sur-corrige légèrement** (traînée non modélisée).
+- Mousse cellules ouvertes sur le baro DPS310 : prérequis à tout vol réel dépendant de
   `thrust = 0,5`.
 - Le hwdef `SpeedyBeeF405Mini` du fork (`argos-custom`) est stagé mais pas commité.
 - Mode mécanique à 15,5 Hz toujours présent → pas d'Autotune tel quel.
+
+**Modifié hors dépôt argos :** `ardupilot_gazebo/models/gimbal_small_3d/model.sdf`,
+`update_rate` 10 → **30** (moitié moins de latence, et plus proche de la vidéo analogique réelle).
 
 ---
 
@@ -2410,3 +2425,47 @@ et c'est précisément pour ça que le compteur gonflé était grave : il rendai
 (inférence + attente du cycle de commande à 10 Hz). C'est le point de comparaison pour le HITL
 puis le réel : la liaison vidéo analogique (VTX → RC832 → MS2130 → USB) et le lien de commande
 ajouteront leur part, et **l'écart avec ces 25 ms sera la contribution du matériel, mesurée**.
+
+### Latence : ce que le balayage a réellement établi
+
+Deux expériences, une variable à la fois.
+
+**Cadence de commande — aucun effet.** `cmdhz` 10 → 25 → 40 : latence image → commande
+inchangée (84 → 77 → 80 ms, dans le bruit). **Parler plus souvent ne rend pas l'information plus
+fraîche** : entre deux images, la console répète la même information calculée sur la même image.
+La fraîcheur est fixée par la source, jamais par le consommateur. Un test qui ne bouge pas n'est
+pas un test perdu — celui-ci a éliminé une hypothèse.
+
+**Cadence caméra — c'est tout.** `update_rate` 10 → 30 Hz dans `gimbal_small_3d/model.sdf` :
+
+| | p50 | p95 |
+|---|---|---|
+| caméra 10 Hz | 84 ms | 119 ms |
+| caméra 30 Hz | **34 ms** | **46 ms** |
+
+Le terme dominant était la caméra. Gardé à 30 Hz : moitié moins de retard, et **plus proche du
+réel** (la vidéo analogique tourne à 25-30 img/s, la simu à 10 était moins fidèle qu'elle ne
+pouvait l'être). Le GPU encaisse — silence max en émission stable à 0,12 s.
+
+### Remonter `kd` après la baisse de latence : ESSAI NON CONCLUANT
+
+Prédiction faite : latence divisée par 2,5 → marge pour remonter `kd`, donc suivi plus serré.
+
+Essayé à `kd` 16 puis 20, **jugé à l'œil nu**. Impression de Victor : peut-être un peu plus de
+tremblement, mais explicitement **pas sûr**. `kd` remis à 12, faute de raison de le changer.
+
+⚠ **Ce test ne conclut rien, dans aucun sens.** Ni que remonter `kd` aide, ni que ça nuit. On
+vient de mesurer la latence au millième et on juge sa conséquence à l'œil : deux poids, deux
+mesures dans la même session. Le seul enseignement solide est méthodologique — **l'œil ne
+départage pas deux réglages d'amortissement**, et c'est précisément l'argument pour instrumenter.
+
+Hypothèse à tester, pas un résultat : `kd` pourrait avoir un **second plafond**, indépendant de
+la latence — le bruit de détection. `kd` dérive la position du centre de bbox, or YOLO ne
+redessine jamais la boîte au même endroit ; la différence de deux valeurs bruitées est plus
+bruitée que les valeurs elles-mêmes, et `tau_d` lisse sans supprimer. Si ce plafond-là domine,
+baisser la latence n'achète rien. **Plausible, non vérifié.**
+
+Pour trancher, il faut l'observable qui manque : écart-type de l'erreur en régime établi, et
+dépassement après une perturbation calibrée (`/fly?right=1` puis relâcher). Deux nombres, un
+balayage de `kd`, même méthode que pour la latence. Tant que ce n'est pas fait, `kd = 12` est un
+réglage par défaut raisonnable — pas un optimum démontré.
