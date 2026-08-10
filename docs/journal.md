@@ -2393,3 +2393,20 @@ se met à déstabiliser. Autrement dit, ce nombre borne les réglages de `guidan
 oscillations réglées à tâtons avaient une limite théorique qu'on ne mesurait pas.
 
 `/vision` pour le détail, trois lignes au HUD. 20 tests au banc sur `link.py`.
+
+**Premier résultat de l'instrument vidéo, et il se retourne contre le code :** le compteur
+affichait **62,7 img/s** pour une caméra déclarée à **10 Hz** dans le SDF. Cause :
+`GzCamera.read()` rend la **dernière image en cache**, neuve ou non. On comptait donc des tours
+de boucle, pas des images — et surtout **on repassait YOLO ~6 fois sur la même image**, sur le GPU
+même qui doit servir la boucle de commande. Corrigé via `cam.frames_received` : plus d'inférence
+sur une image déjà traitée. Environ **84 % de charge d'inférence économisée**, et c'est un
+suspect direct pour le bégaiement à 0,8 s de la boucle de commande.
+
+Note de méthode : **la vidéo n'a pas de numéro de séquence**, donc rien d'équivalent à la perte
+MAVLink. La perte s'y mesure en **déficit de cadence** — on compare le Hz reçu au Hz nominal —
+et c'est précisément pour ça que le compteur gonflé était grave : il rendait ce déficit invisible.
+
+**Ligne de base en simu**, après correction : latence image → commande **p50 25 ms / p95 34 ms**
+(inférence + attente du cycle de commande à 10 Hz). C'est le point de comparaison pour le HITL
+puis le réel : la liaison vidéo analogique (VTX → RC832 → MS2130 → USB) et le lien de commande
+ajouteront leur part, et **l'écart avec ces 25 ms sera la contribution du matériel, mesurée**.
