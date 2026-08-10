@@ -317,15 +317,26 @@ def _gazebo_loop(coco, cam):
     """Source Gazebo : POV RÉELLE du drone (détection + HUD). Le gimbal (RC override) et le
     suivi par TRANSLATION sont gérés dans _drone_thread (qui détient la connexion MAVLink)."""
     t_prev = time.time()
+    vu = -1                                  # numero de la derniere image TRAITEE
     while True:
         with _lock:
             if _sel["name"] != GAZEBO:
                 return
+        # `cam.read()` rend la DERNIERE image en cache, neuve ou non. Sans ce
+        # test on repassait YOLO plusieurs fois sur la meme image : ~6x l'inference
+        # pour rien (boucle a ~60 Hz, camera a 10 Hz), sur le GPU meme qui doit
+        # servir la boucle de commande. C'est aussi ce qui faisait mentir le
+        # compteur d'images : il comptait des tours de boucle.
+        n = cam.frames_received
+        if n == vu:
+            time.sleep(0.005)                # rien de neuf : on ne calcule rien
+            continue
+        vu = n
         ok, frame = cam.read()
         if not ok:
             time.sleep(0.03)
             continue
-        t_cap = time.time()                  # l'image existe a partir d'ici
+        t_cap = time.time()                  # a 5 ms pres, l'instant de capture
         H, W = frame.shape[:2]
         view = frame[int(GZ_CROP_TOP * H):, :].copy()        # retire le haut (airframe)
         Hc, Wc = view.shape[:2]
