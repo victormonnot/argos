@@ -29,6 +29,12 @@ logs/
 runs/
 weights/
 
+# --- Dialecte MAVLink : la source est argos.xml, le reste se régénère ---
+# Du code généré committé, ce sont deux sources de vérité qui divergent en
+# silence le jour où l'une des deux est modifiée à la main.
+mavlink/.build/
+mavlink/generated/
+
 # --- OS / éditeurs ---
 .DS_Store
 .vscode/

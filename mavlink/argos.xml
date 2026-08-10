@@ -1,0 +1,124 @@
+<?xml version="1.0"?>
+<!--
+  Dialecte MAVLink maison du projet ARGOS (PORTFOLIO §1.3).
+
+  UNE source de vérité, deux langages générés : Python pour la console de
+  perception, C pour l'application embarquée / MAVSDK. C'est le point : le
+  format n'est écrit qu'une fois, et aucun des deux bouts ne peut dériver
+  de l'autre sans que la génération le dise.
+
+  ── POURQUOI ardupilotmega ET PAS common ──────────────────────────────────
+  Le §1.3 disait `<include>common.xml</include>`. Corrigé après mesure : le flux
+  descendant d'ArduPilot contient AHRS (7,4 Hz), MEMINFO, HWSTATUS, EKF_STATUS_REPORT
+  — tous définis dans ardupilotmega.xml, pas dans common.xml. Un dialecte limité à
+  common rendrait ~30 % du flux indécodable, et l'inspecteur afficherait des IDs
+  inconnus à la place de messages parfaitement légitimes.
+  Un dialecte doit être un SUR-ensemble de ce que parle le véhicule, jamais un
+  sous-ensemble. ardupilotmega.xml inclut common.xml, donc rien n'est perdu.
+
+  ── CHOIX DE L'ID : 44000-44099 ───────────────────────────────────────────
+  Vérifié sur les 16 dialectes livrés avec pymavlink 2.4.49 :
+      common         1 .. 12920      icarous     42000 .. 42001
+      ardupilotmega  150 .. 11044    cubepilot   50001 .. 50005
+      uAvionix       10001 .. 10008  csAirLink   52000 .. 52001
+      ASLUAV         223 .. 8016     storm32     60000 .. 60047
+  Le bloc 44000-44099 est vide chez tout le monde. `test_dialect.py` refait ce
+  scan à chaque exécution : si une future version de pymavlink alloue ce bloc,
+  le banc casse — au lieu de produire en vol des trames que deux logiciels
+  décodent différemment, ce qui est le pire mode de panne d'un protocole.
+
+  Génération : `make -C mavlink`
+-->
+<mavlink>
+  <include>ardupilotmega.xml</include>
+  <dialect>44</dialect>
+
+  <enums>
+    <enum name="ARGOS_TARGET_CLASS">
+      <description>Classe opérateur d'une cible ARGOS. Volontairement PLUS PAUVRE que
+        les classes du détecteur : YOLO sort des dizaines de classes COCO/VisDrone,
+        l'opérateur n'en distingue que deux. Le remap se fait côté perception, et
+        c'est le protocole qui fixe le vocabulaire commun.</description>
+      <entry value="0" name="ARGOS_CLASS_UNKNOWN">
+        <description>Aucune cible, ou classe non déterminée.</description>
+      </entry>
+      <entry value="1" name="ARGOS_CLASS_PERSON">
+        <description>Personne.</description>
+      </entry>
+      <entry value="2" name="ARGOS_CLASS_VEHICLE">
+        <description>Véhicule (voiture, camion, bus, deux-roues).</description>
+      </entry>
+    </enum>
+
+    <enum name="ARGOS_LOCK_STATE">
+      <description>État du verrou de piste. Distinguer COAST de LOST est l'information
+        la plus utile du message : dans les deux cas le détecteur ne voit rien, mais
+        dans un cas la loi de guidage commande encore, dans l'autre elle a lâché.</description>
+      <entry value="0" name="ARGOS_LOCK_IDLE">
+        <description>Aucune cible verrouillée.</description>
+      </entry>
+      <entry value="1" name="ARGOS_LOCK_TRACK">
+        <description>Cible verrouillée et VUE sur l'image courante.</description>
+      </entry>
+      <entry value="2" name="ARGOS_LOCK_COAST">
+        <description>Cible verrouillée mais non vue : la piste est maintenue sur la
+          dernière position connue, dans la fenêtre de coast.</description>
+      </entry>
+      <entry value="3" name="ARGOS_LOCK_LOST">
+        <description>Fenêtre de coast expirée : la piste est perdue, plus aucune
+          commande de suivi n'est émise.</description>
+      </entry>
+    </enum>
+
+    <enum name="ARGOS_TARGET_FLAGS" bitmask="true">
+      <description>Drapeaux d'état de l'engagement. Séparés de ARGOS_LOCK_STATE parce
+        qu'ils sont ORTHOGONAUX au verrou : on peut être verrouillé sans engager, et
+        la garde de proximité peut mordre pendant un engagement.</description>
+      <entry value="1" name="ARGOS_TARGET_FLAG_ENGAGED">
+        <description>L'opérateur a engagé le suivi : la loi commande le drone.</description>
+      </entry>
+      <entry value="2" name="ARGOS_TARGET_FLAG_GUARD">
+        <description>La porte de sortie a modifié ou annulé la commande de ce cycle
+          (garde de proximité, bornes d'inclinaison, drone au sol).</description>
+      </entry>
+    </enum>
+  </enums>
+
+  <messages>
+    <message id="44000" name="ARGOS_TARGET">
+      <description>Désignation de cible produite par la chaîne de perception ARGOS.
+
+        Contenu strictement RELATIF À L'IMAGE : aucune position, aucune distance, aucun
+        cap. C'est la contrainte GNSS-denied portée jusque dans le protocole — un
+        consommateur de ce message ne peut PAS reconstruire une position, parce que
+        l'information n'y est pas et n'y a jamais été.
+
+        Le message porte l'horodatage de la CAPTURE, pas celui de l'émission : tout
+        consommateur peut donc calculer lui-même l'âge de l'information sur laquelle
+        il s'apprête à agir. Dans une boucle de vision, ce retard est ce qui plafonne
+        le gain utilisable ; le mettre dans le message évite que chaque bout le
+        re-mesure à sa façon.</description>
+      <field type="uint64_t" name="time_usec" units="us">Horodatage de la CAPTURE de
+        l'image dont cette cible est issue (epoch UNIX, µs). Ni l'inférence ni
+        l'émission ne sont incluses : c'est l'instant où le photon est arrivé.</field>
+      <field type="float" name="u">Écart horizontal du centre de la cible à l'axe
+        optique, normalisé : -1 = bord gauche, 0 = centré, +1 = bord droit.</field>
+      <field type="float" name="v">Écart vertical, même convention : -1 = haut,
+        +1 = bas (sens image, pas sens NED).</field>
+      <field type="float" name="size">Largeur de la boîte englobante en fraction de la
+        largeur d'image (0..1). C'est le PROXY DE DISTANCE du projet : sans stéréo ni
+        télémètre, une cible qui grossit est une cible dont on se rapproche.</field>
+      <field type="float" name="confidence">Confiance du détecteur, 0..1.</field>
+      <field type="uint32_t" name="track_age_ms" units="ms">Âge de la piste depuis le
+        verrouillage. Une piste jeune n'a pas encore prouvé qu'elle était stable.</field>
+      <field type="uint16_t" name="track_id">Identifiant de piste. Change à chaque
+        nouveau verrou — c'est ce qui permet au consommateur de savoir que la mémoire
+        du terme dérivé doit être remise à zéro.</field>
+      <field type="uint8_t" name="target_class" enum="ARGOS_TARGET_CLASS">Classe
+        opérateur de la cible.</field>
+      <field type="uint8_t" name="lock_state" enum="ARGOS_LOCK_STATE">État du verrou.</field>
+      <field type="uint8_t" name="flags" enum="ARGOS_TARGET_FLAGS" display="bitmask">Drapeaux
+        d'engagement et de garde.</field>
+    </message>
+  </messages>
+</mavlink>
