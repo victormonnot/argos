@@ -823,7 +823,8 @@ def gimbal(pitch: int = None, yaw: int = None):
 
 @app.get("/tune")
 def tune(gate: float = None, coast: float = None, kp: float = None, kd: float = None,
-         kpitch: float = None, kdsize: float = None, near: float = None):
+         kpitch: float = None, kdsize: float = None, near: float = None,
+         cmdhz: float = None):
     """Réglage live, sans redémarrer la console.
 
     Suivi : `gate` (rayon de raccroche), `coast` (s de maintien après perte).
@@ -851,9 +852,17 @@ def tune(gate: float = None, coast: float = None, kp: float = None, kd: float = 
         if near is not None:
             g.size_near = max(0.05, min(0.9, near))
             LIMITS.size_stop = g.size_near      # la garde dure suit le réglage
+        if cmdhz is not None:
+            # Cadence du flux d'attitude. La monter reduit l'attente avant
+            # emission, donc la latence image -> commande. Borne basse a 4 Hz :
+            # en dessous on frole GUID_TIMEOUT et le drone se remet a plat tout
+            # seul entre deux commandes.
+            global CMD_HZ
+            CMD_HZ = max(4.0, min(50.0, cmdhz))
         return {**_tune, "kp": round(g.kp_roll / DEG, 1), "kd": round(g.kd_roll / DEG, 1),
                 "kpitch": round(g.k_pitch / DEG, 1),
-                "kdsize": round(g.kd_size / DEG, 1), "near": round(g.size_near, 2)}
+                "kdsize": round(g.kd_size / DEG, 1), "near": round(g.size_near, 2),
+                "cmdhz": CMD_HZ}
 
 
 @app.get("/fly")
