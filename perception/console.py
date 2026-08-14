@@ -19,6 +19,7 @@ import random
 import subprocess
 import threading
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -31,7 +32,9 @@ from ultralytics import YOLO
 
 from control import (CommandGate, GuidanceGains, Limits, TargetView, VehicleState,
                      VisualGuidance)
+from control.composer import ChampInvalide, Composer
 from control.designation import TargetPublisher
+from control.designation import dialecte as ARGOS_DIALECTE
 from control.guidance import DEG, operator_command
 from control.inspector import MessageInspector
 from control.link import LinkStats, VisionStats
@@ -155,6 +158,26 @@ _degrade = {"perte": 0.0}
 # d'entree (_absorb), donc il voit tout le flux — y compris ce que la console ne
 # sait pas interpreter, ce qui est precisement l'interet.
 _inspector = MessageInspector(fenetre=5.0)
+
+# Le composeur (§1.3), moitie descendante de l'atelier.
+# File d'attente et NON emission directe : la liaison du drone a UN SEUL
+# ecrivain, le fil de vol. Deux threads qui empaquettent en parallele partagent
+# le compteur de sequence de pymavlink — les trous ainsi fabriques seraient
+# comptes comme des pertes par notre propre instrument (§1.5-C). L'outil de
+# mesure serait fausse par l'outil de diagnostic.
+_conn = {"m": None}                    # la connexion, publiee par le fil de vol
+_compose_q = deque()                   # messages en attente d'emission
+_compose_log = deque(maxlen=25)        # ce qui est parti, ce qui est revenu
+_compose_tx = {"t": 0.0}               # derniere emission (fenetre de correlation)
+# Messages que le composeur REFUSE d'emettre en vol : ce sont ceux dont la porte
+# de sortie (§1.5-A) a la propriete exclusive. Un outil de diagnostic qui peut
+# court-circuiter le garde-fou en vol n'est pas un outil de diagnostic.
+# ⚠ Limite assumee : COMMAND_LONG reste autorise alors qu'il peut armer ou
+# changer de mode. Le filtrer par type ne suffirait pas (c'est la valeur du
+# champ `command` qui pilote), et l'interdire viderait l'outil de son interet.
+PILOTAGE = {"SET_ATTITUDE_TARGET", "SET_POSITION_TARGET_LOCAL_NED",
+            "SET_POSITION_TARGET_GLOBAL_INT", "SET_ACTUATOR_CONTROL_TARGET",
+            "MANUAL_CONTROL", "RC_CHANNELS_OVERRIDE"}
 
 # La DEUXIEME liaison : la video. C'est elle qui porte l'information dont depend
 # la loi ; couper MAVLink en descente ne change presque rien au suivi, couper la
@@ -481,6 +504,25 @@ def _absorb(m, msg, backend=None):
             rtt = backend.pong(msg)
             if rtt is not None:
                 _link.on_rtt(time.time(), rtt)
+    # Les réponses aux messages composés à la main. MAVLink n'a PAS d'accusé
+    # général : la plupart des messages sont tirés sans confirmation. Seules
+    # deux familles répondent, et pas de la même façon —
+    #   COMMAND_LONG/COMMAND_INT -> COMMAND_ACK, avec un code de résultat ;
+    #   PARAM_SET                -> PARAM_VALUE, l'écho de la valeur retenue,
+    #                               qui peut différer de celle demandée.
+    # C'est la vraie leçon du composeur : « envoyé » ne veut pas dire « accepté »,
+    # et l'absence de réponse n'est pas un échec.
+    if t == "COMMAND_ACK":
+        res = mavutil.mavlink.enums.get("MAV_RESULT", {}).get(msg.result)
+        _journal_compose("RX", t, "drone", msg.get_msgbuf(),
+                         f"commande {msg.command} -> "
+                         f"{res.name if res else msg.result}")
+    elif t == "PARAM_VALUE" and time.time() - _compose_tx["t"] < 5.0:
+        # Fenêtre de 5 s après une émission : sinon un rafraîchissement de
+        # paramètres depuis QGC (plus de mille PARAM_VALUE) noierait le journal.
+        _journal_compose("RX", t, "drone", msg.get_msgbuf(),
+                         f"{msg.param_id} = {msg.param_value}")
+
     with _lock:
         if t == "ATTITUDE":
             _drone["hdg"] = round(math.degrees(msg.yaw) % 360, 1)
@@ -495,6 +537,31 @@ def _absorb(m, msg, backend=None):
         elif t == "HEARTBEAT":
             _drone["armed"] = bool(m.motors_armed())
             _drone["mode"] = m.flightmode
+
+
+def _journal_compose(sens, nom, canal, brut, note=""):
+    """Une ligne du journal de l'atelier. On garde les OCTETS des deux côtés :
+    c'est la même vue que l'inspecteur, dans l'autre sens."""
+    _compose_log.appendleft({
+        "t": time.strftime("%H:%M:%S"), "sens": sens, "nom": nom, "canal": canal,
+        "hex": (bytes(brut).hex(" ").upper() if brut else ""),
+        "octets": len(brut) if brut else 0, "note": note})
+
+
+def _compose_drain(m):
+    """Émet ce que le composeur a mis en file. Appelée par le fil de vol — donc
+    la liaison garde un seul écrivain, quoi qu'il arrive côté web."""
+    while _compose_q:
+        try:
+            msg, nom = _compose_q.popleft()
+        except IndexError:
+            return
+        try:
+            m.mav.send(msg)
+            _compose_tx["t"] = time.time()
+            _journal_compose("TX", nom, "drone", msg.get_msgbuf())
+        except Exception as e:
+            _journal_compose("TX", nom, "drone", None, f"échec : {e}")
 
 
 def _cut_sample(now, cmd):
@@ -610,6 +677,7 @@ def _wait_request(m, tick, backend):
                 return
         _absorb(m, m.recv_match(blocking=True, timeout=0.05), backend)
         _gimbal_hold(m, tick)
+        _compose_drain(m)
 
 
 def _fly(m, backend, gate, tick):
@@ -634,6 +702,7 @@ def _fly(m, backend, gate, tick):
         _absorb(m, m.recv_match(blocking=True, timeout=0.02), backend)
         now = time.time()
         _gimbal_hold(m, tick)
+        _compose_drain(m)
         if now - t_ping >= 1.0 / PING_HZ:      # mesure de latence (§1.5-C)
             t_ping = now
             backend.ping()
@@ -734,6 +803,11 @@ def _drone_thread():
         _drone_started["v"] = False
         return
 
+    _conn["m"] = m                        # le composeur a besoin du dialecte NEGOCIE :
+                        # pymavlink bascule tout seul en MAVLink 2 au premier octet
+                        # 0xFD recu (`auto_mavlink_version`), donc le catalogue
+                        # depend de ce qui s'est passe sur la liaison, pas d'une
+                        # constante ecrite quelque part.
     backend = MavlinkBackend(m)
     gate = CommandGate(backend, LIMITS)
     backend.configure_nogps(GUID_TIMEOUT)
@@ -917,6 +991,85 @@ def inspect(type: str = None):
                             status_code=200 if d else 404)
     return {"messages": _inspector.table(now), "fenetre_s": _inspector.fenetre,
             "conn": DRONE_CONN, "branchee": _drone_started["v"]}
+
+
+def _composer():
+    """Construit le composeur avec les dialectes RÉELLEMENT en service.
+
+    `mavutil.mavlink` n'est pas une constante : `auto_mavlink_version()` la
+    remplace quand la liaison se révèle être en MAVLink 2. Figer le catalogue au
+    démarrage, c'est proposer un formulaire pour un protocole qu'on ne parle
+    peut-être plus."""
+    return Composer({"drone": mavutil.mavlink, "designation": ARGOS_DIALECTE})
+
+
+@app.get("/compose/catalogue")
+def compose_catalogue():
+    """Tous les messages émettables, avec leurs champs — lus dans le dialecte.
+
+    Rien n'est codé en dur ici : les noms, types, longueurs de tableau, unités et
+    énumérés viennent des classes générées. Un catalogue écrit à la main serait
+    faux dès le prochain `make -C mavlink`."""
+    return {"messages": _composer().catalogue(),
+            "dialecte_drone": mavutil.current_dialect,
+            "version": mavutil.mavlink.WIRE_PROTOCOL_VERSION,
+            "pilotage_refuse": sorted(PILOTAGE)}
+
+
+@app.post("/compose")
+def compose(corps: dict):
+    """Fabrique un message et l'émet. `{"nom": "COMMAND_LONG", "champs": {...}}`.
+
+    Les valeurs arrivent en texte : un formulaire HTML n'envoie rien d'autre. Les
+    énumérés acceptent leur NOM (`MAV_CMD_COMPONENT_ARM_DISARM`), les entiers
+    acceptent `0x…` et `0b…` — un `type_mask` s'écrit alors comme il se lit dans
+    la documentation, au lieu d'un nombre magique qu'on ne peut plus relire.
+    """
+    nom = (corps.get("nom") or "").strip()
+    champs = corps.get("champs") or {}
+    try:
+        msg, canal = _composer().construire(nom, champs)
+    except ChampInvalide as e:
+        return JSONResponse({"ok": False, "erreur": str(e)}, status_code=400)
+
+    if canal == "designation":
+        # Canal sortant, aucun rapport avec le vol : émission directe.
+        if _publisher is None or not _publisher.actif:
+            return JSONResponse({"ok": False, "erreur": "désignation inactive"},
+                                status_code=409)
+        _publisher.mav.send(msg)
+        _journal_compose("TX", nom, canal, msg.get_msgbuf())
+        return {"ok": True, "canal": canal, "attente_ack": False,
+                "note": "canal de désignation : personne ne répond, par construction"}
+
+    if _conn["m"] is None:
+        return JSONResponse({"ok": False,
+                             "erreur": "liaison fermée — « brancher la liaison » d'abord"},
+                            status_code=409)
+    with _lock:
+        en_vol = _drone["flying"]
+    if en_vol and nom in PILOTAGE:
+        return JSONResponse(
+            {"ok": False,
+             "erreur": f"{nom} pilote le drone : en vol, il n'appartient qu'à la "
+                       "porte de sortie (§1.5-A). Se poser pour l'émettre à la main."},
+            status_code=403)
+
+    _compose_q.append((msg, nom))
+    # Vrai des deux côtés du fil : COMMAND_LONG/COMMAND_INT ont un accusé,
+    # PARAM_SET a un écho, tout le reste part sans confirmation.
+    attente = nom in ("COMMAND_LONG", "COMMAND_INT", "PARAM_SET",
+                      "PARAM_REQUEST_READ", "PARAM_REQUEST_LIST")
+    return {"ok": True, "canal": canal, "attente_ack": attente,
+            "note": "" if attente else
+                    "ce message n'a pas d'accusé : MAVLink n'en prévoit que pour "
+                    "COMMAND_LONG / COMMAND_INT (et un écho pour PARAM_SET)"}
+
+
+@app.get("/compose/log")
+def compose_log():
+    """Ce qui est parti et ce qui est revenu, octets compris."""
+    return {"entrees": list(_compose_log)}
 
 
 @app.get("/gimbal")
@@ -1502,63 +1655,93 @@ MAVHTML = """<!doctype html><html><head><meta charset="utf-8">
 <title>ARGOS — atelier MAVLink</title>
 <style>
   body{margin:0;background:#0b0f14;color:#cdd6e0;font-family:system-ui,sans-serif;font-size:13px}
-  header{padding:12px 18px;border-bottom:1px solid #1f2733;display:flex;align-items:baseline;gap:18px}
+  header{padding:11px 18px;border-bottom:1px solid #1f2733;display:flex;align-items:baseline;gap:16px}
   h1{font-size:14px;letter-spacing:.12em;color:#5ec8ff;margin:0}
   a{color:#5ec8ff}
   .sub{color:#5b6b7c;font-size:12px}
-  #wrap{display:flex;gap:0;align-items:stretch;min-height:calc(100vh - 46px)}
-  #gauche{width:46%;border-right:1px solid #1f2733;overflow:auto;max-height:calc(100vh - 46px)}
-  #droite{flex:1;padding:14px 18px;overflow:auto;max-height:calc(100vh - 46px)}
+  #wrap{display:flex;align-items:stretch;height:calc(100vh - 44px)}
+  .col{overflow:auto;height:100%}
+  #gauche{width:30%;border-right:1px solid #1f2733}
+  #milieu{width:37%;border-right:1px solid #1f2733;padding:12px 16px}
+  #droite{flex:1;padding:12px 16px}
   table{border-collapse:collapse;width:100%}
   th{position:sticky;top:0;background:#11161d;color:#5b6b7c;font-weight:500;font-size:11px;
-     letter-spacing:.08em;text-align:left;padding:8px 10px;border-bottom:1px solid #1f2733}
-  td{padding:6px 10px;border-bottom:1px solid #141b23;font-variant-numeric:tabular-nums}
+     letter-spacing:.08em;text-align:left;padding:8px 9px;border-bottom:1px solid #1f2733}
+  td{padding:5px 9px;border-bottom:1px solid #141b23;font-variant-numeric:tabular-nums}
   tr.msg{cursor:pointer}
   tr.msg:hover td{background:#131b24}
   tr.msg.on td{background:#10212e;color:#fff}
   .num{text-align:right;color:#9fb0c0}
   .argos td{color:#ffd479}
   .bad td{color:#ff5a4d}
-  h2{font-size:12px;letter-spacing:.1em;color:#5b6b7c;margin:18px 0 8px;font-weight:500}
-  pre{background:#11161d;border:1px solid #1f2733;border-radius:6px;padding:10px;
-      overflow-x:auto;font-size:12px;line-height:1.6;color:#9fb0c0;margin:0}
-  .hex{color:#7fd8a0;letter-spacing:.04em}
-  .kv{display:grid;grid-template-columns:150px 1fr;gap:2px 10px}
+  h2{font-size:11px;letter-spacing:.1em;color:#5b6b7c;margin:16px 0 7px;font-weight:500}
+  h2:first-child{margin-top:0}
+  pre{background:#11161d;border:1px solid #1f2733;border-radius:6px;padding:9px;
+      overflow-x:auto;font-size:12px;line-height:1.55;color:#9fb0c0;margin:0;white-space:pre-wrap;
+      word-break:break-all}
+  .hex{color:#7fd8a0;letter-spacing:.03em}
+  .kv{display:grid;grid-template-columns:145px 1fr;gap:2px 10px;padding:1px 0}
   .kv b{color:#fff;font-weight:500;font-variant-numeric:tabular-nums}
-  .kv span{color:#5b6b7c}
-  .tag{display:inline-block;padding:1px 7px;border-radius:10px;border:1px solid #233040;
-       color:#7f93a6;font-size:11px;margin-left:6px}
+  .kv>span{color:#5b6b7c}
+  .tag{display:inline-block;padding:1px 6px;border-radius:9px;border:1px solid #233040;
+       color:#7f93a6;font-size:11px;margin-left:5px}
   button{padding:7px 12px;border-radius:6px;border:1px solid #233040;background:#161d26;
          color:#bcccdb;font-size:12px;cursor:pointer}
   button:hover{border-color:#5ec8ff;color:#fff}
-  #vide{color:#5b6b7c;padding:30px 0;line-height:1.7}
+  button.go{border-color:#5ec8ff;color:#fff;background:#10212e;width:100%;margin-top:10px;
+            padding:9px;letter-spacing:.06em}
+  input,select{background:#0e141b;border:1px solid #233040;border-radius:5px;color:#cdd6e0;
+    padding:5px 7px;font-size:12px;font-family:inherit;width:100%;box-sizing:border-box}
+  input:focus,select:focus{outline:none;border-color:#5ec8ff}
+  .champ{display:grid;grid-template-columns:1fr 1.1fr;gap:6px;align-items:center;margin:4px 0}
+  .champ label{color:#9fb0c0;font-size:12px;overflow:hidden;text-overflow:ellipsis}
+  .champ small{color:#5b6b7c;display:block;font-size:10px}
+  .log{border-left:2px solid #233040;padding:5px 0 5px 9px;margin:7px 0;font-size:12px}
+  .log.tx{border-color:#5ec8ff}
+  .log.rx{border-color:#7fd8a0}
+  .log .hex{font-size:11px;color:#5f7d6c}
+  #err{color:#ff5a4d;margin-top:8px;min-height:16px;line-height:1.5}
+  #vide{color:#5b6b7c;padding:26px 12px;line-height:1.7;text-align:center}
 </style></head><body>
 <header>
   <h1>ARGOS · ATELIER MAVLINK</h1>
   <span class="sub" id="conn">—</span>
-  <span class="sub">§1.3 — inspecteur (flux montant)</span>
+  <span class="sub">§1.3 — un seul outil, les deux sens</span>
   <a href="/" class="sub">← console</a>
 </header>
 <div id="wrap">
-  <div id="gauche">
+  <div class="col" id="gauche">
     <table>
-      <thead><tr><th>message</th><th class="num">id</th><th class="num">Hz</th>
-        <th class="num">octets</th><th class="num">total</th><th>source</th></tr></thead>
+      <thead><tr><th>montant</th><th class="num">id</th><th class="num">Hz</th>
+        <th class="num">o</th><th>src</th></tr></thead>
       <tbody id="liste"></tbody>
     </table>
-    <div id="vide" style="text-align:center">
+    <div id="vide">
       Aucun message reçu.<br>
-      La liaison s'ouvre au premier appel — <button onclick="brancher()">brancher la liaison</button><br>
-      <span class="sub">(sans décoller : on inspecte au sol)</span>
+      <button onclick="brancher()">brancher la liaison</button><br>
+      <span class="sub">sans décoller — on inspecte au sol</span>
     </div>
   </div>
-  <div id="droite"><div id="detail" class="sub">Choisis un message à gauche.</div></div>
+
+  <div class="col" id="milieu"><div id="detail" class="sub">Choisis un message à gauche.</div></div>
+
+  <div class="col" id="droite">
+    <h2>COMPOSEUR — fabriquer un message</h2>
+    <input id="filtre" placeholder="filtrer (ex: COMMAND, ARGOS, PARAM)" oninput="remplirSelect()">
+    <select id="choix" size="1" onchange="formulaire()" style="margin-top:6px"></select>
+    <div id="form" style="margin-top:10px"></div>
+    <button class="go" onclick="envoyer()">ENVOYER</button>
+    <div id="err"></div>
+    <h2>ALLER-RETOUR — ce qui part, ce qui revient</h2>
+    <div id="journal" class="sub">rien pour l'instant.</div>
+  </div>
 </div>
 <script>
-let choisi=null, fige=false;
+let choisi=null, cat=[], parNom={};
+function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 async function brancher(){ await fetch('/drone/connect'); }
-function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
+// ── colonne 1 : le flux montant ────────────────────────────────────────────
 async function majTable(){
   const d=await (await fetch('/inspect')).json();
   conn.textContent=d.conn+(d.branchee?'':'  (liaison fermée)');
@@ -1566,53 +1749,96 @@ async function majTable(){
   vide.style.display=m.length?'none':'block';
   liste.innerHTML=m.map(x=>{
     const cls=(x.id>=44000&&x.id<44100)?'argos':(x.id<0?'bad':'');
-    return `<tr class="msg ${cls} ${x.type===choisi?'on':''}" onclick="voir('${x.type}')">
-      <td>${esc(x.type)}</td><td class="num">${x.id}</td><td class="num">${x.hz.toFixed(1)}</td>
-      <td class="num">${x.octets}</td><td class="num">${x.total}</td><td>${esc(x.src)}</td></tr>`;
+    return '<tr class="msg '+cls+(x.type===choisi?' on':'')+'" onclick="voir(\\''+x.type+'\\')">'
+      +'<td>'+esc(x.type)+'</td><td class="num">'+x.id+'</td><td class="num">'+x.hz.toFixed(1)
+      +'</td><td class="num">'+x.octets+'</td><td>'+esc(x.src)+'</td></tr>';
   }).join('');
 }
-
 async function voir(t){ choisi=t; await majDetail(); }
 
+// ── colonne 2 : le détail d'un message reçu ────────────────────────────────
 async function majDetail(){
   if(!choisi) return;
-  const r=await fetch('/inspect?type='+encodeURIComponent(choisi));
-  const d=await r.json();
+  const d=await (await fetch('/inspect?type='+encodeURIComponent(choisi))).json();
   if(d.erreur){ detail.innerHTML='<span class="sub">'+esc(d.erreur)+'</span>'; return; }
-  const entete=(d.entete||[]).map(([nom,octets,quoi])=>
-    `<div class="kv"><span>${esc(nom)}</span><b><span class="hex">${esc(octets)}</span>
-      <span class="tag">${esc(quoi)}</span></b></div>`).join('');
+  const entete=(d.entete||[]).map(e=>
+    '<div class="kv"><span>'+esc(e[0])+'</span><b><span class="hex">'+esc(e[1])
+    +'</span><span class="tag">'+esc(e[2])+'</span></b></div>').join('');
   const champs=(d.champs||[]).map(c=>
-    `<div class="kv"><span>${esc(c.nom)}</span><b>${esc(JSON.stringify(c.valeur))}
-      <span class="tag">${esc(c.type)}</span></b></div>`).join('');
-  detail.innerHTML=`
-    <div style="display:flex;align-items:baseline;gap:14px">
-      <div style="font-size:16px;color:#fff">${esc(d.type)}</div>
-      <span class="tag">id ${d.id}</span><span class="tag">MAVLink ${d.version}</span>
-      <span class="tag">${d.octets} octets</span><span class="tag">de ${esc(d.src)}</span>
-      <span class="tag">seq ${d.seq}</span><span class="tag">reçu il y a ${d.age_ms} ms</span>
-    </div>
-    <h2>OCTETS BRUTS — la trame telle qu'elle est arrivée</h2>
-    <pre class="hex">${esc(d.hex)}</pre>
-    <h2>EN-TÊTE — positions figées par le protocole</h2>
-    ${entete}
-    <h2>CHAMPS DÉCODÉS — ordre de la DÉFINITION, pas celui du fil</h2>
-    ${champs||'<span class="sub">aucun champ (message inconnu du dialecte)</span>'}
-    <p class="sub" style="margin-top:16px;line-height:1.6">
-      MAVLink réordonne les champs par taille décroissante à l'encodage, pour que
-      chacun tombe sur une frontière alignée. L'ordre ci-dessus est celui de la
-      définition XML — il ne correspond donc pas à l'ordre des octets ci-dessus,
-      et c'est normal.</p>`;
+    '<div class="kv"><span>'+esc(c.nom)+'</span><b>'+esc(JSON.stringify(c.valeur))
+    +'<span class="tag">'+esc(c.type)+'</span></b></div>').join('');
+  detail.innerHTML=
+    '<div style="font-size:15px;color:#fff;margin-bottom:6px">'+esc(d.type)+'</div>'
+    +'<div><span class="tag">id '+d.id+'</span><span class="tag">MAVLink '+d.version+'</span>'
+    +'<span class="tag">'+d.octets+' octets</span><span class="tag">de '+esc(d.src)+'</span>'
+    +'<span class="tag">seq '+d.seq+'</span><span class="tag">il y a '+d.age_ms+' ms</span></div>'
+    +'<h2>OCTETS BRUTS</h2><pre class="hex">'+esc(d.hex)+'</pre>'
+    +'<h2>EN-TÊTE — positions figées par le protocole</h2>'+entete
+    +'<h2>CHAMPS — ordre de la DÉFINITION, pas celui du fil</h2>'
+    +(champs||'<span class="sub">aucun champ (message hors dialecte)</span>')
+    +'<p class="sub" style="margin-top:14px;line-height:1.6">MAVLink réordonne les champs par '
+    +'taille décroissante à l\\'encodage, pour que chacun tombe sur une frontière alignée. '
+    +'L\\'ordre ci-dessus est celui du XML : il ne suit donc pas les octets, et c\\'est normal.</p>';
+}
+
+// ── colonne 3 : le composeur ───────────────────────────────────────────────
+async function chargerCatalogue(){
+  const d=await (await fetch('/compose/catalogue')).json();
+  cat=d.messages||[]; parNom={}; cat.forEach(m=>parNom[m.nom]=m);
+  remplirSelect();
+}
+function remplirSelect(){
+  const f=(filtre.value||'').toUpperCase();
+  const l=cat.filter(m=>m.nom.includes(f));
+  const garde=choix.value;
+  choix.innerHTML=l.map(m=>'<option value="'+m.nom+'">'+m.nom+'  ·  '+m.id
+    +(m.canal==='designation'?'  · désignation':'')+'</option>').join('');
+  if(l.some(m=>m.nom===garde)) choix.value=garde;
+  formulaire();
+}
+function formulaire(){
+  const m=parNom[choix.value];
+  if(!m){ form.innerHTML=''; return; }
+  form.innerHTML=m.champs.map(c=>{
+    const val=c.auto?'1':'0';
+    const aide=[c.type+(c.tableau?'['+c.tableau+']':''),c.unite,c.enum,c.bitmask?'bitmask':'']
+               .filter(Boolean).join(' · ');
+    return '<div class="champ"><label>'+esc(c.nom)+'<small>'+esc(aide)+'</small></label>'
+      +'<input id="f_'+esc(c.nom)+'" value="'+val+'"></div>';
+  }).join('');
+}
+async function envoyer(){
+  const m=parNom[choix.value];
+  if(!m) return;
+  const champs={};
+  m.champs.forEach(c=>{ champs[c.nom]=document.getElementById('f_'+c.nom).value; });
+  err.style.color='#ff5a4d'; err.textContent='';
+  const r=await fetch('/compose',{method:'POST',headers:{'Content-Type':'application/json'},
+                                  body:JSON.stringify({nom:m.nom,champs:champs})});
+  const d=await r.json();
+  if(!d.ok){ err.textContent=d.erreur; return; }
+  err.style.color='#5b6b7c';
+  err.textContent=d.attente_ack?'envoyé — accusé attendu':('envoyé — '+(d.note||''));
+  majJournal();
+}
+async function majJournal(){
+  const d=await (await fetch('/compose/log')).json();
+  const e=d.entrees||[];
+  journal.innerHTML=e.length?e.map(x=>
+    '<div class="log '+(x.sens==='TX'?'tx':'rx')+'">'
+    +'<b style="color:#fff">'+(x.sens==='TX'?'→ ':'← ')+esc(x.nom)+'</b> '
+    +'<span class="sub">'+x.t+' · '+x.octets+' o'+(x.canal?' · '+esc(x.canal):'')+'</span>'
+    +(x.note?'<div class="sub" style="color:#9fb0c0">'+esc(x.note)+'</div>':'')
+    +'<div class="hex">'+esc(x.hex)+'</div></div>').join('')
+    :'<span class="sub">rien pour l\\'instant.</span>';
 }
 
 async function boucle(){
-  try{ await majTable(); await majDetail(); }catch(e){}
+  try{ await majTable(); await majDetail(); await majJournal(); }catch(e){}
   setTimeout(boucle,500);
 }
-boucle();
+chargerCatalogue(); boucle();
 </script></body></html>"""
-
-
 @app.get("/mavlink", response_class=HTMLResponse)
 def mavlink_atelier():
     return MAVHTML
