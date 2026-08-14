@@ -15,13 +15,13 @@ l'approche, freine à la distance de garde et tient — sans qu'aucune estimatio
 n'entre dans la commande. **§1.5 terminé (A, B, C, D).** Chapitre hardware toujours clos
 (résonance résolue le 29/07, `config/argos-drone-2026-07-29.param`).
 
-**§1.3 en cours — dialecte + inspecteur faits, composeur restant.** `mavlink/argos.xml` définit
-`ARGOS_TARGET` (id 44000), généré en **Python, C et C++11** depuis la même source ; deux
-consommateurs compilés dans `mavlink/consumers/` décodent ce que la console émet. L'inspecteur
-vit sur `http://localhost:8088/mavlink`.
+**§1.3 TERMINÉ.** `mavlink/argos.xml` définit `ARGOS_TARGET` (id 44000), généré en **Python, C et
+C++11** depuis la même source ; deux consommateurs compilés (`mavlink/consumers/`) décodent ce que
+la console émet. L'atelier **inspecteur + composeur** vit sur `http://localhost:8088/mavlink` :
+flux montant avec octets bruts, et formulaire descendant construit depuis le dialecte.
 
-**Prochaine action concrète.** Le **composeur** : fabriquer un message arbitraire depuis la page
-`/mavlink`, l'envoyer, voir revenir le `COMMAND_ACK` dans l'inspecteur d'à côté.
+**Prochaine action concrète.** `PORTFOLIO.md` §1.6 **étape 4 : le HITL** — HITL-1bis, HITL-2, et
+le test HITL-3 à 20 min.
 
 **Atelier MAVLink — comment le relancer :**
 1. `make -C mavlink` régénère les 3 langages et compile les 2 consommateurs (rien de généré n'est
@@ -2619,9 +2619,63 @@ octet reçu et, s'il vaut `253`, **rebascule toute la connexion en v2 dans les d
 liaison est en v2 — elle *pourrait* le porter. Les deux raisons du canal séparé (ne pas polluer une
 liaison mesurée, deux liens physiques distincts sur le réel) tiennent ; l'argument de version, non.
 
-### Reste à faire
+### Le composeur : la moitié descendante, dans la même fenêtre
 
-Le **composeur** — fabriquer un message arbitraire depuis la page, l'envoyer, voir revenir le
-`COMMAND_ACK` dans l'inspecteur d'à côté. C'est la moitié descendante du §1.3, et c'est ce qui fait
-qu'inspecteur et composeur doivent être le **même outil** : le geste réel est « je regarde ce qui
-passe, je tire un message, je regarde ce qui revient ».
+Page `/mavlink` en trois colonnes — le flux montant, le détail du message choisi, le composeur et
+son journal aller-retour. Deux outils séparés auraient fait chacun la moitié du geste, qui est un
+aller-retour : je regarde ce qui passe, je tire un message, je regarde ce qui revient.
+
+**Le formulaire est construit depuis le dialecte, jamais écrit à la main.** 296 messages, leurs
+champs, types, longueurs de tableau, unités et énumérés : tout est lu dans les classes générées au
+moment où on ouvre la liste. Un catalogue codé en dur serait faux dès le prochain
+`make -C mavlink` — et faux en silence. Le catalogue est même construit avec le dialecte
+**négocié** (`mavutil.mavlink` au moment de l'appel), pas avec une constante : `auto_mavlink_version()`
+a pu rebasculer la liaison entre-temps.
+
+**Confort qui n'en est pas un** : les énumérés s'écrivent par leur NOM
+(`MAV_CMD_COMPONENT_ARM_DISARM` plutôt que `400`) et les entiers acceptent `0x…` / `0b…`, donc un
+`type_mask` se tape `0b00000111` — la notation de la doc et celle de `mavlink_backend.py`. Un `7`
+dans un champ de masque est illisible trois semaines plus tard ; ce n'est pas de l'ergonomie, c'est
+de la relecture.
+
+**Le composeur n'écrit pas sur la liaison : il met en file, le fil de vol émet.** Le compteur de
+séquence de pymavlink est unique par émetteur ; deux threads qui empaquettent en parallèle
+fabriquent des trous dans la numérotation — et ces trous, **notre propre `link.py` les compte comme
+des pertes** (§1.5-C). L'outil de diagnostic aurait faussé l'outil de mesure, sur une liaison
+parfaite. Un seul écrivain, et le problème disparaît.
+
+**Le composeur refuse en vol les messages que la porte de sortie possède** (`SET_ATTITUDE_TARGET`,
+`SET_POSITION_TARGET_*`, `RC_CHANNELS_OVERRIDE`, `MANUAL_CONTROL`) : §1.5-A dit qu'une seule couche
+peut commander, et un outil de diagnostic capable de la court-circuiter en vol n'en est pas un.
+⚠ Limite assumée et écrite dans le code : `COMMAND_LONG` reste autorisé alors qu'il peut armer ou
+changer de mode. Filtrer par type ne suffirait pas (c'est la valeur du champ `command` qui pilote),
+et l'interdire viderait l'outil.
+
+### Ce que le composeur a appris sur MAVLink lui-même
+
+**Il n'y a pas d'accusé de réception général.** Deux familles répondent, et pas de la même façon :
+
+| envoyé | réponse | ce que ça dit |
+|---|---|---|
+| `COMMAND_LONG` / `COMMAND_INT` | `COMMAND_ACK` | un **code de résultat** (`MAV_RESULT_ACCEPTED`, `…DENIED`…) |
+| `PARAM_SET`, `PARAM_REQUEST_READ` | `PARAM_VALUE` | l'**écho de la valeur retenue**, qui peut différer de celle demandée |
+| tout le reste | rien | fire-and-forget |
+
+Donc **« envoyé » ne veut pas dire « accepté »**, et l'absence de réponse n'est pas un échec. Un
+`SET_ATTITUDE_TARGET` refusé par le firmware (mauvais mode, quaternion non unitaire, masque
+incohérent) ne produit **aucun message d'erreur** — c'est exactement le piège documenté dans
+`mavlink_backend.py`, et le composeur le rend visible : on tire, il ne se passe rien, et rien ne
+dit pourquoi.
+
+**Vérification faite avec l'outil, pas dans la doc** : armer le SITL à la main via `COMMAND_LONG`
+marche (`MAV_RESULT_ACCEPTED`), puis le drone **se désarme tout seul** au bout d'une dizaine de
+secondes. Ce n'est pas un bug — `DISARM_DELAY` (défaut **10 s**, `ArduCopter/Parameters.cpp:242`,
+`config.h:536`) : *delay before automatic disarm after landing touchdown detection*. Relu par
+`PARAM_REQUEST_READ` depuis le composeur lui-même, ce qui est la bonne manière de répondre à ce
+genre de question maintenant qu'on a l'outil.
+
+### État du §1.3 : terminé
+
+Dialecte + génération 3 langages + 2 consommateurs compilés + inspecteur + composeur. Ce qui reste
+listé au §1.3 comme prolongement possible (un mini-routeur MAVLink) n'est pas fait et n'est pas
+requis. **Prochaine étape du §1.6 : le HITL** (étape 4).
