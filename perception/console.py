@@ -33,6 +33,7 @@ from control import (CommandGate, GuidanceGains, Limits, TargetView, VehicleStat
                      VisualGuidance)
 from control.designation import TargetPublisher
 from control.guidance import DEG, operator_command
+from control.inspector import MessageInspector
 from control.link import LinkStats, VisionStats
 from control.mavlink_backend import MavlinkBackend
 
@@ -149,6 +150,11 @@ PING_HZ = 2.0           # cadence des requetes TIMESYNC (mesure de latence)
 # compteur de pertes ne serait jamais ni etalonne ni exerce. Et ca donne le banc
 # de degradation que reclame la phase 2 du swarm, sans materiel.
 _degrade = {"perte": 0.0}
+
+# L'inspecteur (§1.3) : ce que `link.py` compte, lui le REGARDE. Meme point
+# d'entree (_absorb), donc il voit tout le flux — y compris ce que la console ne
+# sait pas interpreter, ce qui est precisement l'interet.
+_inspector = MessageInspector(fenetre=5.0)
 
 # La DEUXIEME liaison : la video. C'est elle qui porte l'information dont depend
 # la loi ; couper MAVLink en descente ne change presque rien au suivi, couper la
@@ -462,6 +468,12 @@ def _absorb(m, msg, backend=None):
                             # la suite des sequences, exactement comme une vraie
                             # perte radio. Et la boucle de vol en souffre pour de bon.
     t = msg.get_type()
+    # L'inspecteur voit AUSSI les BAD_DATA — des octets qui n'ont pas formé un
+    # message valide. Ils n'entrent pas dans les compteurs de liaison (ils n'ont
+    # ni type ni séquence exploitables), mais ce sont eux qui trahissent une
+    # liaison qui corrompt au lieu de perdre. Les cacher, c'est aveugler
+    # l'inspecteur exactement quand il devient utile.
+    _inspector.on_msg(time.time(), msg)
     if t != "BAD_DATA":
         _link.on_rx(time.time(), msg.get_srcSystem(), msg.get_srcComponent(),
                     msg.get_seq(), len(msg.get_msgbuf()), t)
@@ -874,6 +886,37 @@ def drone_takeoff():
         threading.Thread(target=_drone_thread, daemon=True).start()
     with _lock:
         return dict(_drone)
+
+
+@app.get("/drone/connect")
+def drone_connect():
+    """Ouvre la liaison SANS décoller — pour inspecter le flux au sol.
+
+    C'est au sol qu'on veut regarder la liaison : quels flux l'autopilote envoie,
+    à quelle cadence, et donc ce qu'on paiera en vol sur une radio lente. Lier
+    l'ouverture de la liaison au décollage rendait cette inspection impossible.
+    """
+    if not _drone_started["v"]:
+        _drone_started["v"] = True
+        threading.Thread(target=_drone_thread, daemon=True).start()
+    with _lock:
+        return dict(_drone)
+
+
+@app.get("/inspect")
+def inspect(type: str = None):
+    """Le flux montant, en direct (§1.3).
+
+    Sans argument : la table des types vus (identifiant, cadence, taille).
+    Avec `?type=ATTITUDE` : le dernier exemplaire, champs décodés ET octets bruts.
+    """
+    now = time.time()
+    if type:
+        d = _inspector.detail(type, now)
+        return JSONResponse(d or {"erreur": f"jamais vu : {type}"},
+                            status_code=200 if d else 404)
+    return {"messages": _inspector.table(now), "fenetre_s": _inspector.fenetre,
+            "conn": DRONE_CONN, "branchee": _drone_started["v"]}
 
 
 @app.get("/gimbal")
@@ -1358,7 +1401,8 @@ HTML = """<!doctype html><html><head><meta charset="utf-8"><title>ARGOS — Mode
       <button onclick="fly(-1,0,0)">Reculer</button>
       <button onclick="fly(0,1,0)">Droite</button>
     </div>
-    <div class="lbl">LIAISON — <a href="/link" target="_blank" style="color:#5ec8ff">détail</a></div>
+    <div class="lbl">LIAISON — <a href="/link" target="_blank" style="color:#5ec8ff">détail</a>
+      · <a href="/mavlink" target="_blank" style="color:#5ec8ff">atelier MAVLink</a></div>
     <div class="stat"><span>Reçu</span><b id="lrx">–</b></div>
     <div class="stat"><span>Perte</span><b id="lloss">–</b></div>
     <div class="stat"><span>Débit</span><b id="lbps">–</b></div>
@@ -1445,6 +1489,133 @@ loadMenu(); poll();
 @app.get("/", response_class=HTMLResponse)
 def index():
     return HTML
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  L'atelier MAVLink (PORTFOLIO §1.3) : inspecteur + composeur, MÊME page.
+# ═════════════════════════════════════════════════════════════════════════
+# Deux outils séparés — un inspecteur d'un côté, un playground de l'autre — font
+# chacun la moitié du travail. Le geste réel est : je regarde ce qui passe, je
+# fabrique un message, je le tire, je regarde ce qui revient. Ça n'a de sens que
+# dans la même fenêtre.
+MAVHTML = """<!doctype html><html><head><meta charset="utf-8">
+<title>ARGOS — atelier MAVLink</title>
+<style>
+  body{margin:0;background:#0b0f14;color:#cdd6e0;font-family:system-ui,sans-serif;font-size:13px}
+  header{padding:12px 18px;border-bottom:1px solid #1f2733;display:flex;align-items:baseline;gap:18px}
+  h1{font-size:14px;letter-spacing:.12em;color:#5ec8ff;margin:0}
+  a{color:#5ec8ff}
+  .sub{color:#5b6b7c;font-size:12px}
+  #wrap{display:flex;gap:0;align-items:stretch;min-height:calc(100vh - 46px)}
+  #gauche{width:46%;border-right:1px solid #1f2733;overflow:auto;max-height:calc(100vh - 46px)}
+  #droite{flex:1;padding:14px 18px;overflow:auto;max-height:calc(100vh - 46px)}
+  table{border-collapse:collapse;width:100%}
+  th{position:sticky;top:0;background:#11161d;color:#5b6b7c;font-weight:500;font-size:11px;
+     letter-spacing:.08em;text-align:left;padding:8px 10px;border-bottom:1px solid #1f2733}
+  td{padding:6px 10px;border-bottom:1px solid #141b23;font-variant-numeric:tabular-nums}
+  tr.msg{cursor:pointer}
+  tr.msg:hover td{background:#131b24}
+  tr.msg.on td{background:#10212e;color:#fff}
+  .num{text-align:right;color:#9fb0c0}
+  .argos td{color:#ffd479}
+  .bad td{color:#ff5a4d}
+  h2{font-size:12px;letter-spacing:.1em;color:#5b6b7c;margin:18px 0 8px;font-weight:500}
+  pre{background:#11161d;border:1px solid #1f2733;border-radius:6px;padding:10px;
+      overflow-x:auto;font-size:12px;line-height:1.6;color:#9fb0c0;margin:0}
+  .hex{color:#7fd8a0;letter-spacing:.04em}
+  .kv{display:grid;grid-template-columns:150px 1fr;gap:2px 10px}
+  .kv b{color:#fff;font-weight:500;font-variant-numeric:tabular-nums}
+  .kv span{color:#5b6b7c}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;border:1px solid #233040;
+       color:#7f93a6;font-size:11px;margin-left:6px}
+  button{padding:7px 12px;border-radius:6px;border:1px solid #233040;background:#161d26;
+         color:#bcccdb;font-size:12px;cursor:pointer}
+  button:hover{border-color:#5ec8ff;color:#fff}
+  #vide{color:#5b6b7c;padding:30px 0;line-height:1.7}
+</style></head><body>
+<header>
+  <h1>ARGOS · ATELIER MAVLINK</h1>
+  <span class="sub" id="conn">—</span>
+  <span class="sub">§1.3 — inspecteur (flux montant)</span>
+  <a href="/" class="sub">← console</a>
+</header>
+<div id="wrap">
+  <div id="gauche">
+    <table>
+      <thead><tr><th>message</th><th class="num">id</th><th class="num">Hz</th>
+        <th class="num">octets</th><th class="num">total</th><th>source</th></tr></thead>
+      <tbody id="liste"></tbody>
+    </table>
+    <div id="vide" style="text-align:center">
+      Aucun message reçu.<br>
+      La liaison s'ouvre au premier appel — <button onclick="brancher()">brancher la liaison</button><br>
+      <span class="sub">(sans décoller : on inspecte au sol)</span>
+    </div>
+  </div>
+  <div id="droite"><div id="detail" class="sub">Choisis un message à gauche.</div></div>
+</div>
+<script>
+let choisi=null, fige=false;
+async function brancher(){ await fetch('/drone/connect'); }
+function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+async function majTable(){
+  const d=await (await fetch('/inspect')).json();
+  conn.textContent=d.conn+(d.branchee?'':'  (liaison fermée)');
+  const m=d.messages||[];
+  vide.style.display=m.length?'none':'block';
+  liste.innerHTML=m.map(x=>{
+    const cls=(x.id>=44000&&x.id<44100)?'argos':(x.id<0?'bad':'');
+    return `<tr class="msg ${cls} ${x.type===choisi?'on':''}" onclick="voir('${x.type}')">
+      <td>${esc(x.type)}</td><td class="num">${x.id}</td><td class="num">${x.hz.toFixed(1)}</td>
+      <td class="num">${x.octets}</td><td class="num">${x.total}</td><td>${esc(x.src)}</td></tr>`;
+  }).join('');
+}
+
+async function voir(t){ choisi=t; await majDetail(); }
+
+async function majDetail(){
+  if(!choisi) return;
+  const r=await fetch('/inspect?type='+encodeURIComponent(choisi));
+  const d=await r.json();
+  if(d.erreur){ detail.innerHTML='<span class="sub">'+esc(d.erreur)+'</span>'; return; }
+  const entete=(d.entete||[]).map(([nom,octets,quoi])=>
+    `<div class="kv"><span>${esc(nom)}</span><b><span class="hex">${esc(octets)}</span>
+      <span class="tag">${esc(quoi)}</span></b></div>`).join('');
+  const champs=(d.champs||[]).map(c=>
+    `<div class="kv"><span>${esc(c.nom)}</span><b>${esc(JSON.stringify(c.valeur))}
+      <span class="tag">${esc(c.type)}</span></b></div>`).join('');
+  detail.innerHTML=`
+    <div style="display:flex;align-items:baseline;gap:14px">
+      <div style="font-size:16px;color:#fff">${esc(d.type)}</div>
+      <span class="tag">id ${d.id}</span><span class="tag">MAVLink ${d.version}</span>
+      <span class="tag">${d.octets} octets</span><span class="tag">de ${esc(d.src)}</span>
+      <span class="tag">seq ${d.seq}</span><span class="tag">reçu il y a ${d.age_ms} ms</span>
+    </div>
+    <h2>OCTETS BRUTS — la trame telle qu'elle est arrivée</h2>
+    <pre class="hex">${esc(d.hex)}</pre>
+    <h2>EN-TÊTE — positions figées par le protocole</h2>
+    ${entete}
+    <h2>CHAMPS DÉCODÉS — ordre de la DÉFINITION, pas celui du fil</h2>
+    ${champs||'<span class="sub">aucun champ (message inconnu du dialecte)</span>'}
+    <p class="sub" style="margin-top:16px;line-height:1.6">
+      MAVLink réordonne les champs par taille décroissante à l'encodage, pour que
+      chacun tombe sur une frontière alignée. L'ordre ci-dessus est celui de la
+      définition XML — il ne correspond donc pas à l'ordre des octets ci-dessus,
+      et c'est normal.</p>`;
+}
+
+async function boucle(){
+  try{ await majTable(); await majDetail(); }catch(e){}
+  setTimeout(boucle,500);
+}
+boucle();
+</script></body></html>"""
+
+
+@app.get("/mavlink", response_class=HTMLResponse)
+def mavlink_atelier():
+    return MAVHTML
 
 
 if __name__ == "__main__":
