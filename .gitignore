@@ -43,5 +43,7 @@ mavlink/generated/
 
 
 settings.json
-mavlink/c_demo/argos_listen
+# Les deux consommateurs compilés : `make -C mavlink` les refait en 2 s.
+mavlink/consumers/argos_listen
+mavlink/consumers/argos_listen_cpp
 
