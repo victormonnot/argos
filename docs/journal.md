@@ -5,19 +5,30 @@ memory cement: interview material, build-in-public content, and my own notes.
 
 ---
 
-## 📍 ÉTAT COURANT — mis à jour 2026-08-08
+## 📍 ÉTAT COURANT — mis à jour 2026-08-14
 
 > Bloc réécrit à chaque session. Répond à « j'en suis où ? », pas à « que s'est-il passé ? ».
 > L'historique est plus bas, il ne bouge jamais.
 
 **Où j'en suis.** `GUIDED_NOGPS` **vole en Gazebo** : la console verrouille une cible, la centre,
 l'approche, freine à la distance de garde et tient — sans qu'aucune estimation de position
-n'entre dans la commande. **Le §1.5 du `PORTFOLIO.md` est terminé (A, B, C, D).** Chapitre
-hardware toujours clos (résonance résolue le 29/07, `config/argos-drone-2026-07-29.param`).
+n'entre dans la commande. **§1.5 terminé (A, B, C, D).** Chapitre hardware toujours clos
+(résonance résolue le 29/07, `config/argos-drone-2026-07-29.param`).
 
-**Prochaine action concrète.** `PORTFOLIO.md` §1.6 étape 3 : **le dialecte MAVLink maison +
-l'inspecteur/composeur**. La moitié du chemin existe déjà — les compteurs du §1.5-C
-(`control/link.py`) sont l'ossature de l'inspecteur.
+**§1.3 en cours — dialecte + inspecteur faits, composeur restant.** `mavlink/argos.xml` définit
+`ARGOS_TARGET` (id 44000), généré en **Python, C et C++11** depuis la même source ; deux
+consommateurs compilés dans `mavlink/consumers/` décodent ce que la console émet. L'inspecteur
+vit sur `http://localhost:8088/mavlink`.
+
+**Prochaine action concrète.** Le **composeur** : fabriquer un message arbitraire depuis la page
+`/mavlink`, l'envoyer, voir revenir le `COMMAND_ACK` dans l'inspecteur d'à côté.
+
+**Atelier MAVLink — comment le relancer :**
+1. `make -C mavlink` régénère les 3 langages et compile les 2 consommateurs (rien de généré n'est
+   versionné ; `make -C mavlink test` = 8 tests, dont l'égalité des `CRC_EXTRA` entre langages)
+2. la désignation part sur `udp:127.0.0.1:14650` (`ARGOS_DESIGNATION=off` pour couper),
+   `mavlink/consumers/argos_listen` ou `argos_listen_cpp` l'écoutent — **sans Gazebo ni SITL**
+3. `/mavlink` : bouton « brancher la liaison » = ouvrir MAVLink **sans décoller**
 
 **Comment relancer la démo** (l'ordre compte) :
 1. `echo $DISPLAY` doit dire `:0` — sinon Gazebo meurt en silence (piège SSH depuis le Mac)
@@ -29,7 +40,9 @@ l'inspecteur/composeur**. La moitié du chemin existe déjà — les compteurs d
 
 **Robinets et instruments, réglables en vol :**
 `/tune` (gains + `cmdhz`) · `/gimbal` · `/link` (liaison MAVLink) · `/vision` (liaison vidéo) ·
-`/cut` (sonde de coupure) · `/degrade` (perte volontaire en réception) · `/command` · `/fly`
+`/designation` (désignation sortante, §1.3) · `/inspect` + page `/mavlink` (inspecteur) ·
+`/cut` (sonde de coupure) · `/degrade` (perte volontaire en réception) · `/command` · `/fly` ·
+`/drone/connect` (ouvrir la liaison sans décoller)
 
 **Lignes de base mesurées** — c'est à ces chiffres que le HITL puis le réel se compareront,
 et l'écart sera le coût du matériel :
@@ -2469,3 +2482,146 @@ Pour trancher, il faut l'observable qui manque : écart-type de l'erreur en rég
 dépassement après une perturbation calibrée (`/fly?right=1` puis relâcher). Deux nombres, un
 balayage de `kd`, même méthode que pour la latence. Tant que ce n'est pas fait, `kd = 12` est un
 réglage par défaut raisonnable — pas un optimum démontré.
+
+## 2026-08-14 — §1.3 : le dialecte maison, généré en trois langages, et l'inspecteur
+
+Étape 3 du §1.6. Le projet cesse d'être un *utilisateur* de MAVLink pour en devenir un
+*auteur* : un message à nous, défini une fois, généré en Python, en C et en C++.
+
+### Un dialecte, c'est un dictionnaire — et le nôtre a un mot
+
+`mavlink/argos.xml` définit `ARGOS_TARGET` : `u`, `v` (position de la cible dans l'image,
+normalisée), `size` (proxy de distance), `confidence`, `track_id`, `track_age_ms`,
+`target_class`, `lock_state`, `flags`. 33 octets de charge utile, 45 sur le fil.
+
+**Deux choix de conception qui portent le projet entier :**
+
+1. **Aucun champ de position.** Ni lat/lon, ni altitude, ni distance, ni cap. La contrainte
+   GNSS-denied descend jusque dans le protocole : un consommateur de ce message **ne peut pas**
+   reconstruire une position, parce que l'information n'y est pas. Un test le vérifie
+   structurellement (liste noire de noms de champs) — l'invariant ne peut pas se perdre par
+   inadvertance dans six mois.
+2. **L'horodatage est celui de la CAPTURE, pas de l'émission.** Le message porte donc l'âge de
+   sa propre information, et chaque consommateur décide seul s'il agit dessus. C'est le
+   prolongement direct de la latence image→commande du 2026-08-08 : ce qui était une mesure
+   interne devient une garantie d'interface.
+
+### Correction du §1.3 : `ardupilotmega`, pas `common`
+
+Le portfolio disait `<include>common.xml</include>`. Faux, et mesurable : le flux descendant
+contient `AHRS` (7,4 Hz), `MEMINFO`, `HWSTATUS` — tous définis dans `ardupilotmega.xml`. Un
+dialecte limité à `common` rendrait ~30 % du flux indécodable et afficherait des identifiants
+inconnus à la place de messages parfaitement légitimes.
+
+**Un dialecte doit être un SUR-ensemble de ce que parle le véhicule, jamais un sous-ensemble.**
+
+### Le choix d'identifiant, fait par scan et figé par un test
+
+Scan des 16 dialectes livrés avec pymavlink 2.4.49 :
+
+| | | | |
+|---|---|---|---|
+| common 1..12920 | ardupilotmega 150..11044 | uAvionix 10001..10008 | ASLUAV 223..8016 |
+| icarous 42000..42001 | cubepilot 50001..50005 | csAirLink 52000..52001 | storm32 60000..60047 |
+
+Le bloc **44000-44099** est vide chez tout le monde → c'est celui d'ARGOS, `ARGOS_TARGET` = 44000.
+Le test **refait le scan à chaque exécution** : si une future version de pymavlink alloue ce bloc,
+le banc casse. C'est le point important — une collision d'identifiant ne lève **aucune erreur** :
+deux logiciels décodent la même trame différemment, chacun convaincu d'avoir raison. C'est le pire
+mode de panne d'un protocole, et il ne se détecte que par vérification volontaire.
+
+### « Une source, N langages » : vérifié mécaniquement, pas affirmé
+
+```
+                    argos.xml  (une centaine de lignes, écrites à la main)
+                        │
+              mavgen ───┼──────────────┬──────────────┐
+                        ▼              ▼              ▼
+                  argos.py         argos/*.h     argos/*.hpp
+                  2,1 Mo           8,4 Mo         C++11
+                  console       firmware/MCU    companion/MAVSDK
+```
+
+Le **`CRC_EXTRA`** de MAVLink est un hash de la *signature* du message (noms, types, ordre des
+champs). Deux bouts qui ne l'ont pas identique **rejettent mutuellement leurs trames**, sans
+message d'erreur. Le banc lit donc les trois sorties et compare : `56` en Python, `56` en C, `56`
+en C++. La promesse est testée, pas proclamée. 8 tests.
+
+**Pourquoi les trois et pas seulement C++** (question de Victor, légitime — l'offre Alta Ares dit
+« C++ AND Python ») : `--lang=C` produit des en-têtes sans STL ni allocation, et **c'est ce
+qu'ArduPilot lui-même embarque** — le firmware est en C++ mais inclut les en-têtes C. `--lang=C++11`
+produit l'API des couches hautes (MAVSDK/MAVROS) : namespaces, `constexpr`, `to_yaml()`. Deux
+étages différents du même système, pas une alternative.
+
+### Deux pièges d'intégration C/C++, tous les deux instructifs
+
+- **Ne pas mélanger les deux en-têtes dans un même fichier.** `argos.h` fait
+  `#define MAVLINK_VERSION 2`, `argos.hpp` déclare `constexpr auto MAVLINK_VERSION = 2;`. Si le
+  `.h` passe en premier, le préprocesseur réécrit la déclaration en `constexpr auto 2 = 2;` et le
+  compilateur s'effondre sur dix dialectes. Les deux API ne se composent pas — le `.hpp` se suffit.
+- **Le C++11 laisse un trou EXPRÈS** : `message.hpp` pose `#define MAVLINK_GET_MSG_ENTRY` et
+  déclare `mavlink_get_msg_entry()` sans la définir. En C elle est fournie clé en main ; en C++ la
+  table (`MESSAGE_ENTRIES`) est donnée et **le câblage appartient à l'application**, pour qu'une
+  appli qui route plusieurs dialectes choisisse elle-même sa table. Ces dix lignes de recherche
+  dichotomique dans `consumers/argos_listen.cpp`, c'est littéralement le « middleware » de l'offre.
+- Détail qui pique au portage : le générateur C++ **retire le préfixe commun** entre le nom de
+  l'enum et celui de ses entrées. `ARGOS_CLASS_PERSON` (C) devient
+  `ARGOS_TARGET_CLASS::CLASS_PERSON` (C++). Le préfixe est porté par le type, plus par le nom.
+
+### La troisième liaison : la désignation sortante
+
+`control/designation.py` publie `ARGOS_TARGET` à 10 Hz. Trois décisions :
+
+- **Socket UDP séparé, pas la liaison du drone.** La liaison de commande est critique et
+  **mesurée** (§1.5-C) : y ajouter 10 msg/s invaliderait les chiffres de référence auxquels le
+  HITL puis le réel doivent se comparer. Et sur le vrai drone, la commande passe par une radio à
+  57 600 baud pendant que la désignation passera par le lien WiFi — deux canaux physiques dès le
+  départ, donc deux canaux logiques dès maintenant. Ce canal est instrumenté comme les deux
+  autres (`LinkStats`).
+- **Émission depuis la boucle de PERCEPTION, pas la boucle de vol.** C'est là que l'information
+  naît, et ça rend le protocole testable **sans drone, sans Gazebo** — un problème d'encodage ne
+  demande pas de décoller.
+- **On émet aussi quand rien n'est verrouillé** (`ARGOS_LOCK_IDLE`). Le silence est ambigu :
+  « pas de cible » et « l'émetteur est mort » se ressemblent trop. Un flux régulier distingue les
+  deux et reste mesurable.
+
+Effet de bord révélateur sur la séparation des couches : il a fallu ajouter `error_y` au traqueur.
+La loi de guidage ne s'en sert pas (le tangage commande la distance, pas la hauteur), mais un
+consommateur en a besoin pour savoir où pointe la caméra. **Une donnée peut être inutile à la
+décision et nécessaire au protocole** — c'est le contrat d'interface qui décide de ce qui sort.
+
+### L'inspecteur : `link.py` compte, celui-ci regarde
+
+Page `/mavlink`, nourrie par le **même point d'entrée** que les compteurs (`_absorb`) — donc elle
+voit tout le flux, **y compris ce que la console ne sait pas interpréter**. Un inspecteur qui
+n'afficherait que les messages déjà compris serait l'exact inverse du besoin.
+
+- table live : type, identifiant, Hz, taille, source ; détail : octets bruts en hexa, en-tête
+  découpé champ par champ, champs décodés avec leur type déclaré ;
+- les **`BAD_DATA`** y figurent (exclus des compteurs de liaison, faute de séquence exploitable).
+  Ce sont eux qui trahissent une liaison qui **corrompt** au lieu de perdre — la distinction qu'on
+  ira chercher sur la vraie radio ;
+- **l'ordre des champs décodés n'est pas l'ordre des octets.** MAVLink réordonne par taille
+  décroissante à l'encodage pour que chaque champ tombe sur une frontière alignée. Comparer
+  naïvement le tableau et l'hexa fait conclure qu'on décode mal alors que tout va bien.
+
+Ajout au passage : **`/drone/connect`** ouvre la liaison **sans décoller**. Avant, la connexion
+MAVLink ne s'ouvrait qu'au clic « Décoller » — or c'est au sol qu'on veut inspecter le flux.
+
+### Observation : la liaison est en MAVLink 2, et personne ne l'a demandé
+
+Tous les marqueurs lus sont `FD`. Cause : `mavutil.auto_mavlink_version()` regarde le premier
+octet reçu et, s'il vaut `253`, **rebascule toute la connexion en v2 dans les deux sens**. Le SITL
+émet en v2, donc la console parle v2 sans configuration.
+
+⚠ **Correction d'une affirmation faite en séance** : « en v1 l'identifiant tient sur un octet, donc
+`ARGOS_TARGET` (44000) ne pourrait pas circuler sur la liaison du drone ». Vrai en v1, mais la
+liaison est en v2 — elle *pourrait* le porter. Les deux raisons du canal séparé (ne pas polluer une
+liaison mesurée, deux liens physiques distincts sur le réel) tiennent ; l'argument de version, non.
+
+### Reste à faire
+
+Le **composeur** — fabriquer un message arbitraire depuis la page, l'envoyer, voir revenir le
+`COMMAND_ACK` dans l'inspecteur d'à côté. C'est la moitié descendante du §1.3, et c'est ce qui fait
+qu'inspecteur et composeur doivent être le **même outil** : le geste réel est « je regarde ce qui
+passe, je tire un message, je regarde ce qui revient ».
