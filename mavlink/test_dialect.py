@@ -24,6 +24,7 @@ from pathlib import Path
 ICI = Path(__file__).resolve().parent
 GEN_PY = ICI / "generated" / "python" / "argos.py"
 GEN_C = ICI / "generated" / "c" / "argos" / "mavlink_msg_argos_target.h"
+GEN_CXX = ICI / "generated" / "cxx" / "argos" / "mavlink_msg_argos_target.hpp"
 
 BLOC = range(44000, 44100)          # le bloc revendiqué par ARGOS
 ID_ARGOS_TARGET = 44000
@@ -127,17 +128,31 @@ def test_trame_v2_et_troncature_des_zeros():
 
 
 # ── 4. la promesse « une source, deux langages », vérifiée mécaniquement ─────
-def test_crc_extra_identique_en_python_et_en_c():
-    if not GEN_C.exists():
-        sys.exit(f"en-tête C absent ({GEN_C}) — lance `make c` dans mavlink/")
-    entete = GEN_C.read_text(encoding="utf-8")
-    crc_c = int(re.search(r"#define MAVLINK_MSG_ID_ARGOS_TARGET_CRC (\d+)", entete).group(1))
+def test_crc_extra_identique_dans_les_trois_langages():
+    """LE test du §1.3. Le CRC_EXTRA est un hash de la SIGNATURE du message
+    (noms, types, ordre des champs) : deux bouts qui ne l'ont pas identique
+    rejettent mutuellement leurs trames, silencieusement. Le comparer entre les
+    trois sorties de mavgen, c'est vérifier la promesse « une source, N
+    langages » au lieu de l'affirmer."""
+    for chemin, langage in ((GEN_C, "C"), (GEN_CXX, "C++")):
+        if not chemin.exists():
+            sys.exit(f"en-tête {langage} absent ({chemin}) — lance `make` dans mavlink/")
+
     crc_py = argos.mavlink_map[ID_ARGOS_TARGET].crc_extra
-    assert crc_c == crc_py, (
-        f"CRC_EXTRA divergent : C={crc_c} Python={crc_py}. Les deux bouts "
-        "rejetteraient mutuellement leurs trames.")
-    len_c = int(re.search(r"#define MAVLINK_MSG_ID_ARGOS_TARGET_LEN (\d+)", entete).group(1))
-    assert len_c == argos.MAVLink_argos_target_message.unpacker.size
+    len_py = argos.MAVLink_argos_target_message.unpacker.size
+
+    entete_c = GEN_C.read_text(encoding="utf-8")
+    crc_c = int(re.search(r"#define MAVLINK_MSG_ID_ARGOS_TARGET_CRC (\d+)", entete_c).group(1))
+    len_c = int(re.search(r"#define MAVLINK_MSG_ID_ARGOS_TARGET_LEN (\d+)", entete_c).group(1))
+
+    entete_cxx = GEN_CXX.read_text(encoding="utf-8")
+    crc_cxx = int(re.search(r"CRC_EXTRA = (\d+);", entete_cxx).group(1))
+    len_cxx = int(re.search(r"size_t LENGTH = (\d+);", entete_cxx).group(1))
+
+    assert crc_py == crc_c == crc_cxx, (
+        f"CRC_EXTRA divergent : Python={crc_py} C={crc_c} C++={crc_cxx}")
+    assert len_py == len_c == len_cxx, (
+        f"longueur divergente : Python={len_py} C={len_c} C++={len_cxx}")
 
 
 if __name__ == "__main__":

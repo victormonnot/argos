@@ -31,6 +31,7 @@ from ultralytics import YOLO
 
 from control import (CommandGate, GuidanceGains, Limits, TargetView, VehicleState,
                      VisualGuidance)
+from control.designation import TargetPublisher
 from control.guidance import DEG, operator_command
 from control.link import LinkStats, VisionStats
 from control.mavlink_backend import MavlinkBackend
@@ -108,7 +109,12 @@ _state = {"jpeg": None, "dets": [], "fps": 0.0, "dims": None}
 _sel = {"name": DEFAULT}
 _track = {"locked": False, "cx": 0.0, "cy": 0.0, "error": 0.0, "size": 0.0,
           "has": False, "found": False, "engage": False, "gimbal_yaw": 0.0,
-          "cls_id": None, "last_found": 0.0, "seq": 0, "t_cap": 0.0}
+          "cls_id": None, "last_found": 0.0, "seq": 0, "t_cap": 0.0,
+          # ajoutés pour ARGOS_TARGET (§1.3) : le message porte des choses que la
+          # loi de guidage n'utilise pas, parce qu'un CONSOMMATEUR en a besoin.
+          "error_y": 0.0,     # erreur verticale normalisée (la loi n'en fait rien)
+          "conf": 0.0,        # confiance du détecteur sur la boîte suivie
+          "t_lock": 0.0}      # instant du verrouillage -> âge de la piste
 # réglages de suivi ajustables en live via /tune (sans redémarrer la console)
 _tune = {"gate": 0.35, "coast": 1.5}   # coast = secondes de maintien après perte
 _view = {"pan_x": 0, "vp_w": 0}
@@ -148,6 +154,18 @@ _degrade = {"perte": 0.0}
 # la loi ; couper MAVLink en descente ne change presque rien au suivi, couper la
 # video l'arrete net. Elle etait le seul canal critique non mesure.
 _vision = VisionStats(fenetre=3.0)
+
+# La TROISIEME liaison, sortante : la designation de cible dans le dialecte maison
+# (PORTFOLIO §1.3). Ce que la perception voit sort du processus et devient lisible
+# par n'importe qui — voir mavlink/consumers/ (C et C++).
+# Destination reglable : ARGOS_DESIGNATION=127.0.0.1:14650, "off" pour couper.
+DESIGNATION = os.environ.get("ARGOS_DESIGNATION", "127.0.0.1:14650")
+PUB_HZ = 10.0           # plafond d'emission. La camera peut monter a 30 Hz ou
+                        # plus ; la designation n'a pas besoin d'aller plus vite
+                        # que la boucle qui la consomme, et un consommateur lent
+                        # n'a pas a subir la cadence du producteur.
+_publisher = TargetPublisher(DESIGNATION) if DESIGNATION != "off" else None
+_pub_tick = {"t": 0.0}
 
 # Sonde de coupure (PORTFOLIO §1.5-D). On cesse volontairement d'émettre pendant
 # `cut_ms`, et on enregistre ce que le drone fait — pendant la coupure et après.
@@ -214,6 +232,8 @@ def track_update(view, dets_full, pan_x, vp_w):
         coast_t = _tune["coast"]
         last_found = _track["last_found"]
         last_err = _track["error"]
+        last_err_y = _track["error_y"]
+        last_conf = _track["conf"]
         size = _track["size"]
 
     # ne suivre que la classe verrouillée (1 seule personne dans la scène -> robuste au
@@ -225,9 +245,11 @@ def track_update(view, dets_full, pan_x, vp_w):
         if dd < bestd:
             best, bestd = d, dd
     found = best is not None and bestd < (vp_w * gate) ** 2
+    conf = 0.0
     if found:
         cx, cy = best["cx"], best["cy"]
         last_found = now
+        conf = best["conf"]
         # LE capteur de distance (§1.1) : hauteur de la boîte / hauteur image.
         # Ça grandit = on approche. Aucun état de position n'est impliqué.
         size = (best["box"][3] - best["box"][1]) / max(h, 1)
@@ -248,9 +270,22 @@ def track_update(view, dets_full, pan_x, vp_w):
                       f"{'TRACK' if found else 'coast'}",
                 (10, h - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
 
+    # Erreur VERTICALE, normalisée comme l'horizontale (-1 haut, +1 bas). La loi
+    # de guidage ne s'en sert pas (le tangage commande la distance, pas la
+    # hauteur), mais un consommateur de la désignation en a besoin pour savoir
+    # où pointe la caméra. Une donnée peut être inutile ici et nécessaire là-bas :
+    # c'est le protocole qui décide de ce qui sort, pas la loi.
+    # Comme l'erreur horizontale : on GÈLE la dernière valeur connue pendant le
+    # coast au lieu de la remettre à zéro. Un zéro voudrait dire « centré », ce
+    # qui est faux et ferait mentir la désignation exactement quand elle devient
+    # fragile.
+    error_y = (cy - h / 2) / max(h / 2, 1) if found else last_err_y
+
     with _lock:
         _track.update({"cx": cx, "cy": cy, "last_found": last_found,
                        "error": round(error, 3) if has else 0.0,
+                       "error_y": round(error_y, 3) if has else 0.0,
+                       "conf": conf if found else last_conf,
                        "size": round(size, 3), "has": has, "found": found})
 
 
@@ -270,6 +305,36 @@ def _publish(view, dets_full, fps, w, h, pan_x, vp_w, t_cap):
             _track["t_cap"] = t_cap
             _vision.on_frame(time.time(),
                              _track["found"] if _track["locked"] else None)
+    _designer(t_cap)
+
+
+def _designer(t_cap):
+    """Publie la désignation dans le dialecte ARGOS (§1.3), plafonnée à PUB_HZ.
+
+    Émise depuis la boucle de PERCEPTION, pas depuis la boucle de vol : c'est ici
+    que l'information naît, et elle existe même sans drone connecté. Un
+    consommateur peut donc être branché en Mode A pur, sans SITL ni Gazebo.
+
+    On émet AUSSI quand rien n'est verrouillé (`ARGOS_LOCK_IDLE`). Le silence est
+    ambigu — « pas de cible » et « la console est morte » se ressemblent trop —
+    alors qu'un flux régulier permet à l'autre bout de distinguer les deux, et de
+    mesurer le canal (§1.5-C).
+    """
+    if _publisher is None or not _publisher.actif:
+        return
+    now = time.time()
+    if now - _pub_tick["t"] < 1.0 / PUB_HZ:
+        return
+    _pub_tick["t"] = now
+    with _lock:
+        t = dict(_track)
+        garde = bool(_cmd["reasons"])
+    _publisher.publish(
+        now, t_cap,
+        u=t["error"], v=t["error_y"], size=t["size"], confidence=t["conf"],
+        track_id=t["seq"], age_s=now - t["t_lock"] if t["t_lock"] else 0.0,
+        cls_id=t["cls_id"], locked=t["locked"], has=t["has"], found=t["found"],
+        engaged=t["engage"], guard=garde)
 
 
 def _video_loop(model, name):
@@ -755,7 +820,8 @@ def lock(fx: float, fy: float):
             # apprendre de la cible précédente).
             _track.update({"locked": True, "cx": best["cx"], "cy": best["cy"],
                            "cls_id": best["cls_id"], "size": 0.0,
-                           "seq": _track.get("seq", 0) + 1})
+                           "seq": _track.get("seq", 0) + 1,
+                           "conf": best["conf"], "t_lock": time.time()})
     return {"locked": True}
 
 
@@ -945,6 +1011,49 @@ def vision(json: int = 0):
         "    capture + inference + attente du cycle de commande.",
         "    C'est ce retard qui plafonne les gains utilisables dans guidance.py :",
         "    au-dela, le terme derive cesse d'amortir et se met a destabiliser.",
+    ])
+
+
+@app.get("/designation", response_class=PlainTextResponse)
+def designation(json: int = 0):
+    """La TROISIÈME liaison : la désignation de cible sortante (§1.3).
+
+    Les deux autres (`/link`, `/vision`) sont entrantes — on subit ce qu'on
+    reçoit. Celle-ci, on la produit : on est l'émetteur, donc on est responsable
+    de sa régularité. Un consommateur ne peut rien conclure d'un flux qui bégaie,
+    et il n'a aucun moyen de savoir si le trou vient du réseau ou de nous.
+    """
+    if _publisher is None or not _publisher.actif:
+        # Répondre en JSON même ici : le HUD interroge `?json=1` en boucle, et
+        # une réponse texte ferait échouer son `.json()` — donc un panneau muet
+        # sur toute la ligne au lieu d'un simple « inactif ».
+        if json:
+            return JSONResponse({"actif": False, "hz": 0.0, "envoyes": 0})
+        return ("DESIGNATION INACTIVE\n\n"
+                "  dialecte ARGOS non généré : `make -C mavlink`\n"
+                "  (ou ARGOS_DESIGNATION=off)\n")
+    d = _publisher.snapshot(time.time())
+    if json:
+        return JSONResponse(d)
+    with _lock:
+        t = dict(_track)
+    etat = ("IDLE" if not t["locked"] else
+            "TRACK" if t["found"] else "COAST" if t["has"] else "LOST")
+    return "\n".join([
+        f"DESIGNATION -> {d['dest']}   (ARGOS_TARGET, id 44000)",
+        "",
+        f"  EMISSION       {d['hz']:8.1f} msg/s   {d['bps'] / 1024:7.2f} kio/s",
+        f"  TOTAL          {d['envoyes']:8d} messages",
+        f"  plus grand silence . {d['trou_max_s']} s",
+        "",
+        f"  etat courant   {etat}   piste #{t['seq']}"
+        + ("   ENGAGE" if t["engage"] else ""),
+        f"  u {t['error']:+.3f}   v {t['error_y']:+.3f}   "
+        f"taille {t['size']:.3f}   conf {t['conf']:.2f}",
+        "",
+        "  Consommateurs (meme argos.xml, autres langages) :",
+        "    mavlink/consumers/argos_listen        (C)",
+        "    mavlink/consumers/argos_listen_cpp    (C++11)",
     ])
 
 
@@ -1258,6 +1367,9 @@ HTML = """<!doctype html><html><head><meta charset="utf-8"><title>ARGOS — Mode
     <div class="stat"><span>Caméra</span><b id="vhz">–</b></div>
     <div class="stat"><span>Détection</span><b id="vdet">–</b></div>
     <div class="stat"><span>Latence img→cmd</span><b id="vlat">–</b></div>
+    <div class="lbl">DÉSIGNATION — <a href="/designation" target="_blank" style="color:#5ec8ff">détail</a></div>
+    <div class="stat"><span>ARGOS_TARGET</span><b id="ghz">–</b></div>
+    <div class="stat"><span>Émis</span><b id="gn">–</b></div>
     <div class="lbl">TÉLÉMÉTRIE</div>
     <div class="stat"><span>FPS</span><b id="fps">–</b></div>
     <div class="stat"><span>Personnes</span><b id="np">0</b></div>
@@ -1311,6 +1423,10 @@ async function poll(){
     vdet.textContent=(V.detection_pct==null)?'–':V.detection_pct.toFixed(0)+' %';
     vlat.textContent=(V.latence_p50_ms==null)?'–':V.latence_p50_ms.toFixed(0)+' ms';
     vlat.style.color=(V.latence_p50_ms>250)?'#ff5a4d':'#fff';
+    const G=await (await fetch('/designation?json=1')).json();
+    ghz.textContent=G.actif?((G.hz??0).toFixed(0)+' msg/s'):'inactif';
+    ghz.style.color=G.actif?'#fff':'#ff5a4d';
+    gn.textContent=(G.envoyes??0);
     const c=await (await fetch('/command')).json();
     csrc.textContent=c.src; croll.textContent=(c.roll??0).toFixed(1)+'°';
     cpit.textContent=(c.pitch??0).toFixed(1)+'°'; cyaw.textContent=(c.dyaw??0).toFixed(1)+'°';
