@@ -72,6 +72,18 @@ ABS_NOMS = {
 # Pocket Joystick » ou « OpenTX ... Joystick ». Réglable : ARGOS_RADIO_MOTIF.
 MOTIF = os.environ.get("ARGOS_RADIO_MOTIF", r"radiomaster|edgetx|opentx|joystick|gamepad")
 
+# Boutons. Le noyau les nomme par usage supposé (BTN_SOUTH, BTN_TL…), vocabulaire
+# de manette de jeu qui n'a aucun sens sur une radio. EdgeTX, lui, les numérote
+# 1..24 — on garde SA numérotation, c'est celle qu'affiche l'écran de la radio.
+BTN_BASE = {0x130: 1, 0x2c0: 17}       # BTN_GAMEPAD -> B1, BTN_TRIGGER_HAPPY -> B17
+
+
+def nom_bouton(code: int) -> str:
+    for base, premier in BTN_BASE.items():
+        if base <= code < base + 16:
+            return f"B{premier + code - base}"
+    return f"KEY_{code:#x}"
+
 
 def _ioc(sens, typ, nr, taille):
     """Reconstruit un numéro d'ioctl comme la macro `_IOC` du noyau."""
@@ -134,21 +146,55 @@ class RadioEtat:
     evenements: int = 0
 
 
+@dataclass
+class Candidat:
+    """Un `/dev/input/event*` qui ressemble à une radio, lisible ou non.
+
+    La distinction est le tout l'intérêt du type : « absente » et « présente mais
+    interdite » sont deux pannes opposées, et les confondre envoie chercher un
+    problème de branchement là où il n'y a qu'un problème de groupe Unix.
+    """
+    chemin: str
+    nom: str
+    lisible: bool
+    raison: str = ""
+
+
+def _nom_sysfs(chemin: str) -> str:
+    """Le nom du périphérique SANS l'ouvrir, via `/sys`.
+
+    `EVIOCGNAME` exige un descripteur ouvert, donc les droits. `sysfs` est en
+    lecture pour tous : c'est le seul moyen d'identifier une radio qu'on n'a
+    justement PAS le droit de lire — et donc de dire pourquoi ça échoue.
+    """
+    base = os.path.basename(chemin)
+    for p in (f"/sys/class/input/{base}/device/name", f"/sys/class/input/{base}/name"):
+        try:
+            with open(p) as f:
+                return f.read().strip()
+        except OSError:
+            continue
+    return ""
+
+
 def trouver(motif: str = MOTIF) -> list:
-    """Les `/dev/input/event*` qui ressemblent à une radio. Rend [(chemin, nom)]."""
+    """Les périphériques d'entrée qui ressemblent à une radio. Rend [Candidat]."""
     trouves = []
     rx = re.compile(motif, re.I)
     for chemin in sorted(glob.glob("/dev/input/event*")):
         try:
             fd = os.open(chemin, os.O_RDONLY | os.O_NONBLOCK)
-        except OSError:
-            continue                        # droits insuffisants : on passe
+        except OSError as e:
+            nom = _nom_sysfs(chemin)        # illisible, mais identifiable quand même
+            if nom and rx.search(nom):
+                trouves.append(Candidat(chemin, nom, False, e.strerror or str(e)))
+            continue
         try:
             tampon = bytearray(256)
             _ioctl(fd, EVIOCGNAME(len(tampon)), tampon)
             nom = tampon.split(b"\x00")[0].decode("utf-8", "replace")
             if rx.search(nom):
-                trouves.append((chemin, nom))
+                trouves.append(Candidat(chemin, nom, True))
         except OSError:
             pass
         finally:
@@ -189,10 +235,10 @@ class Radio:
     def _ouvrir(self) -> bool:
         chemin = self.chemin
         if not chemin:
-            candidats = trouver(self.motif)
-            if not candidats:
+            lisibles = [c for c in trouver(self.motif) if c.lisible]
+            if not lisibles:
                 return False
-            chemin, _ = candidats[0]
+            chemin = lisibles[0].chemin
         try:
             fd = os.open(chemin, os.O_RDONLY | os.O_NONBLOCK)
         except OSError:
@@ -314,7 +360,7 @@ class Radio:
                 presente=True, chemin=self.chemin, nom=self.nom,
                 axes={a.nom: round(a.norme(), 4) for a in self._axes.values()},
                 bruts={a.nom: a.brut for a in self._axes.values()},
-                boutons=dict(self._boutons),
+                boutons={nom_bouton(c): v for c, v in sorted(self._boutons.items())},
                 age_mouvement=round(now - self._t_evt, 2),
                 age_sonde=round(now - self._t_sonde, 2),
                 evenements=self._n,
@@ -336,7 +382,20 @@ def _barre(v: float, largeur: int = 31) -> str:
 
 def _cli():
     candidats = trouver()
-    if not candidats:
+    lisibles = [c for c in candidats if c.lisible]
+    if not lisibles:
+        # Deux pannes bien distinctes, et un message par panne.
+        interdits = [c for c in candidats if not c.lisible]
+        if interdits:
+            print("Radio TROUVÉE mais illisible — c'est un problème de droits, pas de branchement :")
+            for c in interdits:
+                print(f"  {c.chemin}  {c.nom}   -> {c.raison}")
+            print()
+            print("  sudo usermod -aG input $USER      # une seule fois")
+            print("  ... puis FERMER ET ROUVRIR la session : la liste des groupes d'un")
+            print("      processus est fixée au login, le noyau ne la relit jamais.")
+            print("  vérifier avec :  id | grep input")
+            return
         print("Aucune radio trouvée dans /dev/input/.")
         print()
         print("  1. la radio est-elle en mode USB Joystick (HID) ?")
@@ -353,9 +412,9 @@ def _cli():
         return
 
     print("Radios candidates :")
-    for chemin, nom in candidats:
-        print(f"  {chemin}  {nom}")
-    radio = Radio(candidats[0][0]).start()
+    for c in lisibles:
+        print(f"  {c.chemin}  {c.nom}")
+    radio = Radio(lisibles[0].chemin).start()
     time.sleep(0.3)
     print("\nBouge les manches et les inters. Ctrl-C pour sortir.\n")
     try:
@@ -373,8 +432,11 @@ def _cli():
             for nom, v in e.axes.items():
                 lignes.append(f"  {nom:<14} {e.bruts[nom]:>6}  {v:>+6.3f}   {_barre(v)}")
             if e.boutons:
-                lignes += ["", "  boutons : " + "  ".join(
-                    f"{c}={v}" for c, v in sorted(e.boutons.items()))]
+                # Seuls les boutons ENFONCÉS sont mis en avant : 24 zéros en
+                # permanence noieraient celui qu'on vient d'actionner.
+                actifs = [n for n, v in e.boutons.items() if v]
+                lignes += ["", "  boutons enfoncés : " + ("  ".join(actifs) if actifs else "—"),
+                           "  (vus au moins une fois : " + " ".join(e.boutons) + ")"]
             print("\n".join(lignes), flush=True)
             time.sleep(0.1)
     except KeyboardInterrupt:
