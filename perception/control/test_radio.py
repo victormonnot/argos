@@ -14,7 +14,7 @@ celles qu'on ne veut jamais voir régresser :
 from .radio import RadioEtat
 from .radio_map import (AXE_AVANCE, AXE_DROITE, AXE_GAZ, AXE_LACET,
                         INTER_ABANDON, INTER_AUTORITE, INTER_ENGAGE, INTER_LOCK,
-                        Autorite, Cartographie, _cran, _mort)
+                        Autorite, Cartographie, _cran, _ecart, _mort)
 
 
 def etat(sel=-1.0, gaz=0.0, avance=0.0, droite=0.0, lacet=0.0,
@@ -91,6 +91,34 @@ def test_sortir_du_manuel_efface_l_origine():
     c.lire(etat(sel=0.0, gaz=0.0))
     c.lire(etat(sel=1.0, gaz=0.0))                     # passage en auto
     assert c.lire(etat(sel=0.0, gaz=0.8)).monte == 0.0, "nouvelle prise de main"
+
+
+def test_la_butee_donne_pleine_autorite_quelle_que_soit_l_origine():
+    """Le prix du transfert sans à-coup, payé par la remise à l'échelle : une
+    origine excentrée ne doit pas amputer l'autorité de l'opérateur."""
+    for ref in (-0.6, -0.18, 0.0, 0.5):
+        c = Cartographie()
+        c.lire(etat(sel=-1.0, gaz=ref))
+        c.lire(etat(sel=0.0, gaz=ref))                 # origine posée ici
+        assert c.lire(etat(sel=0.0, gaz=1.0)).monte == 1.0, f"plein haut à ref={ref}"
+        assert c.lire(etat(sel=0.0, gaz=-1.0)).monte == -1.0, f"plein bas à ref={ref}"
+
+
+def test_une_origine_collee_a_la_butee_reduit_l_autorite_et_le_DIT():
+    """À +0,9 il ne reste que 0,1 de course : la sensibilité est bornée, donc
+    l'autorité de montée est réellement amputée. Ce qui compte est que la marge
+    soit REMONTÉE au lieu d'être cachée."""
+    c = Cartographie()
+    c.lire(etat(sel=-1.0, gaz=0.9))
+    i = c.lire(etat(sel=0.0, gaz=0.9))
+    assert i.marge_montee < 0.35, "0,1 de course x GAIN_MAX=3 -> 30 %"
+    assert i.marge_descente == 1.0, "vers le bas, la course est entière"
+
+
+def test_la_remise_a_l_echelle_est_neutre_au_centre():
+    ecart, haut, bas = _ecart(0.5, 0.0)
+    assert ecart == 0.5, "origine au centre -> aucune correction"
+    assert (haut, bas) == (1.0, 1.0)
 
 
 # ── règle 3 : la dégradation va vers MOINS d'autorité ───────────────────────
@@ -182,6 +210,111 @@ def test_un_inter_engage_absent_vaut_neutre_pas_repli():
     i = c.lire(e)
     assert i.autorite == Autorite.MANUEL
     assert not i.rtl
+
+
+# ── le barreau PILOTE : STABILIZE, manches bruts au firmware ────────────────
+def test_le_barreau_du_bas_est_le_pilotage_firmware():
+    c = Cartographie()
+    c.lire(etat(sel=0.0))
+    i = c.lire(etat(sel=-1.0, gaz=0.0, avance=0.5))
+    assert i.autorite == Autorite.PILOTE
+    assert i.avance == _mort(0.5), "les manches sortent, pour l'override RC"
+    assert i.monte == 0.0, "en STABILIZE l'écart n'a pas de sens"
+
+
+def test_en_pilote_les_gaz_sortent_bruts():
+    """En STABILIZE le manche EST la poussée : sa position absolue doit sortir
+    telle quelle, sans origine ni remise à l'échelle."""
+    c = Cartographie()
+    c.lire(etat(sel=0.0))
+    assert c.lire(etat(sel=-1.0, gaz=0.1)).gaz_absolu == 0.1
+
+
+def test_prendre_les_commandes_avec_les_gaz_mal_places_est_refuse():
+    """Entrer en STABILIZE avec le manche en bas, c'est couper la poussée en
+    vol. Le refus renvoie sur le barreau du milieu, qui est sûr par
+    construction — jamais sur rien."""
+    c = Cartographie()
+    c.lire(etat(sel=0.0))
+    i = c.lire(etat(sel=-1.0, gaz=-1.0))
+    assert i.autorite == Autorite.MANUEL
+    assert "recentre" in i.raison
+
+
+def test_le_refus_est_latche_jusqu_au_retour_de_l_inter():
+    """Sans verrou, l'autorité sauterait toute seule dans STABILIZE à l'instant
+    où le manche traverse la fenêtre — la surprise exacte qu'on interdit."""
+    c = Cartographie()
+    c.lire(etat(sel=0.0))
+    assert c.lire(etat(sel=-1.0, gaz=-1.0)).autorite == Autorite.MANUEL
+    assert c.lire(etat(sel=-1.0, gaz=0.0)).autorite == Autorite.MANUEL, "toujours latché"
+    c.lire(etat(sel=0.0, gaz=0.0))                     # on ramène l'inter
+    assert c.lire(etat(sel=-1.0, gaz=0.0)).autorite == Autorite.PILOTE
+
+
+def test_les_gaz_deja_bien_places_passent_du_premier_coup():
+    c = Cartographie()
+    c.lire(etat(sel=0.0))
+    assert c.lire(etat(sel=-1.0, gaz=0.1)).autorite == Autorite.PILOTE
+
+
+def test_le_controle_des_gaz_ne_s_applique_pas_au_barreau_du_milieu():
+    """GUIDED_NOGPS est sans à-coup par construction : rien à vérifier, et donc
+    toujours saisissable en urgence."""
+    c = Cartographie()
+    c.lire(etat(sel=1.0))
+    assert c.lire(etat(sel=0.0, gaz=-1.0)).autorite == Autorite.MANUEL
+
+
+# ── le geste d'armement ─────────────────────────────────────────────────────
+def test_le_geste_arme_apres_maintien():
+    c = Cartographie()
+    c.lire(etat(sel=0.0), now=0.0)
+    c.lire(etat(sel=-1.0, gaz=0.0), now=0.1)           # en PILOTE, gaz centrés
+    assert c.lire(etat(sel=-1.0, gaz=-1.0, lacet=1.0), now=1.0).actions == ()
+    i = c.lire(etat(sel=-1.0, gaz=-1.0, lacet=1.0), now=2.1)
+    assert "arm" in i.actions
+
+
+def test_le_geste_ne_se_declenche_pas_au_passage():
+    """Un manche qui balaie sa course traverse le coin « gaz mini + lacet à
+    fond » : sans maintien, il armerait tout seul."""
+    c = Cartographie()
+    c.lire(etat(sel=0.0), now=0.0)
+    c.lire(etat(sel=-1.0), now=0.1)
+    c.lire(etat(sel=-1.0, gaz=-1.0, lacet=1.0), now=1.0)
+    i = c.lire(etat(sel=-1.0, gaz=-1.0, lacet=0.0), now=1.3)   # relâché avant 1 s
+    assert i.actions == ()
+
+
+def test_le_geste_ne_se_repete_pas_s_il_est_tenu():
+    """Sinon un geste tenu réarmerait en boucle et le désarmement deviendrait
+    impossible à obtenir."""
+    c = Cartographie()
+    c.lire(etat(sel=0.0), now=0.0)
+    c.lire(etat(sel=-1.0), now=0.1)
+    c.lire(etat(sel=-1.0, gaz=-1.0, lacet=1.0), now=1.0)
+    assert "arm" in c.lire(etat(sel=-1.0, gaz=-1.0, lacet=1.0), now=2.1).actions
+    assert c.lire(etat(sel=-1.0, gaz=-1.0, lacet=1.0), now=3.5).actions == ()
+
+
+def test_le_lacet_choisit_armement_ou_desarmement():
+    for lacet, attendu in ((1.0, "arm"), (-1.0, "disarm")):
+        c = Cartographie()
+        c.lire(etat(sel=0.0), now=0.0)
+        c.lire(etat(sel=-1.0), now=0.1)
+        c.lire(etat(sel=-1.0, gaz=-1.0, lacet=lacet), now=1.0)
+        assert attendu in c.lire(etat(sel=-1.0, gaz=-1.0, lacet=lacet), now=2.1).actions
+
+
+def test_pas_d_armement_en_suivi_automatique():
+    """En AUTO les manches ne commandent rien : y armer sur un geste serait
+    armer sans intention de piloter."""
+    c = Cartographie()
+    c.lire(etat(sel=0.0), now=0.0)
+    c.lire(etat(sel=1.0), now=0.1)
+    c.lire(etat(sel=1.0, gaz=-1.0, lacet=1.0), now=1.0)
+    assert c.lire(etat(sel=1.0, gaz=-1.0, lacet=1.0), now=2.1).actions == ()
 
 
 # ── décodage ────────────────────────────────────────────────────────────────
