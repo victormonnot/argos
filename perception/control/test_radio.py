@@ -18,9 +18,11 @@ from .radio_map import (AXE_AVANCE, AXE_DROITE, AXE_GAZ, AXE_LACET,
 
 
 def etat(sel=-1.0, gaz=0.0, avance=0.0, droite=0.0, lacet=0.0,
-         lock=-1.0, engage=-1.0, abandon=-1.0, presente=True):
+         lock=-1.0, engage=0.0, abandon=-1.0, presente=True):
     """Un `RadioEtat` fabriqué. Valeurs au REPOS telles qu'EdgeTX les envoie :
-    les inters sont à -1, pas à 0."""
+    un inter 2 crans relâché est à -1 (pas 0), un inter 3 crans au cran MILIEU
+    est à 0 — et `engage` par défaut est au milieu, sinon chaque test demanderait
+    un repli sans le savoir."""
     return RadioEtat(presente=presente, nom="banc", axes={
         AXE_GAZ: gaz, AXE_AVANCE: avance, AXE_DROITE: droite, AXE_LACET: lacet,
         INTER_AUTORITE: sel, INTER_LOCK: lock, INTER_ENGAGE: engage,
@@ -137,6 +139,49 @@ def test_un_inter_bouge_hors_autorite_ne_declenche_pas_plus_tard():
     i = c.lire(etat(sel=0.0, lock=1.0))                # armement, inter inchangé
     assert i.autorite == Autorite.MANUEL
     assert i.actions == (), "l'état a été absorbé, pas mis en attente"
+
+
+# ── le repli (RTL), cran bas de l'inter d'engagement ────────────────────────
+def test_le_cran_bas_demande_un_repli():
+    """Un seul axe porte les deux sens de l'engagement : haut = « va vers la
+    cible », bas = « rentre ». Le neutre est entre les deux, donc on ne passe
+    jamais de l'un à l'autre sans franchir un cran d'arrêt."""
+    c = Cartographie()
+    _armer(c, sel=1.0)
+    i = c.lire(etat(sel=1.0, engage=-1.0))
+    assert i.autorite == Autorite.REPLI
+    assert i.rtl and not i.engage
+    assert "rtl" in i.actions
+
+
+def test_le_repli_prime_sur_le_selecteur_mais_pas_sur_l_abandon():
+    """L'ordre de priorité EST la hiérarchie de sûreté : abandon (plus personne
+    ne commande) > repli (le firmware commande) > sélecteur (la console)."""
+    c = Cartographie()
+    _armer(c, sel=0.0)
+    assert c.lire(etat(sel=0.0, engage=-1.0, avance=1.0)).autorite == Autorite.REPLI
+    i = c.lire(etat(sel=0.0, engage=-1.0, abandon=1.0))
+    assert i.autorite == Autorite.ABANDON, "l'abandon reste au-dessus de tout"
+
+
+def test_le_repli_ne_commande_pas_les_manches():
+    c = Cartographie()
+    _armer(c, sel=0.0)
+    i = c.lire(etat(sel=0.0, engage=-1.0, avance=1.0, droite=-1.0))
+    assert (i.avance, i.droite, i.monte, i.lacet) == (0.0, 0.0, 0.0, 0.0)
+
+
+def test_un_inter_engage_absent_vaut_neutre_pas_repli():
+    """Le défaut d'un axe manquant doit être le NEUTRE. Une cartographie
+    incomplète qui déclencherait un retour au terrain serait le pire défaut
+    possible : silencieux, et il fait rentrer le drone tout seul."""
+    c = Cartographie()
+    c.lire(etat(sel=-1.0))
+    e = etat(sel=0.0)
+    del e.axes[INTER_ENGAGE]
+    i = c.lire(e)
+    assert i.autorite == Autorite.MANUEL
+    assert not i.rtl
 
 
 # ── décodage ────────────────────────────────────────────────────────────────

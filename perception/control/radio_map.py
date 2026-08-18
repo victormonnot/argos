@@ -17,7 +17,7 @@ pilote HID répartit les canaux comme il veut ; rien ici n'est deviné) :
     ABS_Y         manche D vertical   +1 = haut     -> avance
     ABS_X         manche D horizontal +1 = droite   -> droite
     ABS_RZ        inter G 3 crans     +1 = haut     -> AUTORITÉ
-    ABS_THROTTLE  inter D 3 crans     +1 = haut     -> ENGAGE
+    ABS_THROTTLE  inter D 3 crans     +1 = haut     -> ENGAGE ; -1 = bas -> REPLI
     ABS_RY        inter G 2 crans     +1 = enfoncé  -> LOCK
     ABS_RUDDER    inter D 2 crans     +1 = enfoncé  -> ABANDON
 
@@ -44,7 +44,10 @@ AXE_LACET = "ABS_RX"
 AXE_AVANCE = "ABS_Y"
 AXE_DROITE = "ABS_X"
 INTER_AUTORITE = "ABS_RZ"          # 3 crans
-INTER_ENGAGE = "ABS_THROTTLE"      # 3 crans
+INTER_ENGAGE = "ABS_THROTTLE"      # 3 crans, et les DEUX extrêmes servent :
+                                   # haut = engagement, bas = repli (RTL). Un seul
+                                   # axe pour « va vers la cible » / « rentre », et
+                                   # le neutre entre les deux.
 INTER_LOCK = "ABS_RY"              # 2 crans
 INTER_ABANDON = "ABS_RUDDER"       # 2 crans
 
@@ -60,6 +63,8 @@ class Autorite:
     HOLD = "hold"            # sélecteur en bas -> le drone tient, à plat
     MANUEL = "manuel"        # sélecteur au milieu -> les manches commandent
     AUTO = "auto"            # sélecteur en haut -> la loi de guidage commande
+    REPLI = "repli"          # cran bas de l'inter d'engagement -> RTL, le firmware
+                             # rentre tout seul et la console cesse de commander
 
 
 @dataclass(frozen=True)
@@ -73,9 +78,10 @@ class Intention:
     lacet: float = 0.0         # -1..1, + = tourner à droite
     lock: bool = False         # position de l'inter, pas un front
     engage: bool = False
+    rtl: bool = False          # cran bas de l'inter d'engagement
     abandon: bool = False
     actions: tuple = ()        # fronts consommables : "lock", "unlock", "engage",
-                               # "disengage", "abandon", "reprise"
+                               # "disengage", "rtl", "fin_repli", "abandon", "reprise"
     raison: str = ""           # pourquoi cette autorité — affiché au HUD
 
 
@@ -111,6 +117,7 @@ class Cartographie:
         self._sel_vu = None             # dernière position connue du sélecteur
         self._lock = False
         self._engage = False
+        self._rtl = False
         self._abandon = False
         self._gaz_ref = None            # origine des gaz, posée à la prise de main
         self._presente = False
@@ -144,7 +151,10 @@ class Cartographie:
 
         sel = _cran(a[INTER_AUTORITE])
         lock = _haut(a.get(INTER_LOCK, -1.0))
-        engage_sw = _cran(a.get(INTER_ENGAGE, -1.0)) > 0
+        # ⚠ défaut 0.0 et non -1.0 : un axe manquant doit valoir NEUTRE. Avec
+        # -1.0 par défaut, une cartographie incomplète demanderait un RTL.
+        cran_eng = _cran(a.get(INTER_ENGAGE, 0.0))
+        engage_sw, rtl_sw = cran_eng > 0, cran_eng < 0
         abandon = _haut(a.get(INTER_ABANDON, -1.0))
 
         # ── 2. armement : pas de prise d'autorité silencieuse ────────────────
@@ -163,13 +173,16 @@ class Cartographie:
             actions.append("lock" if lock else "unlock")
         if engage_sw != self._engage:
             actions.append("engage" if engage_sw else "disengage")
+        if rtl_sw != self._rtl:
+            actions.append("rtl" if rtl_sw else "fin_repli")
         if abandon != self._abandon:
             actions.append("abandon" if abandon else "reprise")
-        self._lock, self._engage, self._abandon = lock, engage_sw, abandon
+        self._lock, self._engage = lock, engage_sw
+        self._rtl, self._abandon = rtl_sw, abandon
 
         if not self._arme:
             return Intention(autorite=Autorite.INACTIVE, lock=lock,
-                             engage=engage_sw, abandon=abandon,
+                             engage=engage_sw, rtl=rtl_sw, abandon=abandon,
                              raison="bouge le sélecteur pour prendre la main")
 
         # ── 4. l'abandon prime sur tout ──────────────────────────────────────
@@ -178,6 +191,16 @@ class Cartographie:
             return Intention(autorite=Autorite.ABANDON, lock=lock, abandon=True,
                              actions=tuple(actions),
                              raison="inter d'abandon tiré")
+
+        # Le repli prime sur le sélecteur, mais pas sur l'abandon. Ordre voulu :
+        # abandon (plus personne ne commande) > repli (le firmware commande) >
+        # sélecteur (la console commande). On ne descend jamais d'un cran de
+        # sûreté en montant d'un cran d'automatisme.
+        if rtl_sw:
+            self._gaz_ref = None
+            return Intention(autorite=Autorite.REPLI, lock=lock, rtl=True,
+                             actions=tuple(actions),
+                             raison="repli demandé — RTL, la console ne commande plus")
 
         autorite = {(-1): Autorite.HOLD, 0: Autorite.MANUEL,
                     1: Autorite.AUTO}[sel]
@@ -242,6 +265,7 @@ def _cli():
                   f"   monte {i.monte:+6.2f}   lacet {i.lacet:+6.2f}")
             print(f"  lock {'OUI' if i.lock else 'non':<4}"
                   f"   engage {'OUI' if i.engage else 'non':<4}"
+                  f"   repli {'OUI' if i.rtl else 'non':<4}"
                   f"   abandon {'OUI' if i.abandon else 'non'}")
             print()
             print("  derniers fronts :")
