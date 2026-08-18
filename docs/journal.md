@@ -5,7 +5,7 @@ memory cement: interview material, build-in-public content, and my own notes.
 
 ---
 
-## 📍 ÉTAT COURANT — mis à jour 2026-08-14
+## 📍 ÉTAT COURANT — mis à jour 2026-08-18
 
 > Bloc réécrit à chaque session. Répond à « j'en suis où ? », pas à « que s'est-il passé ? ».
 > L'historique est plus bas, il ne bouge jamais.
@@ -20,8 +20,24 @@ C++11** depuis la même source ; deux consommateurs compilés (`mavlink/consumer
 la console émet. L'atelier **inspecteur + composeur** vit sur `http://localhost:8088/mavlink` :
 flux montant avec octets bruts, et formulaire descendant construit depuis le dialecte.
 
-**Prochaine action concrète.** `PORTFOLIO.md` §1.6 **étape 4 : le HITL** — HITL-1bis, HITL-2, et
-le test HITL-3 à 20 min.
+**HITL-2 CONSTRUIT AU BANC, PAS ENCORE VOLÉ.** La RadioMaster Pocket est lue en USB joystick
+(`control/radio.py`, evdev décodé à la main) et devient une **échelle d'autorité** à trois barreaux
+(`control/radio_map.py`) : `STABILIZE` où le firmware vole, `GUIDED_NOGPS` aux manches,
+`GUIDED_NOGPS` en suivi. 31 tests au banc, endpoint `/radio`, bloc HUD. **Le vol de validation
+reste à faire** — voir les points ouverts.
+
+**Prochaine action concrète.** Voler HITL-2 en Gazebo (procédure en 11 points ci-dessous), en
+vérifiant en priorité le **sens du tangage en override RC** — c'est le seul signe du code qui ne
+soit pas déduit de la source ArduPilot. Ensuite HITL-1bis, et le test HITL-3 à 20 min.
+
+**Poste de pilotage — comment le remettre en route** (à refaire à chaque redémarrage) :
+1. radio branchée en USB-C **et allumée**, mode **USB Joystick (HID)** choisi sur l'écran EdgeTX —
+   sans ce choix Windows ne lit pas son descripteur et `usbipd` ne peut rien partager
+2. PowerShell **admin** : `usbipd list` → `usbipd bind --busid X-Y` → `usbipd attach --wsl --busid X-Y`
+   (⚠ **relire la liste chaque fois**, le BUSID bouge d'un démarrage à l'autre)
+3. `ls /dev/input/` doit montrer `event0` ; sinon `sudo modprobe vhci-hcd evdev usbhid hid-generic`
+4. vérification sans drone ni SITL : `./.venv/bin/python -m control.radio_map`
+5. seul `attach` n'est pas persistant. `bind`, le groupe `input` et les modules le sont.
 
 **Atelier MAVLink — comment le relancer :**
 1. `make -C mavlink` régénère les 3 langages et compile les 2 consommateurs (rien de généré n'est
@@ -36,13 +52,21 @@ le test HITL-3 à 20 min.
 3. terminal 2 : `cd perception && make console` → `http://localhost:8088`
 4. source **Gazebo** → **Décoller** → cliquer une cible → **ENGAGER**
 - frein d'urgence : QGC sur le Mac → **RTL**
+
+**Comment voler HITL-2** (à la radio, sans toucher au bouton « Décoller ») :
+1. gaz **au centre**, inter G **en bas** → HUD `PILOTE`, mode `STABILIZE`, la liaison s'ouvre seule
+2. gaz à fond en bas + lacet à fond **à droite** 1 s → `arm`
+3. gaz vers ~60 % → il décolle. **Vérifier que pousser le tangage fait AVANCER**
+4. vers 12 m, inter G **au milieu** → `MANUEL`, `GUIDED_NOGPS`, **aucun à-coup** attendu
+5. cible près du centre → inter G 2 crans = `lock` · inter G **en haut** = `AUTO`
+6. inter D **en haut** = `ENGAGE` · inter D 2 crans = `ABANDON` · inter D **en bas** = `REPLI` (RTL)
 - **le fichier n'est pas le processus** : toute modif de `console.py` exige un redémarrage
 
 **Robinets et instruments, réglables en vol :**
 `/tune` (gains + `cmdhz`) · `/gimbal` · `/link` (liaison MAVLink) · `/vision` (liaison vidéo) ·
 `/designation` (désignation sortante, §1.3) · `/inspect` + page `/mavlink` (inspecteur) ·
 `/cut` (sonde de coupure) · `/degrade` (perte volontaire en réception) · `/command` · `/fly` ·
-`/drone/connect` (ouvrir la liaison sans décoller)
+`/drone/connect` (ouvrir la liaison sans décoller) · **`/radio`** (poste de pilotage, HITL-2)
 
 **Lignes de base mesurées** — c'est à ces chiffres que le HITL puis le réel se compareront,
 et l'écart sera le coût du matériel :
@@ -57,6 +81,14 @@ et l'écart sera le coût du matériel :
 | gains (profil gazebo) | `kp_roll` 4°, `kd_roll` 12°, `k_pitch` 3,5°, `kd_size` 10°, `size_near` 0,12 |
 
 **Blocages / points ouverts.**
+- **HITL-2 n'a jamais volé.** Tout est vérifié au banc (31 tests) et la chaîne radio→`Intention`
+  tourne sur le vrai matériel, mais aucun barreau n'a été exercé sur un drone. Trois inconnues :
+  le **sens du tangage** en override RC (`RC_PITCH_INVERSE`, dépend de `RC2_REVERSED` — seul signe
+  du code non déduit de la source), le décollage **à la main en STABILIZE** (aucune tenue
+  d'altitude ni de position, c'est franchement plus dur qu'un clic), et le `REPLI` → `RTL`.
+- **La garde de proximité ne s'applique pas au barreau PILOTE**, par construction : en `STABILIZE`
+  le firmware ne sait pas qu'il y a une cible. On *peut* rentrer dedans. Assumé — un pilote qui
+  tient les commandes est responsable de ce qu'il fait — mais à dire à voix haute.
 - **`kd` optimal non déterminé.** L'essai à 16-20 a été jugé à l'œil et n'a rien conclu.
   L'observable manque : écart-type de l'erreur en régime établi + dépassement après une
   perturbation calibrée. `kd = 12` est un défaut raisonnable, pas un optimum démontré.
@@ -2679,3 +2711,197 @@ genre de question maintenant qu'on a l'outil.
 Dialecte + génération 3 langages + 2 consommateurs compilés + inspecteur + composeur. Ce qui reste
 listé au §1.3 comme prolongement possible (un mini-routeur MAVLink) n'est pas fait et n'est pas
 requis. **Prochaine étape du §1.6 : le HITL** (étape 4).
+
+## 2026-08-18 — HITL-2 : la radio entre dans la boucle, et l'autorité devient un objet
+
+Étape 4 du §1.6, premier morceau. La console cesse d'être une page web pour devenir un **poste
+opérateur** : une RadioMaster Pocket en USB, quatre inters, et une question à laquelle il faut
+répondre proprement — **qui tient le manche ?**
+
+### Trois couches à traverser avant d'écrire une ligne de logique
+
+WSL2 est une VM **sans aucun contrôleur USB**. Rien à brancher, physiquement.
+
+```
+  RadioMaster (EdgeTX, mode Joystick HID)
+        │ USB physique
+  Windows ── usbipd ─────────────► réémet les paquets USB sur TCP:3240
+        │
+  noyau WSL2 ── vhci-hcd ────────► faux contrôleur USB, rejoue les paquets
+        │
+  usbhid + hid-generic ──────────► lit le descripteur HID : 8 axes, 24 boutons
+        │
+  evdev ────────────────────────► /dev/input/event0
+```
+
+**`CONFIG_INPUT_JOYDEV is not set` dans le noyau WSL.** Donc `/dev/input/js0` n'existera **jamais**
+ici, et toute l'API joystick historique — `pygame` compris — est hors jeu par construction. Reste
+`evdev`, qui est un flux de `struct input_event` de 24 octets. Décodé à la main : `struct.unpack`,
+et les butées de calibration viennent d'un `ioctl` (`EVIOCGABS`), jamais codées en dur. Zéro
+dépendance ajoutée, et c'est le même geste que le dialecte MAVLink — on lit le format, on ne fait
+pas confiance à une couche qui le cache.
+
+### Un périphérique d'entrée n'a pas de battement de cœur
+
+Le point conceptuel de `radio.py`, et il a une conséquence directe sur le failsafe.
+
+**evdev est événementiel : un manche immobile n'émet RIEN.** L'âge du dernier événement ne dit donc
+pas « la radio est vivante », il dit « la radio a bougé ». Deux choses très différentes quand on
+construit une dégradation gracieuse. La liveness vient d'une **sonde** : `EVIOCGABS` toutes les
+0,5 s, qui lit la position courante même à l'arrêt et échoue net (`ENODEV`) au débranchement.
+
+C'est exactement ce qui sépare une **liaison** (§1.5-C : messages numérotés, cadence garantie,
+perte mesurable) d'un **périphérique** (rien de tout ça). D'où la décision : la radio **n'est pas**
+instrumentée avec `LinkStats`, et `/radio` ne ressemble pas à `/link`. Il n'affiche pas des Hz et
+des pertes, il affiche **qui a l'autorité et pourquoi** — la seule question qui compte quand trois
+émetteurs se disputent un drone.
+
+### Trois pièges de bring-up, tous hors du code
+
+- **Le groupe Unix.** `/dev/input/event0` est en `root:input 0640`. Un `usermod -aG input` ne prend
+  effet qu'**au login** : la liste des groupes d'un processus est fixée à sa création, le noyau ne
+  la relit jamais. Et **VS Code Remote ne relance pas son serveur distant** quand on rouvre la
+  fenêtre — les terminaux héritent des groupes que le serveur avait à son démarrage. `newgrp input`
+  débloque sans rien tuer ; `Kill VS Code Server on Host` corrige durablement.
+- **Le stub usbipd collé après un crash.** `usbipd` utilise **VBoxUSB** comme pilote stub. Un crash
+  machine l'a laissé attaché au port dans un état cassé : `VID_0000&PID_0002`, « échec de demande de
+  descripteur », et `attach` répond `Device in error state`. Le stub avait pris la main *avant* la
+  fin de l'énumération, donc plus personne ne pouvait interroger la radio. `usbipd unbind --all`
+  puis débrancher/rebrancher. **Tant que `usbipd list` affiche `0000:0002`, ne rien binder** — ça ne
+  peut que refabriquer le blocage.
+- **Un message d'erreur qui mentait, et c'est le mien.** `trouver()` avalait le `Permission denied`
+  et concluait « aucune radio trouvée », alors que `/dev/input/event0` était là. Corrigé en lisant
+  le nom du périphérique via **`sysfs`** (lisible par tous) plutôt que par `EVIOCGNAME` (qui exige
+  d'ouvrir) : « absente » et « présente mais interdite » sont deux pannes opposées, et les
+  confondre envoie chercher un problème de branchement là où il n'y a qu'un problème de groupe.
+
+### Le renversement sur `RC_CHANNELS_OVERRIDE`
+
+Position initiale, argumentée : **pas d'override RC**. C'est ce que font QGC et le module `joystick`
+de MAVProxy, et ça injecte les manches au niveau RC du firmware — donc **en amont** de
+`CommandGate`. La garde de proximité ne s'appliquerait plus, et on aurait fabriqué une deuxième
+porte de sortie invisible, exactement ce que le §1.5-A interdit.
+
+Puis Victor a rejeté le concept d'emploi sous-jacent : *« il faut pouvoir contrôler le drone à la
+main et puis passer en mode ARGOS quand on veut »*. Il a raison, et c'est même déjà écrit au §1.6
+étape 5 (« hover manuel propre → tracking → engagement »). Or **en `STABILIZE`, `SET_ATTITUDE_TARGET`
+est purement ignoré** : ces modes ne lisent que les canaux RC. Piloter à la main au sens ArduPilot
+*impose* l'override.
+
+Ce n'est pas une contradiction, et la raison est physique : **sur le vrai drone, la RadioMaster
+parlera au contrôleur de vol en ELRS**, une liaison séparée qui existe que la console tourne ou non.
+La porte de sortie n'a jamais gouverné ce chemin et ne le pourra jamais. `RC_CHANNELS_OVERRIDE` en
+SITL est le **substitut de cette liaison ELRS**, pas une porte dans le chemin ARGOS. Ce qui préserve
+le §1.5-A, c'est l'**exclusivité** : un seul émetteur par barreau, et c'est le même inter qui commande
+le mode ArduPilot et l'émetteur — donc les deux chemins ne sont jamais actifs ensemble.
+
+**Leçon générale : « une seule porte de sortie » se vérifie par l'exclusivité des états, pas par
+l'unicité de la fonction appelée.** Une règle architecturale qui ne sait pas accueillir le chemin
+manuel d'un vrai aéronef est une règle mal formulée, pas un chemin manuel à supprimer.
+
+### L'échelle d'autorité
+
+```
+inter G 3 crans   bas    PILOTE   STABILIZE      manches → firmware (override RC)
+                  milieu MANUEL   GUIDED_NOGPS   manches → AttitudeCmd → CommandGate
+                  haut   AUTO     GUIDED_NOGPS   loi de guidage → CommandGate
+
+par-dessus :      ABANDON (inter D 2 crans)  >  REPLI/RTL (inter D bas)  >  l'échelle
+inter D 3 crans   bas REPLI · milieu neutre · haut ENGAGE     ← un axe, les deux sens
+inter G 2 crans   LOCK (verrouille la cible la plus proche du CENTRE de l'image)
+geste             gaz mini + lacet à fond 1 s : droite = ARM, gauche = DISARM
+```
+
+Deux choses que cette table cache et qui sont l'essentiel :
+
+**L'ordre de priorité EST la hiérarchie de sûreté.** Abandon (plus personne ne commande) > repli
+(le firmware commande) > sélecteur (la console commande). On ne descend jamais d'un cran de sûreté
+en montant d'un cran d'automatisme.
+
+**Le défaut d'un axe manquant est le NEUTRE, jamais un extrême.** Écrit avec `-1.0` par défaut, une
+cartographie incomplète aurait demandé un **retour au terrain** — silencieusement, et le drone
+serait rentré tout seul. Un test l'interdit maintenant.
+
+### Le manche des gaz : là où la conception se gagne
+
+Le manche de gauche est **cranté, il ne se recentre pas** — il reste où on le laisse (mesuré à
+−0,18 au repos). Or dans `AttitudeCmd`, `thrust = 0,5` veut dire « tiens l'altitude ». Mapper la
+position absolue, c'est faire **plonger le drone à l'instant précis de la prise de main**.
+
+**Transfert sans à-coup** (*bumpless transfer*) : on mémorise la position du manche à l'entrée en
+manuel comme **origine**, et on ne commande que l'**écart**. La prise de main vaut donc toujours 0,
+donc `thrust = 0,5`. Testé pour cinq positions de manche.
+
+**Objection de Victor, et elle était juste** : si l'origine est excentrée, il ne reste plus de course.
+Origine à +0,6 → l'opérateur pousse à fond et n'obtient que 0,4. Inacceptable, parce que c'est
+précisément quand on reprend la main en urgence qu'il faut toute l'autorité. (Son hypothèse « ça
+n'arrivera pas, le manche sera au milieu » était fausse : rien ne recentre un manche cranté.)
+
+Correction : **remise à l'échelle par la course restante**, séparément vers le haut et vers le bas.
+La butée redonne ±1 quelle que soit l'origine. Contrepartie assumée — la sensibilité n'est plus la
+même dans les deux sens — bornée à `GAIN_MAX = 3`, et quand l'origine est collée à une butée
+l'autorité est réellement amputée : la **marge est alors remontée au HUD** (`montée 30 %`) au lieu
+d'être cachée.
+
+**Et les gaz n'ont pas la même sémantique selon le barreau** : écart en `MANUEL`, **bruts** en
+`PILOTE` — en `STABILIZE` le manche *est* la poussée, et un pilote attend que sa position compte.
+Deux sémantiques opposées sur le même axe physique, c'est le sélecteur qui tranche.
+
+### Ce qu'on refuse de faire, et pourquoi
+
+- **Aucune prise d'autorité silencieuse.** Tant que le sélecteur n'a pas été *bougé* depuis la
+  connexion, la radio est `INACTIVE` et la console garde son comportement. Brancher un périphérique
+  ne doit jamais changer qui pilote. Le débranchement remet à zéro : **une radio qui revient est
+  une radio inconnue**.
+- **Radio absente → jamais `AUTO`.** Perdre l'opérateur ne doit pas promouvoir le pilote automatique.
+- **Contrôle de position des gaz avant `STABILIZE`**, et le refus est **latché** : une fois refusé,
+  il faut ramener l'inter puis le rebasculer. Sans ce verrou, l'autorité sauterait toute seule dans
+  STABILIZE à l'instant où le manche traverse la fenêtre — la surprise exacte qu'on cherche à
+  éviter. Ce contrôle n'existe **que** sur ce barreau : `GUIDED_NOGPS` est sans à-coup par
+  construction, donc toujours saisissable en urgence.
+- **Un inter bougé hors autorité met son état à jour mais ne publie pas l'action.** Sinon elle
+  partirait plus tard, au moment de la prise de main, avec un retard arbitraire — le pire mode de
+  panne d'une interface opérateur.
+- **Le geste d'armement exige un maintien de 1 s et un relâchement avant de rejouer.** Un manche qui
+  balaie sa course traverse le coin « gaz mini + lacet à fond » ; et un geste tenu qui se répéterait
+  rendrait le désarmement impossible à obtenir.
+- **Pas de désarmement forcé** (`param2 = 21196`). ArduPilot refuse de désarmer en vol et ce refus
+  est un bon comportement ; il revient en `COMMAND_ACK`, donc visible dans l'atelier.
+
+### Deux bugs trouvés en relecture, invisibles autrement
+
+**`65535` ne libère pas un override, il le conserve.** Les deux valeurs spéciales de
+`RC_CHANNELS_OVERRIDE` ne font pas la même chose : `65535` = « ne touche pas à ce canal », donc
+l'override **précédent persiste** ; `0` = « rends ce canal à la radio », donc il est levé. En
+sortant de PILOTE, les dernières positions de manche restaient donc en vigueur côté firmware — un
+pilote qui lâche les commandes laissait une **consigne fantôme** derrière lui, et rien ne l'aurait
+signalé. On envoie maintenant `0` sur les canaux 1-4 pendant 1 s après chaque sortie, répété parce
+qu'un message UDP se perd et qu'un override oublié ne lève aucune erreur.
+
+**`/link` mentait pendant le pilotage manuel.** Le `continue` de la branche PILOTE sautait la
+comptabilité d'octets alors que l'override RC part bel et bien : ça fabriquait un **faux trou
+d'émission**, précisément l'indicateur qui avait servi à diagnostiquer le bégaiement de la boucle
+(2026-08-08). Un instrument qui ment pendant un transfert d'autorité est pire que pas d'instrument.
+
+### Effets de bord sur l'existant, tous des améliorations
+
+- **`flying` devient un fait MESURÉ** — moteurs armés **et** altitude > 0,8 m — au lieu d'un drapeau
+  posé par le décollage scripté. La porte de sortie s'appuie dessus pour refuser d'émettre vers un
+  drone au sol ; dès qu'un pilote peut monter au manche, il fallait que ce soit un fait.
+- **`operator_command()` apprend le lacet.** Il forçait `dyaw = 0` parce que la seule source manuelle
+  était `/fly` en HTTP, où un manche de lacet n'a pas de sens. La radio en a un.
+- **Bouger le sélecteur ouvre la liaison MAVLink.** Exiger un clic web avant de pouvoir armer serait
+  exactement le défaut que ce barreau existe pour corriger.
+- **`_takeoff()` a été coupé en deux** : la mise en place de la liaison (flux de télémétrie,
+  paramètres) d'un côté, le vol de l'autre. Un pilote qui décolle au manche a besoin de la première
+  et pas du second.
+- **Le lock à la radio verrouille la cible la plus proche du CENTRE**, pas d'un curseur. C'est le bon
+  critère parce que c'est là que la loi de guidage cherche à amener la cible : l'opérateur pointe en
+  volant, pas en cliquant. Ergonomie de viseur.
+- **Le décollage scripté et le bouton « Décoller » sont intacts.** Sans radio, la console se comporte
+  exactement comme avant — la régression est interdite par les 18 tests de `test_guidance`.
+
+### État du HITL-2 : construit, testé au banc, pas volé
+
+31 tests dans `control/test_radio.py`, qui ne vérifient **pas les numéros d'axes** mais les règles de
+transfert d'autorité — c'est ce qu'on ne veut jamais voir régresser. Ce qui reste : le vol.
