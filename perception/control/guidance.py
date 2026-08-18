@@ -153,18 +153,24 @@ class VisualGuidance:
         return AttitudeCmd(roll=roll, pitch=pitch, dyaw=dyaw, thrust=0.5, source="track")
 
 
-def operator_command(fwd: float, right: float, up: float,
-                     max_tilt: float = 12.0 * DEG) -> AttitudeCmd:
+def operator_command(fwd: float, right: float, up: float, yaw: float = 0.0,
+                     max_tilt: float = 12.0 * DEG,
+                     max_dyaw: float = 5.0 * DEG) -> AttitudeCmd:
     """Le pilotage manuel, exprimé dans le MÊME type que la loi de guidage.
 
     L'opérateur envoie une intention normalisée (-1..1) ; elle devient une
     attitude ici, et repart par la même porte de sortie que le suivi. C'est tout
     l'intérêt du §1.5-A : la garde de proximité s'applique aussi à lui.
+
+    `yaw` est un **delta de cap par cycle**, comme celui que produit la loi —
+    jamais un cap absolu (le compas est mort, §1.1). Il valait 0 tant que la
+    seule source manuelle était `/fly` en HTTP, où un manche de lacet n'avait pas
+    de sens ; la radio en a un (HITL-2), donc l'axe existe maintenant.
     """
     return AttitudeCmd(
         roll=_clamp(right, -1.0, 1.0) * max_tilt,
         pitch=-_clamp(fwd, -1.0, 1.0) * max_tilt,     # avancer = piqué = négatif
-        dyaw=0.0,
+        dyaw=_clamp(yaw, -1.0, 1.0) * max_dyaw,
         thrust=_clamp(0.5 + 0.5 * _clamp(up, -1.0, 1.0), 0.0, 1.0),
         source="operator",
     )

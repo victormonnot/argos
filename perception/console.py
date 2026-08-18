@@ -32,6 +32,7 @@ from ultralytics import YOLO
 
 from control import (CommandGate, GuidanceGains, Limits, TargetView, VehicleState,
                      VisualGuidance)
+from control.commands import HOVER
 from control.composer import ChampInvalide, Composer
 from control.designation import TargetPublisher
 from control.designation import dialecte as ARGOS_DIALECTE
@@ -39,6 +40,8 @@ from control.guidance import DEG, operator_command
 from control.inspector import MessageInspector
 from control.link import LinkStats, VisionStats
 from control.mavlink_backend import MavlinkBackend
+from control.radio import Radio as RadioUSB
+from control.radio_map import Autorite, Cartographie, Intention
 
 try:
     from gz_camera import GzCamera, GzGimbal, available as gz_available
@@ -139,7 +142,7 @@ _gimbal = {"rc7": RC7_PITCH, "rc8": RC8_YAW}   # réglable en live via /gimbal?p
 # Vol manuel : une INTENTION normalisée -1..1, pas une vitesse. En GUIDED_NOGPS il
 # n'existe pas de consigne de vitesse — « avancer » est un angle de piqué. Et cette
 # intention repart par la MÊME porte de sortie que le suivi (§1.5-A).
-_manual = {"fwd": 0.0, "right": 0.0, "up": 0.0, "until": 0.0}
+_manual = {"fwd": 0.0, "right": 0.0, "up": 0.0, "yaw": 0.0, "until": 0.0}
 # Dernière commande réellement émise — c'est ce que le HUD affiche (pas l'intention).
 _cmd = {"src": "idle", "roll": 0.0, "pitch": 0.0, "dyaw": 0.0, "thrust": 0.5,
         "reasons": [], "sent": 0, "approach": 0.0, "size": 0.0}
@@ -205,6 +208,32 @@ _pub_tick = {"t": 0.0}
 CUT_TAIL = 3.0          # s d'enregistrement APRÈS la reprise (voir la récupération)
 _cut = {"t0": 0.0, "silence": 0.0, "until": 0.0, "end": 0.0, "ms": 0,
         "trace": [], "running": False}
+
+# ── La radio de pilotage (PORTFOLIO §1.2, HITL-2) ────────────────────────────
+# Un PÉRIPHÉRIQUE, pas une liaison : voir l'en-tête de control/radio.py. La
+# console n'en lit qu'une chose, une `Intention` — donc elle ne sait rien
+# d'evdev, et un pont réseau depuis un autre poste se brancherait ici sans
+# toucher à quoi que ce soit en aval.
+RADIO_HZ = 50.0         # cadence de lecture. Bien au-dessus de CMD_HZ : c'est un
+                        # geste humain qu'on échantillonne, et les fronts d'inter
+                        # ne doivent pas se perdre entre deux cycles de vol.
+SEUIL_VOL = 0.8         # m — au-dessus, on considère le drone EN VOL. Remplace le
+                        # drapeau posé par le décollage scripté : avec un pilote
+                        # aux commandes, « en vol » est un fait mesuré, pas une
+                        # conséquence d'avoir cliqué un bouton.
+_radio = {"intention": Intention(), "nom": "", "chemin": "", "evts": 0,
+          "age": 0.0, "cycles": 0}
+# Les actions radio qui exigent d'ÉCRIRE sur la liaison (armement, RTL) sont mises
+# en file et drainées par le fil de vol — même règle que le composeur (§1.3) : un
+# seul écrivain, sinon les trous de séquence qu'on fabrique sont comptés comme des
+# pertes par notre propre instrument. Celles qui ne touchent que l'état de la
+# console (lock, engage) s'appliquent directement.
+_radio_q = deque()
+_radio_log = deque(maxlen=20)    # journal des actions opérateur, pour le HUD
+RADIO_MODES = {Autorite.PILOTE: "STABILIZE",
+               Autorite.MANUEL: "GUIDED_NOGPS",
+               Autorite.AUTO: "GUIDED_NOGPS",
+               Autorite.REPLI: "RTL"}
 
 
 def angdiff(a, b):
@@ -534,9 +563,17 @@ def _absorb(m, msg, backend=None):
                 _drone["href"] = _drone["hdg"]      # cap de reference (viewport centre)
         elif t == "GLOBAL_POSITION_INT":
             _drone["alt"] = round(msg.relative_alt / 1000.0, 1)
+            _drone["flying"] = _drone["armed"] and _drone["alt"] > SEUIL_VOL
         elif t == "HEARTBEAT":
             _drone["armed"] = bool(m.motors_armed())
             _drone["mode"] = m.flightmode
+            # « En vol » est desormais MESURE : moteurs armes + altitude reelle.
+            # Avant, c'etait un drapeau pose par le decollage scripte — inutilisable
+            # des lors qu'un pilote peut faire monter le drone au manche. La porte de
+            # sortie s'appuie dessus pour refuser d'emettre vers un drone au sol,
+            # donc il fallait que ce soit un fait et non une intention.
+            if not _drone["armed"]:
+                _drone["flying"] = False
 
 
 def _journal_compose(sens, nom, canal, brut, note=""):
@@ -583,27 +620,220 @@ def _cut_sample(now, cmd):
         })
 
 
-def _gimbal_hold(m, tick):
-    """Tient la consigne du gimbal a 5 Hz, EN PERMANENCE.
+# ═════════════════════════════════════════════════════════════════════════
+#  La radio de pilotage (HITL-2)
+# ═════════════════════════════════════════════════════════════════════════
+def _plus_proche(full_x, full_y):
+    """La détection la plus proche d'un point de l'image pleine. Rend la boîte
+    ou None. Partagée par le clic souris et le lock à la radio : deux gestes
+    d'opérateur, un seul critère de choix."""
+    with _lock:
+        dets, dims = list(_state["dets"]), _state["dims"]
+    if not dims or not dets:
+        return None
+    best, bestd = None, 1e18
+    for d in dets:
+        dd = (d["cx"] - full_x) ** 2 + (d["cy"] - full_y) ** 2
+        if dd < bestd:
+            best, bestd = d, dd
+    return best
+
+
+def _poser_lock(best):
+    """Verrouille une boîte. `seq` s'incrémente : le fil de vol y voit le signal
+    de remettre à zéro la mémoire du terme dérivé de la loi."""
+    if not best:
+        return False
+    with _lock:
+        _track.update({"locked": True, "cx": best["cx"], "cy": best["cy"],
+                       "cls_id": best["cls_id"], "size": 0.0,
+                       "seq": _track.get("seq", 0) + 1,
+                       "conf": best["conf"], "t_lock": time.time()})
+    return True
+
+
+def _lock_centre():
+    """Verrouille la cible la plus proche du CENTRE de l'image.
+
+    À la radio il n'y a pas de curseur : le geste « verrouille » doit donc porter
+    son propre critère. Le centre est le bon parce que c'est là que la loi de
+    guidage cherche à amener la cible — l'opérateur pointe en volant, pas en
+    cliquant, ce qui est exactement l'ergonomie d'un viseur.
+    """
+    with _lock:
+        dims, pan_x, vp_w = _state["dims"], _view["pan_x"], _view["vp_w"]
+    if not dims or not vp_w:
+        return False
+    _, h_full = dims
+    return _poser_lock(_plus_proche(pan_x + vp_w / 2.0, h_full / 2.0))
+
+
+def _journal_radio(quoi):
+    _radio_log.appendleft({"t": time.strftime("%H:%M:%S"), "quoi": quoi})
+
+
+def _radio_actions(actions):
+    """Applique les fronts de la radio.
+
+    Partage voulu : ce qui ne touche que l'état de la console est appliqué ICI,
+    tout de suite. Ce qui doit ÉCRIRE sur la liaison MAVLink (armement, RTL) part
+    en file — le fil de vol est le seul écrivain (§1.3, leçon du composeur).
+    """
+    for act in actions:
+        if act == "lock":
+            ok = _lock_centre()
+            _journal_radio("lock" if ok else "lock — aucune cible")
+        elif act == "unlock":
+            with _lock:
+                _track["locked"] = False
+                _track["engage"] = False
+            _journal_radio("unlock")
+        elif act in ("engage", "disengage"):
+            with _lock:
+                # même règle que l'endpoint web : pas d'engagement sans verrou
+                _track["engage"] = (act == "engage") and _track["locked"]
+                etat = _track["engage"]
+            _journal_radio("ENGAGE" if etat else "désengagé")
+        elif act == "abandon":
+            with _lock:
+                _track["engage"] = False
+            _journal_radio("ABANDON")
+        elif act in ("arm", "disarm", "rtl"):
+            _radio_q.append(act)                # exige la liaison -> fil de vol
+            _journal_radio(act)
+        elif act in ("reprise", "fin_repli"):
+            _journal_radio(act)
+
+
+def _cmd_hud(res, aut, guidance, target, backend=None):
+    """Publie au HUD la commande REELLEMENT emise — ou son absence.
+
+    `res is None` signifie « ARGOS n'a rien emis ce cycle » (PILOTE, REPLI). Il
+    fallait le distinguer d'une commande nulle : afficher des zeros laisserait
+    croire qu'on emet une attitude a plat, alors qu'on se TAIT. C'est la meme
+    distinction que la sonde de coupure, et elle est essentielle a la lecture du
+    HUD pendant un transfert d'autorite.
+    """
+    with _lock:
+        if res is None:
+            _cmd.update({"src": aut, "roll": 0.0, "pitch": 0.0, "dyaw": 0.0,
+                         "thrust": 0.0, "reasons": ["ARGOS silencieux"],
+                         "sent": backend.sent if backend else _cmd.get("sent", 0),
+                         "approach": 0.0, "size": round(target.size, 2)})
+            return
+        _cmd.update({"src": res.cmd.source,
+                     "roll": round(math.degrees(res.cmd.roll), 1),
+                     "pitch": round(math.degrees(res.cmd.pitch), 1),
+                     "dyaw": round(math.degrees(res.cmd.dyaw), 1),
+                     "thrust": round(res.cmd.thrust, 2),
+                     "reasons": res.reasons,
+                     "sent": backend.sent if backend else _cmd.get("sent", 0),
+                     "approach": guidance.telemetry["approach"],
+                     "size": round(target.size, 2)})
+
+
+def _radio_thread():
+    """Lit la radio à RADIO_HZ et publie une `Intention`. Vit sans drone.
+
+    Ce fil tourne dès le démarrage de la console, avant toute liaison MAVLink :
+    on veut voir la radio au HUD et vérifier une cartographie sans décoller.
+    """
+    radio = RadioUSB().start()
+    carte = Cartographie()
+    while True:
+        etat = radio.etat()
+        intention = carte.lire(etat)
+        if intention.actions:
+            _radio_actions(intention.actions)
+        # Prendre l'autorite sur un poste physique DOIT ouvrir la liaison. Exiger
+        # un clic web avant de pouvoir armer serait exactement le defaut que ce
+        # barreau existe pour corriger. Ce n'est pas une prise d'autorite
+        # silencieuse : il a fallu bouger le selecteur, et ouvrir une liaison
+        # n'emet aucune commande.
+        if (intention.autorite in (Autorite.PILOTE, Autorite.MANUEL, Autorite.AUTO)
+                and not _drone_started["v"]):
+            _drone_started["v"] = True
+            threading.Thread(target=_drone_thread, daemon=True).start()
+        with _lock:
+            _radio.update({"intention": intention, "nom": etat.nom,
+                           "chemin": etat.chemin, "evts": etat.evenements,
+                           "age": etat.age_mouvement,
+                           "cycles": _radio["cycles"] + 1})
+        time.sleep(1.0 / RADIO_HZ)
+
+
+def _radio_intention() -> Intention:
+    with _lock:
+        return _radio["intention"]
+
+
+def _radio_drain(backend):
+    """Exécute les actions radio qui parlent MAVLink. Appelée par le fil de vol."""
+    while _radio_q:
+        try:
+            act = _radio_q.popleft()
+        except IndexError:
+            return
+        if act == "arm":
+            backend.arm(True)
+        elif act == "disarm":
+            backend.arm(False)
+        elif act == "rtl":
+            backend.set_mode("RTL")
+
+
+def _gimbal_hold(m, tick, backend=None, manches=None):
+    """Tient les canaux RC : le gimbal en permanence, et les MANCHES en PILOTE.
 
     Un override RC expire cote ArduPilot au bout de `RC_OVERRIDE_TIME` (3 s) : il
     faut le reemettre en continu. Et il faut le faire **avant et pendant** le
     decollage, sinon la camera pend librement jusqu'a ce que la boucle de vol
     demarre — c'est l'image de travers observee au sol puis redressee en l'air.
 
-    C'est une commande de CHARGE UTILE : elle ne peut pas deplacer le drone, elle
-    ne passe donc pas par la porte de sortie.
+    Le gimbal est une commande de CHARGE UTILE : elle ne peut pas deplacer le
+    drone, elle ne passe donc pas par la porte de sortie.
+
+    Les manches, eux, DEPLACENT le drone — et ils ne passent pas par la porte non
+    plus. Ce n'est pas une entorse au §1.5-A : en `STABILIZE` c'est le firmware
+    qui vole, ARGOS n'emet aucune consigne, et sur le vrai drone ce chemin sera la
+    liaison ELRS que la console ne traverse jamais. Ce qui garantit la regle,
+    c'est l'EXCLUSIVITE — le meme selecteur choisit le mode ArduPilot et
+    l'emetteur, donc les deux chemins ne sont jamais actifs ensemble.
+
+    Les huit voies tiennent dans UN message : d'ou le dictionnaire, ou l'appelant
+    ne remplit que ce qu'il possede.
     """
     now = time.time()
-    if now - tick["t"] < 0.2:
+    # 20 Hz quand un humain tient les manches, 5 Hz pour le seul gimbal : un
+    # geste de pilote echantillonne a 5 Hz se sent immediatement.
+    if now - tick["t"] < (0.05 if manches else 0.2):
         return
     tick["t"] = now
+    canaux = {}
     with _lock:
-        if _sel["name"] != GAZEBO:
-            return
-        rc7, rc8 = _gimbal["rc7"], _gimbal["rc8"]
-    m.mav.rc_channels_override_send(m.target_system, m.target_component,
-        65535, 65535, 65535, 65535, 65535, RC6_ROLL, rc7, rc8)
+        if _sel["name"] == GAZEBO:
+            canaux = {6: RC6_ROLL, 7: _gimbal["rc7"], 8: _gimbal["rc8"]}
+    if manches:
+        canaux.update(manches)
+        tick["liberer"] = now + 1.0
+    elif now < tick.get("liberer", 0.0):
+        # LIBERER les canaux de pilotage en sortant de PILOTE. Les deux valeurs
+        # speciales de `RC_CHANNELS_OVERRIDE` ne font pas la meme chose :
+        #     65535  « ne touche pas a ce canal »  -> l'override PRECEDENT persiste
+        #         0  « rends ce canal a la radio » -> l'override est LEVE
+        # Sans ce 0, les dernieres positions de manche resteraient en vigueur cote
+        # firmware apres le retour en GUIDED_NOGPS — un pilote qui lache les
+        # commandes laisserait une consigne fantome derriere lui. On le repete
+        # pendant 1 s parce qu'un seul message peut se perdre (UDP), et qu'un
+        # override oublie ne se signale par aucune erreur.
+        canaux.update({c: 0 for c in (1, 2, 3, 4)})
+    if not canaux:
+        return
+    if backend is not None:
+        backend.send_rc(canaux)
+    else:                              # avant que le backend n'existe (jamais en vol)
+        vals = [canaux.get(i, 65535) for i in range(1, 9)]
+        m.mav.rc_channels_override_send(m.target_system, m.target_component, *vals)
 
 
 def _takeoff(m, tick, backend):
@@ -631,7 +861,7 @@ def _takeoff(m, tick, backend):
     while time.time() - t0 < 40:
         msg = m.recv_match(blocking=True, timeout=1)
         _absorb(m, msg, backend)
-        _gimbal_hold(m, tick)
+        _gimbal_hold(m, tick, backend)
         if msg and msg.get_type() == "GPS_RAW_INT" and msg.fix_type >= 3:
             break
     with _lock:
@@ -650,7 +880,7 @@ def _takeoff(m, tick, backend):
         t1 = time.time()
         while time.time() - t1 < 3:
             _absorb(m, m.recv_match(blocking=True, timeout=1), backend)
-            _gimbal_hold(m, tick)
+            _gimbal_hold(m, tick, backend)
     if not m.motors_armed():
         return False
 
@@ -660,7 +890,7 @@ def _takeoff(m, tick, backend):
     while time.time() - t0 < 30:
         msg = m.recv_match(blocking=True, timeout=2)
         _absorb(m, msg, backend)
-        _gimbal_hold(m, tick)
+        _gimbal_hold(m, tick, backend)
         if (msg and msg.get_type() == "GLOBAL_POSITION_INT"
                 and msg.relative_alt / 1000.0 >= TAKEOFF_ALT * 0.9):
             return True
@@ -668,16 +898,29 @@ def _takeoff(m, tick, backend):
 
 
 def _wait_request(m, tick, backend):
-    """Au sol : on draine la liaison et on tient le gimbal, en attendant que
-    l'operateur appuie sur « Decoller ». Aucune commande de vol n'est emise."""
+    """Au sol : on draine la liaison et on tient le gimbal, en attendant un ordre.
+
+    Deux ordres possibles, et ils ne mènent pas au même vol :
+
+      "bouton"  l'operateur a clique « Decoller » -> decollage SCRIPTE en GUIDED
+      "radio"   le selecteur d'autorite est actif -> AUCUN decollage automatique,
+                c'est le pilote qui fait monter le drone au manche
+
+    Le second existe parce qu'un poste de pilotage qui exige de cliquer un bouton
+    web avant de pouvoir armer n'est pas un poste de pilotage.
+    """
     while True:
         with _lock:
             if _drone["req"]:
                 _drone["req"] = False
-                return
+                return "bouton"
+        if _radio_intention().autorite in (Autorite.PILOTE, Autorite.MANUEL,
+                                           Autorite.AUTO):
+            return "radio"
         _absorb(m, m.recv_match(blocking=True, timeout=0.05), backend)
-        _gimbal_hold(m, tick)
+        _gimbal_hold(m, tick, backend)
         _compose_drain(m)
+        _radio_drain(backend)
 
 
 def _fly(m, backend, gate, tick):
@@ -698,11 +941,39 @@ def _fly(m, backend, gate, tick):
     seq_seen = -1
     t_disarm = 0.0
     octets_tx = backend.bytes_sent
+    mode_voulu = None                  # dernier mode ArduPilot DEMANDÉ par la radio
+    t_mode = 0.0
     while True:
         _absorb(m, m.recv_match(blocking=True, timeout=0.02), backend)
         now = time.time()
-        _gimbal_hold(m, tick)
         _compose_drain(m)
+        _radio_drain(backend)          # armement / RTL : un seul écrivain, c'est ici
+        intention = _radio_intention()
+        aut = intention.autorite
+
+        # ── Le mode ArduPilot suit le sélecteur d'autorité ────────────────────
+        # Émis sur TRANSITION seulement, puis réessayé si le drone n'y est pas
+        # allé : un `set_mode` peut être refusé (EKF, pré-armement) et MAVLink ne
+        # garantit rien. Le rejouer à chaque cycle noierait la liaison mesurée.
+        veut = RADIO_MODES.get(aut)
+        if veut and veut != mode_voulu:
+            mode_voulu = veut
+            t_mode = 0.0
+        if mode_voulu and now - t_mode > 1.0:
+            with _lock:
+                reel = _drone["mode"]
+            if reel != mode_voulu:
+                backend.set_mode(mode_voulu)
+                t_mode = now
+            else:
+                t_mode = now + 1e9     # arrivé : on arrête d'insister
+
+        # ── Les manches vont au firmware, ou pas ─────────────────────────────
+        manches = None
+        if aut == Autorite.PILOTE:
+            manches = backend.rc_manches(intention.avance, intention.droite,
+                                         intention.lacet, intention.gaz_absolu)
+        _gimbal_hold(m, tick, backend, manches)
         if now - t_ping >= 1.0 / PING_HZ:      # mesure de latence (§1.5-C)
             t_ping = now
             backend.ping()
@@ -716,8 +987,11 @@ def _fly(m, backend, gate, tick):
             t_disarm = 0.0
         elif t_disarm == 0.0:
             t_disarm = now
-        elif now - t_disarm > 2.0:
-            return
+        elif now - t_disarm > 2.0 and aut in (Autorite.ABSENTE, Autorite.INACTIVE):
+            return                     # la radio n'a pas la main -> retour au bouton
+            # Quand elle l'a, la session ne se termine PAS au desarmement : un
+            # pilote pose, coupe, rearme et repart. Rendre la main au bouton
+            # « Decoller » entre deux vols n'aurait aucun sens.
 
         if now - t_cmd < 1.0 / CMD_HZ:
             continue
@@ -744,10 +1018,39 @@ def _fly(m, backend, gate, tick):
             guidance.reset()
 
         # ── QUI commande ce cycle ─────────────────────────────────────────────
-        # Un seul emetteur a la fois, et tous sortent par la meme porte.
-        if now < man["until"]:
-            cmd = operator_command(man["fwd"], man["right"], man["up"],
-                                   max_tilt=LIMITS.max_tilt)
+        # Un seul emetteur a la fois, et tous sortent par la meme porte. L'ordre
+        # est la hierarchie d'autorite de radio_map.py : la radio, quand elle a la
+        # main, prime sur la console web — c'est un poste physique contre une page.
+        if aut in (Autorite.PILOTE, Autorite.REPLI):
+            # PILOTE : le firmware vole, les manches sont deja partis en override.
+            # REPLI  : ArduPilot rentre tout seul, personne ne doit lui parler.
+            # Dans les deux cas ARGOS n'emet AUCUNE consigne d'attitude, et c'est
+            # ce silence qui rend l'exclusivite reelle plutot que declarative.
+            guidance.reset()
+            # On COMPTE quand meme les octets emis : en PILOTE l'override RC part
+            # bel et bien sur la liaison. Sauter la comptabilite ici ferait
+            # apparaitre un faux trou d'emission dans `/link` — et ce trou est
+            # precisement l'indicateur qui a servi a diagnostiquer le begaiement
+            # de la boucle. Un instrument qui ment pendant un transfert
+            # d'autorite est pire que pas d'instrument.
+            _link.on_tx(now, backend.bytes_sent - octets_tx)
+            octets_tx = backend.bytes_sent
+            _cmd_hud(None, aut, guidance, target, backend)
+            continue
+        if aut == Autorite.ABANDON:
+            cmd = HOVER                            # a plat, cap et altitude tenus
+        elif aut == Autorite.MANUEL:
+            cmd = operator_command(intention.avance, intention.droite,
+                                   intention.monte, intention.lacet,
+                                   max_tilt=LIMITS.max_tilt,
+                                   max_dyaw=LIMITS.max_dyaw)
+        elif aut == Autorite.AUTO:
+            cmd = (guidance.step(target, engage, dt) if target.has
+                   else guidance.step(TargetView(has=False), False, dt))
+        elif now < man["until"]:                   # console web : /fly
+            cmd = operator_command(man["fwd"], man["right"], man["up"], man["yaw"],
+                                   max_tilt=LIMITS.max_tilt,
+                                   max_dyaw=LIMITS.max_dyaw)
         elif target.has:
             cmd = guidance.step(target, engage, dt)
         else:
@@ -777,15 +1080,7 @@ def _fly(m, backend, gate, tick):
             _vision.on_command(now, (now - t_cap) * 1000.0)
         if trace_on:
             _cut_sample(now, res.cmd)
-        with _lock:
-            _cmd.update({"src": res.cmd.source,
-                         "roll": round(math.degrees(res.cmd.roll), 1),
-                         "pitch": round(math.degrees(res.cmd.pitch), 1),
-                         "dyaw": round(math.degrees(res.cmd.dyaw), 1),
-                         "thrust": round(res.cmd.thrust, 2),
-                         "reasons": res.reasons, "sent": backend.sent,
-                         "approach": guidance.telemetry["approach"],
-                         "size": round(target.size, 2)})
+        _cmd_hud(res, aut, guidance, target, backend)
 
 
 def _drone_thread():
@@ -814,31 +1109,62 @@ def _drone_thread():
     tick = {"t": 0.0}                     # cadence propre au gimbal
 
     while True:
-        _wait_request(m, tick, backend)
-        if not _takeoff(m, tick, backend):
-            with _lock:
-                _drone["status"] = "décollage ÉCHOUÉ · réappuyer pour réessayer"
-            continue                      # `flying` reste False : la porte refuse tout
+        source = _wait_request(m, tick, backend)
 
-        # La bascule. `ModeGuidedNoGPS::requires_position()` est false -> pas de
-        # blocage EKF ; le handler SET_ATTITUDE_TARGET n'accepte que si `in_guided_mode()`.
-        ok_mode = backend.set_mode("GUIDED_NOGPS")
-        time.sleep(0.5)
-        with _lock:
-            _drone["status"] = ("EN VOL · GUIDED_NOGPS" if ok_mode
-                                else "EN VOL · mode 20 INDISPONIBLE")
-            _drone["flying"] = True
+        if source == "bouton":
+            if not _takeoff(m, tick, backend):
+                with _lock:
+                    _drone["status"] = "décollage ÉCHOUÉ · réappuyer pour réessayer"
+                continue                  # `flying` reste False : la porte refuse tout
+            # La bascule. `ModeGuidedNoGPS::requires_position()` est false -> pas de
+            # blocage EKF ; le handler SET_ATTITUDE_TARGET n'accepte que si
+            # `in_guided_mode()`.
+            ok_mode = backend.set_mode("GUIDED_NOGPS")
+            time.sleep(0.5)
+            with _lock:
+                _drone["status"] = ("EN VOL · GUIDED_NOGPS" if ok_mode
+                                    else "EN VOL · mode 20 INDISPONIBLE")
+        else:
+            # La radio prend la main : AUCUN decollage scripte, aucun armement, et
+            # surtout aucun `set_mode` ici — c'est la boucle de vol qui suit le
+            # selecteur d'autorite. On ne prepare que la liaison.
+            _preparer_liaison(m, tick, backend)
+            with _lock:
+                _drone["status"] = "RADIO · poste de pilotage"
 
         _fly(m, backend, gate, tick)
 
         with _lock:
-            _drone.update({"flying": False, "href": None,
-                           "status": "posé · prêt à redécoller"})
+            _drone.update({"href": None, "status": "posé · prêt à redécoller"})
+
+
+def _preparer_liaison(m, tick, backend):
+    """Ce que `_takeoff()` faisait au passage, sans rien armer ni faire monter.
+
+    Il fallait le separer : le decollage scripte melangeait la mise en place de la
+    liaison (flux de telemetrie, parametres) avec le vol lui-meme. Un pilote qui
+    decolle au manche a besoin de la premiere et pas du second.
+    """
+    m.mav.request_data_stream_send(m.target_system, m.target_component,
+                                   mavutil.mavlink.MAV_DATA_STREAM_ALL, 5, 1)
+    m.mav.param_set_send(m.target_system, m.target_component, b"ARMING_CHECK", 0,
+                         mavutil.mavlink.MAV_PARAM_TYPE_INT32)
+    # WP_YAW_BEHAVIOR=0 : le drone ne tourne pas le nez vers sa vitesse, sinon la
+    # camera quitte la cible a chaque correction (gimbal fixe).
+    m.mav.param_set_send(m.target_system, m.target_component, b"WP_YAW_BEHAVIOR", 0,
+                         mavutil.mavlink.MAV_PARAM_TYPE_INT32)
+    t0 = time.time()
+    while time.time() - t0 < 1.0:
+        _absorb(m, m.recv_match(blocking=True, timeout=0.1), backend)
+        _gimbal_hold(m, tick, backend)
 
 
 @asynccontextmanager
 async def lifespan(_app):
     threading.Thread(target=worker, daemon=True).start()
+    # Le fil radio vit meme sans drone : on veut voir la radio au HUD et verifier
+    # une cartographie sans decoller (et sans SITL du tout).
+    threading.Thread(target=_radio_thread, daemon=True).start()
     yield
 
 
@@ -887,28 +1213,14 @@ def set_source(name: str):
 @app.get("/lock")
 def lock(fx: float, fy: float):
     with _lock:
-        dets, dims = list(_state["dets"]), _state["dims"]
+        dims = _state["dims"]
         pan_x, vp_w = _view["pan_x"], _view["vp_w"]
-    if not dims or not dets or not vp_w:
+    if not dims or not vp_w:
         return {"locked": False}
     _, H_full = dims
-    full_x = pan_x + fx * vp_w          # clic = fraction du VIEWPORT affiché
-    full_y = fy * H_full
-    best, bestd = None, 1e18
-    for d in dets:
-        dd = (d["cx"] - full_x) ** 2 + (d["cy"] - full_y) ** 2
-        if dd < bestd:
-            best, bestd = d, dd
-    if best:
-        with _lock:
-            # `seq` s'incrémente à chaque nouveau lock : le fil drone y voit le
-            # signal de repartir de zéro (le terme dérivé de la loi n'a rien à
-            # apprendre de la cible précédente).
-            _track.update({"locked": True, "cx": best["cx"], "cy": best["cy"],
-                           "cls_id": best["cls_id"], "size": 0.0,
-                           "seq": _track.get("seq", 0) + 1,
-                           "conf": best["conf"], "t_lock": time.time()})
-    return {"locked": True}
+    # clic = fraction du VIEWPORT affiché, pas de l'image pleine
+    best = _plus_proche(pan_x + fx * vp_w, fy * H_full)
+    return {"locked": _poser_lock(best)}
 
 
 @app.get("/unlock")
@@ -1128,16 +1440,21 @@ def tune(gate: float = None, coast: float = None, kp: float = None, kd: float = 
 
 
 @app.get("/fly")
-def fly(fwd: float = 0.0, right: float = 0.0, up: float = 0.0, dur: float = 1.2):
+def fly(fwd: float = 0.0, right: float = 0.0, up: float = 0.0, yaw: float = 0.0,
+        dur: float = 1.2):
     """Vol manuel opérateur : une INTENTION -1..1 pendant `dur` s (override le suivi).
 
     En GUIDED_NOGPS il n'y a pas de consigne de vitesse — « avancer » est un angle
     de piqué. Et cette commande passe par la même porte de sortie que le suivi :
-    l'opérateur ne peut pas non plus forcer l'approche d'une cible trop proche."""
+    l'opérateur ne peut pas non plus forcer l'approche d'une cible trop proche.
+
+    ⚠ La radio a la priorité (HITL-2) : dès que son sélecteur d'autorité est
+    actif, ce chemin-là est ignoré. Un poste physique prime sur une page web, et
+    il vaut mieux que ce soit une règle explicite qu'une course entre deux fils."""
     with _lock:
-        _manual.update({"fwd": fwd, "right": right, "up": up,
+        _manual.update({"fwd": fwd, "right": right, "up": up, "yaw": yaw,
                         "until": time.time() + max(0.2, min(3.0, dur))})
-    return {"manual": True, "fwd": fwd, "right": right, "up": up}
+    return {"manual": True, "fwd": fwd, "right": right, "up": up, "yaw": yaw}
 
 
 @app.get("/link", response_class=PlainTextResponse)
@@ -1251,6 +1568,62 @@ def designation(json: int = 0):
         "    mavlink/consumers/argos_listen        (C)",
         "    mavlink/consumers/argos_listen_cpp    (C++11)",
     ])
+
+
+@app.get("/radio", response_class=PlainTextResponse)
+def radio(json: int = 0):
+    """État du poste de pilotage (PORTFOLIO §1.2, HITL-2).
+
+    Ce n'est **pas** une liaison et ça ne se mesure donc pas comme `/link` : un
+    périphérique d'entrée n'a ni séquence, ni accusé, ni cadence garantie — un
+    manche immobile n'émet rien du tout. Ce qu'on affiche à la place, c'est QUI a
+    l'autorité et pourquoi, parce que c'est la seule question qui compte quand
+    trois émetteurs se disputent un drone.
+    """
+    with _lock:
+        r = dict(_radio)
+        journal = list(_radio_log)
+        mode_reel = _drone["mode"]
+        armed = _drone["armed"]
+    i: Intention = r["intention"]
+    if json:
+        return JSONResponse({
+            "autorite": i.autorite, "raison": i.raison, "nom": r["nom"],
+            "chemin": r["chemin"], "evenements": r["evts"], "age": r["age"],
+            "avance": i.avance, "droite": i.droite, "monte": i.monte,
+            "lacet": i.lacet, "gaz": i.gaz_absolu,
+            "marge_montee": i.marge_montee, "marge_descente": i.marge_descente,
+            "lock": i.lock, "engage": i.engage, "rtl": i.rtl,
+            "abandon": i.abandon, "mode_attendu": RADIO_MODES.get(i.autorite),
+            "mode_reel": mode_reel, "arme": armed,
+            "journal": journal[:8]})
+
+    attendu = RADIO_MODES.get(i.autorite)
+    lignes = [
+        f"POSTE DE PILOTAGE   {r['nom'] or '(aucune radio)'}   {r['chemin']}",
+        "",
+        f"  AUTORITE       {i.autorite.upper():<10}  {i.raison}",
+        f"  MODE ARDUPILOT attendu {attendu or '—':<14} reel {mode_reel}"
+        + ("" if attendu in (None, mode_reel) else "   <-- DESACCORD"),
+        f"  MOTEURS        {'ARMES' if armed else 'desarmes'}",
+        "",
+        f"  manches        avance {i.avance:+.2f}   droite {i.droite:+.2f}"
+        f"   monte {i.monte:+.2f}   lacet {i.lacet:+.2f}",
+        f"  gaz brut       {i.gaz_absolu:+.2f}"
+        f"      marge montee {i.marge_montee:.0%}  descente {i.marge_descente:.0%}",
+        f"  inters         lock {'X' if i.lock else '-'}"
+        f"   engage {'X' if i.engage else '-'}"
+        f"   repli {'X' if i.rtl else '-'}"
+        f"   abandon {'X' if i.abandon else '-'}",
+        "",
+        f"  evenements evdev {r['evts']}   dernier mouvement {r['age']:.1f} s",
+        "  (l'age du mouvement n'est PAS un signe de vie : evdev est evenementiel,",
+        "   un manche immobile n'emet rien. La presence vient de la sonde EVIOCGABS.)",
+        "",
+        "  dernieres actions operateur",
+    ]
+    lignes += [f"    {e['t']}  {e['quoi']}" for e in journal[:8]] or ["    —"]
+    return "\n".join(lignes)
 
 
 @app.get("/degrade")
@@ -1538,6 +1911,13 @@ HTML = """<!doctype html><html><head><meta charset="utf-8"><title>ARGOS — Mode
     <div class="stat"><span>Mode</span><b id="dmod" style="font-size:12px">–</b></div>
     <div class="stat"><span>Cap</span><b id="dhdg">–</b></div>
     <div class="stat"><span>Alt</span><b id="dalt">–</b></div>
+    <div class="lbl">POSTE DE PILOTAGE — <a href="/radio" target="_blank" style="color:#5ec8ff">détail</a></div>
+    <div class="stat"><span>Autorité</span><b id="raut" style="font-size:12px">—</b></div>
+    <div class="stat"><span></span><span id="rraison" style="font-size:11px;color:#5b6b7c">—</span></div>
+    <div class="stat"><span>Mode attendu</span><b id="rmode" style="font-size:11px">—</b></div>
+    <div class="stat"><span>Manches</span><b id="rman" style="font-size:11px">—</b></div>
+    <div class="stat"><span>Inters</span><b id="rsw" style="font-size:11px">—</b></div>
+    <ul id="rlog"></ul>
     <div class="lbl">COMMANDE ÉMISE — porte de sortie</div>
     <div class="stat"><span>Émetteur</span><b id="csrc" style="font-size:12px">idle</b></div>
     <div class="stat"><span>Roulis</span><b id="croll">0°</b></div>
@@ -1624,6 +2004,21 @@ async function poll(){
     ghz.textContent=G.actif?((G.hz??0).toFixed(0)+' msg/s'):'inactif';
     ghz.style.color=G.actif?'#fff':'#ff5a4d';
     gn.textContent=(G.envoyes??0);
+    const R=await (await fetch('/radio?json=1')).json();
+    raut.textContent=(R.autorite||'—').toUpperCase();
+    // le code couleur EST la hiérarchie d'autorité : rouge = quelqu'un tient les
+    // commandes, bleu = ARGOS vole, gris = la radio n'a pas la main
+    raut.style.color={pilote:'#ffb64d',manuel:'#ffb64d',auto:'#5ec8ff',
+                      abandon:'#ff5a4d',repli:'#ff5a4d'}[R.autorite]||'#5b6b7c';
+    rraison.textContent=R.raison||'—';
+    rmode.textContent=(R.mode_attendu||'—')+' / '+(R.mode_reel||'—');
+    rmode.style.color=(R.mode_attendu&&R.mode_attendu!==R.mode_reel)?'#ff5a4d':'#fff';
+    rman.textContent=`av ${(R.avance??0).toFixed(2)} dr ${(R.droite??0).toFixed(2)} `
+      +`mt ${(R.monte??0).toFixed(2)} lc ${(R.lacet??0).toFixed(2)}`;
+    rsw.textContent=[R.lock?'LOCK':'', R.engage?'ENGAGE':'', R.rtl?'REPLI':'',
+                     R.abandon?'ABANDON':''].filter(Boolean).join(' · ')||'—';
+    rsw.style.color=(R.abandon||R.rtl)?'#ff5a4d':'#fff';
+    rlog.innerHTML=(R.journal||[]).map(e=>`<li>${e.t} · ${e.quoi}</li>`).join('');
     const c=await (await fetch('/command')).json();
     csrc.textContent=c.src; croll.textContent=(c.roll??0).toFixed(1)+'°';
     cpit.textContent=(c.pitch??0).toFixed(1)+'°'; cyaw.textContent=(c.dyaw??0).toFixed(1)+'°';
