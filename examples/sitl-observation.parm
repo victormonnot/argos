@@ -1,0 +1,9 @@
+# Stationary observation with the local ArduCopter 4.8-dev JSON backend.
+# MAV1 is MAVLink channel 0 in this version; older releases use SR0.
+FRAME_CLASS 1
+FRAME_TYPE 1
+BATT_MONITOR 4
+SERIAL0_PROTOCOL 2
+MAV1_EXT_STAT 2
+MAV1_EXTRA1 10
+MAV1_POSITION 5

@@ -1,0 +1,35 @@
+# --- Private: never published ---
+CLAUDE.md
+PROGRESS.md
+PARKING.md
+NOTES.md
+docs/annonces-job.md
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# --- Binaries: assets are fetched, never committed ---
+*.mp4
+*.pt
+*.onnx
+*.engine
+*.weights
+*.BIN
+*.tlog
+*.tlog.raw
+
+# --- OS / editors ---
+.DS_Store
+.vscode/
+*.swp
+.pytest_cache/
+recordings/
+build/
+dist/
+node_modules/
+playwright-report/
+test-results/

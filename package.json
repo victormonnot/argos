@@ -1,0 +1,8 @@
+{
+  "name": "argos-console-browser-tests",
+  "private": true,
+  "description": "Hermetic browser regressions for the ARGOS passive console",
+  "engines": { "node": ">=22" },
+  "scripts": { "test:browser": "playwright test" },
+  "devDependencies": { "@playwright/test": "1.63.0" }
+}

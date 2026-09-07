@@ -1,0 +1,67 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python -m pip install -e ".[dev,mavlink,plot,console,console-test]"
+
+      - name: Test Python and verify the offline example
+        run: |
+          python -m pytest -q
+          python examples/verify_demo.py
+
+  browser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-failure
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+
+  installed-wheel:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the wheel
+        run: python -m pip wheel --no-deps --wheel-dir dist .
+      - name: Install into a separate environment
+        run: |
+          python -m venv "$RUNNER_TEMP/argos-wheel-venv"
+          for wheel in dist/*.whl; do
+            "$RUNNER_TEMP/argos-wheel-venv/bin/python" -m pip install "$wheel[console,mavlink,console-test]"
+          done
+      - name: Check installed imports, CLI and web resources
+        run: |
+          "$RUNNER_TEMP/argos-wheel-venv/bin/python" -I -m argos.console --help
+          "$RUNNER_TEMP/argos-wheel-venv/bin/python" -I scripts/smoke_installed.py
+          "$RUNNER_TEMP/argos-wheel-venv/bin/python" -m pip check
+
+permissions:
+  contents: read

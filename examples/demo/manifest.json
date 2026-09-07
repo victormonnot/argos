@@ -1,0 +1,40 @@
+{
+  "format": "argos.example.sitl-subset",
+  "version": 1,
+  "file": "c2e844f9d8eeef01d597b682c36e2bd6.jsonl",
+  "sha256": "c2e844f9d8eeef01d597b682c36e2bd6d4638d50008fddca0730e2aedd1cb4db",
+  "events": 58,
+  "message_counts": {
+    "ATTITUDE": 31,
+    "HEARTBEAT": 4,
+    "LOCAL_POSITION_NED": 16,
+    "SYS_STATUS": 7
+  },
+  "started_at": 376.53422961299657,
+  "ended_at": 379.6745554959998,
+  "recorded_codec_version": "2.4.49",
+  "source_sha256": "f1621ef3f8eb9493d42628c619718a5ccc70986784fee847b60ed81047003277",
+  "source_events": 171,
+  "source_context_recorded": false,
+  "source_capture_utc": null,
+  "source_firmware_revision": null,
+  "source_simulator_revision": null,
+  "selection": {
+    "system": 1,
+    "component": 1,
+    "message_ids": [
+      0,
+      1,
+      30,
+      32
+    ]
+  },
+  "preserved": [
+    "original frame bytes",
+    "relative reception order",
+    "local reception timestamps",
+    "recording start and end bounds"
+  ],
+  "provenance": "Developer-recorded stationary ArduPilot SITL validation on 2026-09-07; environment attribution is external to this v1 journal.",
+  "sequence_loss_interpretation": "not applicable: other message types were intentionally omitted"
+}

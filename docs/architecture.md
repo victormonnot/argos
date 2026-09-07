@@ -1,0 +1,276 @@
+# Architecture
+
+ARGOS V1 integrates a local observation console: camera reception, passive MAVLink
+inspection, recording and historical analysis. This document explains how those
+parts fit together and the boundaries of the implementation. For setup and
+operator workflows, use the [console guide](console.md); for wire and file
+contracts, use the [MAVLink transport guide](mavlink-transport.md).
+
+## Runtime and data flow
+
+The supported entry point, `python -m argos.console`, starts one Python process
+with FastAPI/Uvicorn on `127.0.0.1`. That process serves the browser assets, owns
+the configured receivers and manages the local recording directory. It starts
+without sources unless they are explicitly configured.
+
+In the reference simulation, Gazebo and ArduPilot SITL run as separate processes.
+ARGOS subscribes to a Gazebo camera topic and reads a MAVLink connection to SITL;
+it does not launch or supervise either simulator. A Linux V4L2 device can replace
+the camera source. Camera and telemetry connections have independent lifecycles.
+
+```mermaid
+flowchart LR
+    camera["Gazebo camera or V4L2 device"]
+    peer["Configured MAVLink peer"]
+    disk[("Local JSONL journals")]
+    browser["Browser"]
+    subgraph server["ARGOS Python process"]
+        video["VideoStore: latest valid JPEG"]
+        link["Transport and MavlinkLink: decoded Received events"]
+        state["Measurement caches, live inspector and diagnostic histories"]
+        recorder["ConsoleRecorder: active capture"]
+        archive["RecordingArchive: verify, replay and analyze"]
+        api["FastAPI: JSON, JPEG and web assets"]
+    end
+    camera --> video
+    peer --> link
+    link --> state
+    link --> recorder
+    recorder --> disk
+    disk --> archive
+    video --> api
+    state --> api
+    archive --> api
+    api --> browser
+```
+
+The arrows show the main data paths. Browser POST requests configure or reopen
+receivers and start or stop recording. These actions send no MAVLink messages.
+The lower-level transport library exposes an explicit `send()` method, but the
+console does not call it.
+
+## Ownership and scheduling
+
+[ConsoleSession](../argos/console/session.py) is the live runtime owner. It binds
+the source configuration, monotonic clock, MAVLink link, measurement caches,
+camera store, recorder and diagnostic histories. [app.py](../argos/console/app.py)
+assembles the application and ties resource startup and cleanup to its lifespan.
+
+| Work | Owner and execution context |
+| --- | --- |
+| MAVLink polling, measurement admission, live histories and capture writes | `ConsoleSession.tick()`, called by one asyncio task in the server event loop. |
+| Gazebo images | Subscription callbacks publish into the thread-safe `VideoStore`. |
+| V4L2 images | One worker thread owns the device reader and publishes into `VideoStore`. |
+| Journal verification, indexing, replay and analysis | Archive calls run through `asyncio.to_thread`; a lock protects the shared archive cache. |
+| Receiver reopening | Blocking replacement work runs in a thread; the session retains ownership until replacement or cleanup finishes. |
+| Display state, selected panels, filters and replay cursor | JavaScript in the browser; these do not own the receivers. |
+
+The receive task waits 50 ms between ticks. Each link poll limits its read work;
+this is not a guaranteed 20 Hz schedule. Journal writes are synchronous in the
+tick, so slow storage or CPU work can delay reception. The current process layout
+does not provide hard real-time scheduling or guarantee lossless capture.
+
+Camera conversion runs outside the store's short reader lock. The store retains
+one valid JPEG instead of a frame queue, so an old queue cannot accumulate inside
+ARGOS while the browser falls behind. Camera drivers may still buffer frames.
+
+## From received bytes to displayed measurements
+
+[MavlinkLink](../argos/backends/mavlink/link.py) frames and decodes the explicitly
+configured UDP, TCP or serial stream using the `ardupilotmega` dialect. UDP
+datagrams must contain complete frames; TCP and serial retain partial frames
+between polls. A decoded `Received` event contains the original frame bytes,
+fields, source identifiers, message type, sequence and local receipt timestamp.
+
+Each decoded event reaches the recorder and live inspector **before** measurement
+admission. This separates three responsibilities:
+
+1. **Wire decoding** checks whether bytes form a known, CRC-valid MAVLink frame.
+   Corrupt bytes are counted but do not become journal events. An unsupported
+   message ID closes the link because its frame cannot be validated with the
+   configured dialect.
+2. **Inspection and capture** retain traffic from all decoded sources, including
+   message types that the measurement display does not use. The live inspector
+   keeps the latest frame per source/type; a journal keeps successive frames
+   while capture is active.
+3. **Measurement admission** selects the configured system/component and checks
+   supported fields. A rejected value does not overwrite or refresh the last
+   valid measurement. Its decoded frame remains available for diagnosis.
+
+[TelemetryCache](../argos/backends/mavlink/telemetry.py) handles `HEARTBEAT`,
+`ATTITUDE` and `LOCAL_POSITION_NED`.
+[HealthCache](../argos/backends/mavlink/health.py) extracts battery information
+from `SYS_STATUS`; its name does not imply a complete assessment of vehicle
+health. [views.py](../argos/console/views.py) shares measurement presentation
+between live observation and replay. It also converts non-finite values and
+integers outside JavaScript's safe range to explicit strings for raw inspection,
+without changing the recorded frame bytes.
+
+Sequence statistics reuse [harness/link.py](../argos/harness/link.py). Their
+channel or component scope must match the encoder's counter and requires its
+complete, unfiltered stream. They describe locally observed traffic under that
+assumption, rather than proving a radio-loss rate for arbitrary routed streams.
+
+## Time, freshness and incidents
+
+Live receipt ages use the session's monotonic clock. MAVLink timestamps mark
+local processing during a poll; camera timestamps mark callback entry or return
+from a device read. A GET request does not create a new reception or refresh an
+old value.
+
+Video, heartbeat, battery, attitude and position have independent age limits.
+The browser advances ages from the last accepted state using `performance.now()`
+and detects a service that has stopped progressing. This prevents a frozen server
+response from keeping measurements apparently fresh. Expired video is withheld;
+the frame endpoint returns an unavailable response when there is no recent valid
+image.
+
+Local receipt time is distinct from camera exposure time, autopilot time and UTC.
+Capture metadata uses UTC to identify when a recording began. It does not
+synchronize video with telemetry or establish physical sensor latency. Displaying
+two configured sources together does not verify that they belong to the same
+vehicle.
+
+Two diagnostic paths deliberately stay separate:
+
+- [ReceptionIncidents](../argos/console/incidents.py) groups observed missing or
+  stale receptions and waits for sustained recovery. Notices are debounced;
+  measurement expiry itself is immediate. Reopening a receiver alone does not
+  establish that reception has recovered.
+- [StatusTexts](../argos/console/status.py) retains the selected component's
+  `STATUSTEXT` reports, alongside the declared state from `HEARTBEAT`. Chunked
+  text keeps connection provenance and marks incomplete assembly. These are
+  autopilot reports; silence is not an all-clear indication.
+
+## Browser and source lifecycle
+
+The frontend is packaged HTML, CSS, JavaScript and local fonts. It needs no build
+server or CDN. The JavaScript is split by workflow:
+
+| File | Responsibility |
+| --- | --- |
+| [app.js](../argos/console/static/app.js) | Observation shell, state/image polling, source controls, capture and live diagnostic display. |
+| [live.js](../argos/console/static/live.js) | On-demand MAVLink inspection and display freezing. |
+| [sessions.js](../argos/console/static/sessions.js) | Recording catalog, replay, cursor playback and paginated raw messages. |
+| [analysis.js](../argos/console/static/analysis.js) | Historical reception curves, gaps and analysis filters. |
+
+State, images and inspection data use separate HTTP requests. Freezing a view or
+leaving a tab changes browser behavior; the server continues receiving and an
+active recording continues until it is stopped or reaches a closure condition.
+
+Independent requests can complete after their context has changed. The frontend
+checks session and receiver identities (`run_id`, video `source_id`, MAVLink
+`connection_id`), and uses request counters and cancellation to discard outdated
+responses. Historical views also bind requests to a journal revision. An image
+from the previous camera or a reply for an earlier selection must not replace the
+current view.
+
+[ConsoleConfig](../argos/console/config.py) validates a source configuration
+before replacement. A full replacement creates a new session; reopening one
+receiver keeps the session and changes that receiver's identity. Configuration
+changes and MAVLink reopening are blocked during capture. Camera reopening is
+allowed because video is not part of the MAVLink journal. If a V4L2 reader has
+not released its device, replacement refuses to start a second reader.
+
+The server is intended for local use, with SSH forwarding for remote access.
+Mutating endpoints require JSON and the matching local Origin. This deployment
+has no multi-user authentication layer; see [running.md](running.md) for the
+supported access pattern.
+
+## Journals and historical views
+
+[ConsoleRecorder](../argos/console/recording.py) owns at most one active file.
+The default directory is `~/.local/share/argos/recordings/`, or
+`$XDG_DATA_HOME/argos/recordings/` when that variable is absolute. A CLI option can
+override it. Journals use unique identifiers and are created without overwriting
+existing files; there is no database or cloud storage dependency.
+
+The [recording format](../argos/backends/mavlink/recording.py) stores original
+frame bytes and local timestamps in JSONL. Version 2 added capture context;
+version 3 adds an explicit closure reason. Console captures use version 3 with
+validated source context, and readers retain support for versions 1 and 2.
+The end record, event count and
+checksum make a completed journal distinguishable from a truncated capture.
+
+Transport failure, a capture limit and graceful shutdown can all produce a
+properly closed journal with the corresponding reason. A completed file does
+not imply an uninterrupted session. An abrupt process kill or a write failure
+can leave an incomplete file; the archive rejects it rather than presenting it
+as a valid recording.
+
+[RecordingArchive](../argos/console/archive.py) lists candidate files cheaply,
+then validates the entire journal before exposing its contents. Validation covers
+structure, timestamps, frame decoding, completion, count, checksum and file end.
+A SHA-256 revision binds metadata, replay, analysis, message pages and download
+to the same contents. Changed revisions are rejected, and downloads return the
+validated bytes. Integrity checks detect corruption; they do not authenticate
+the sender or file author.
+
+Replay indexes the admitted measurements for a selected source and evaluates
+their age at the recorded cursor time. Moving backwards uses the index, never
+the current live caches. Missing values remain missing, and historical values
+can become stale; there is no interpolation. Known capture context supplies the
+original freshness limits. Older files without that context use explicitly
+identified analysis defaults.
+
+[analysis.py](../argos/console/analysis.py) computes receipt rates, ages and gaps
+from recorded events. The raw-message view exposes successive decoded frames,
+including ones not admitted as measurements. MAVLink journals contain **no video**
+and do not persist the console's derived incident history. Received `STATUSTEXT`
+frames are included while recording, but the live assembled history is in memory.
+
+## Retention and limits
+
+Limits keep retained state and exposed files bounded. They are not a cap on total
+process memory: decoding, conversion, requests and indexing also allocate memory.
+
+| Data | Current policy |
+| --- | --- |
+| Camera | One retained valid JPEG; dimensions and raw/encoded sizes are checked by [video.py](../argos/console/video.py). |
+| Live inspector | Latest frame for up to 256 source/type identities by default; bounded time buckets estimate rates. Evicted identities lose their retained counters. |
+| Diagnostic histories | Up to 60 session events and 60 status-text entries by default, with separate bounds for pending text assembly. |
+| Capture | At most 100,000 events and 32 MiB; space is reserved for finalization, so closure can occur before the byte limit. No automatic next segment. |
+| Archive | Catalog shows up to 200 most recently modified candidates; one validated file and one source replay index are cached. |
+| Historical responses | Raw messages are paginated; analysis limits the number of bins and detailed gaps. |
+
+Write and archive limits share [recording_limits.py](../argos/console/recording_limits.py),
+so the console does not intentionally create a completed journal larger than it
+can reopen. Reaching a recording limit stops capture while live observation
+continues. Existing files survive restarts; live counters, incidents and browser
+selections are not a durable session database. Limits apply per file, with no
+automatic deletion policy for accumulated journals.
+
+## Experimental packages and integration boundary
+
+The repository also contains contracts and experiments outside the live console:
+
+| Package | Current role |
+| --- | --- |
+| [core](../argos/core/) | Typed observation, command, `World` and `Truth` contracts for experiments. |
+| [perception](../argos/perception/) | Frame and detector interfaces plus tracking components tested separately. The console camera is not wired into this pipeline. |
+| [guidance](../argos/guidance/), [safety](../argos/safety/) | Experimental policies and contract tests, with no connection to the console's live receivers or vehicle command path. |
+| [attitude_sim.py](../argos/backends/attitude_sim.py) | Simulated backend used to exercise those contracts. |
+| [harness](../argos/harness/) | Instrumentation: link statistics reused by live MAVLink, plus offline plotting and development utilities. |
+
+The MAVLink transport is not an implementation of `World`. The console does not
+run an autonomy loop, and the presence of a `safety` package does not make it a
+vehicle safety controller. Experimental `World.time()` belongs to its backend;
+the live console clock is not a shared clock for every package or machine.
+
+The current separation makes the observation path usable and testable without
+running the experiments. C++, a custom dialect, onboard video transport and swarm
+coordination remain future work rather than hidden runtime dependencies.
+
+## Verification map
+
+Transport and recording tests cover framing, validation, replayable data and
+completion. Console tests cover stale data, receiver replacement, recording
+limits, archives, status assembly and reception incidents. The
+[browser suite](../tests/browser/console.spec.cjs) checks operator workflows and
+delayed responses using an isolated server.
+
+These checks establish software behavior within their fixtures. The
+[validation record](validation.md) distinguishes them from the actual ground
+SITL/Gazebo checks and the hardware scenarios still unverified. Use the
+[README](../README.md#verify-a-change) for test commands and the
+[SITL guide](sitl-observation.md) to reproduce the integrated simulation.

@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8"/>
+    <meta content="width=device-width, initial-scale=1" name="viewport"/>
+    <meta content="dark" name="color-scheme"/>
+    <meta content="Console ARGOS d’observation de la caméra et des réceptions MAVLink." name="description"/>
+    <title>
+      ARGOS · Observation
+    </title>
+    <link href="/app.css" rel="stylesheet"/>
+    <link href="/sessions.css" rel="stylesheet"/>
+    <link href="/analysis.css" rel="stylesheet"/>
+    <link href="/live.css" rel="stylesheet"/>
+    <script defer="" src="/app.js">
+    </script>
+    <script defer="" src="/sessions.js"></script>
+    <script defer="" src="/analysis.js"></script>
+    <script defer="" src="/live.js"></script>
+  </head>
+  <body data-view="observation">
+    <a class="skip-link" href="#workspace">
+      Aller à l’observation
+    </a>
+    <header class="app-header">
+      <span class="brand">
+        ARGOS
+      </span>
+      <h1 id="view-title">
+        Observation
+      </h1>
+      <div class="header-context">
+        <span id="environment">
+          Connexion au service
+        </span>
+        <span class="connection">
+          <span class="status-dot" id="service-dot"></span>
+          <span id="service-status" role="status">
+            Connexion au service…
+          </span>
+        </span>
+      </div>
+      <button aria-controls="inspector" aria-expanded="false" class="global-recording" data-panel="recording" id="global-recording" type="button">
+        <span aria-hidden="true" class="status-dot" id="global-recording-dot"></span>
+        <span id="global-recording-state" role="status">Capture · non actualisée</span>
+        <span aria-hidden="true">›</span>
+      </button>
+      <button aria-controls="inspector" aria-expanded="false" class="button button-outline" data-panel="sources" id="sources-button" type="button">
+        <svg aria-hidden="true" viewbox="0 0 20 20">
+          <path d="M3 5h14M3 10h14M3 15h14M7 3v4m6 1v4m-6 1v4">
+          </path>
+        </svg>
+        Sources
+        <span class="sources-dirty" hidden="" id="sources-dirty">
+          modifiées
+        </span>
+      </button>
+    </header>
+    <nav aria-label="Espaces de travail" class="view-navigation">
+      <button aria-controls="workspace" aria-current="page" id="view-observation" type="button">Observation</button>
+      <button aria-controls="messages-workspace" id="view-messages" type="button">MAVLink en direct</button>
+      <button aria-controls="sessions-workspace" id="view-sessions" type="button">Sessions</button>
+      <span id="view-context">Réceptions en cours</span>
+    </nav>
+    <div aria-label="Vidéo, journal et incidents" class="reception-bar">
+      <button aria-controls="inspector" aria-expanded="false" class="reception-button" data-panel="video" type="button">
+        <span>
+          <span class="control-label">
+            Réception vidéo
+          </span>
+          <span class="state-label" id="video-status">
+            En attente
+          </span>
+        </span>
+        <span aria-hidden="true" class="chevron">
+          ›
+        </span>
+      </button>
+      <button aria-controls="inspector" aria-expanded="false" class="reception-button journal-inspect" data-panel="recording" type="button">
+        <span>
+          <span class="control-label">
+            Journal MAVLink
+          </span>
+          <span class="state-label" id="recording-state">
+            En attente
+          </span>
+        </span>
+        <span aria-hidden="true" class="chevron">
+          ›
+        </span>
+      </button>
+      <button aria-controls="inspector" aria-expanded="false" class="reception-button reception-summary" data-panel="reception" id="reception-button" type="button">
+        <span><span class="control-label">Incidents et reprise</span><span class="state-label" id="reception-state">En attente</span></span>
+        <span aria-hidden="true" class="chevron">›</span>
+      </button>
+    </div>
+    <p class="action-status" hidden="" id="recording-action-status" role="status"></p>
+    <button aria-controls="inspector" aria-expanded="false" class="reception-notice" data-panel="reception" hidden="" id="reception-notice" type="button">
+      <span id="reception-notice-title" role="status"></span><span id="reception-notice-age"></span><span class="notice-action">État des réceptions ›</span>
+    </button>
+    <main class="workspace" id="workspace" tabindex="-1">
+      <section aria-labelledby="camera-title" class="camera-panel">
+        <header class="camera-header">
+          <h2 id="camera-title">
+            Caméra embarquée
+          </h2>
+          <div class="camera-actions">
+            <button aria-pressed="false" class="button button-quiet" id="focus-button" type="button">
+              Vue étendue
+            </button>
+            <button aria-label="Afficher la console en plein écran" aria-pressed="false" class="icon-button" id="fullscreen-button" title="Plein écran" type="button">
+              <svg aria-hidden="true" viewbox="0 0 20 20">
+                <path d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4h4v-4">
+                </path>
+              </svg>
+            </button>
+          </div>
+        </header>
+        <div class="camera-stage" id="camera-stage">
+          <img alt="Image reçue de la caméra du drone" hidden="" id="camera-image"/>
+          <div class="camera-empty" id="camera-empty">
+            <h3 id="camera-empty-title">
+              Connexion au service…
+            </h3>
+            <p id="camera-empty-detail">
+              La console attend l’état de ses sources.
+            </p>
+            <button aria-controls="inspector" class="button button-outline" data-panel="sources" type="button">
+              Configurer les sources
+            </button>
+          </div>
+        </div>
+        <div class="camera-footer">
+          <span id="camera-source">
+            Non disponible
+          </span>
+          <span class="camera-reception">
+            <span hidden="" id="camera-image-caption">
+              Image reçue
+              <span id="image-sequence"></span>
+              ·
+            </span>
+            <span id="camera-age">
+              —
+            </span>
+            <span id="camera-size"></span>
+          </span>
+        </div>
+        <section aria-label="Télémétrie MAVLink et mesures" class="measurements">
+          <button aria-controls="inspector" aria-expanded="true" class="telemetry-parent" data-panel="telemetry" data-section="link" id="telemetry-button" type="button">
+            <span>
+              <span class="control-label">
+                Télémétrie MAVLink
+              </span>
+              <span class="state-label" id="telemetry-status">
+                En attente
+              </span>
+            </span>
+            <span aria-hidden="true" class="chevron">
+              ›
+            </span>
+          </button>
+          <div class="measurement-buttons">
+            <button aria-controls="inspector" aria-pressed="false" data-panel="telemetry" data-section="mode" id="mode-button" type="button">
+              <span class="measurement-label">
+                Mode déclaré
+                <span aria-hidden="true" class="chevron">
+                  ›
+                </span>
+              </span>
+              <span class="measurement-value" id="flight-mode">
+                —
+              </span>
+              <span class="measurement-declaration" id="armed-preview">Armement non renseigné</span>
+              <span class="measurement-state" id="heartbeat-status">
+                Absent
+              </span>
+            </button>
+            <button aria-controls="inspector" aria-pressed="false" data-panel="telemetry" data-section="battery" id="battery-button" type="button">
+              <span class="measurement-label">
+                Batterie
+                <span aria-hidden="true" class="chevron">
+                  ›
+                </span>
+              </span>
+              <span class="measurement-value" id="battery-remaining">
+                —
+              </span>
+              <span class="measurement-state" id="battery-age">
+                Aucune donnée
+              </span>
+            </button>
+            <button aria-controls="inspector" aria-pressed="false" data-panel="telemetry" data-section="attitude" id="attitude-button" type="button">
+              <span class="measurement-label">
+                Attitude
+                <span aria-hidden="true" class="chevron">
+                  ›
+                </span>
+              </span>
+              <span class="attitude-values">
+                <span>
+                  <small>
+                    Roulis
+                  </small>
+                  <span id="roll">
+                    —
+                  </span>
+                </span>
+                <span>
+                  <small>
+                    Tangage
+                  </small>
+                  <span id="pitch">
+                    —
+                  </span>
+                </span>
+                <span>
+                  <small>
+                    Lacet
+                  </small>
+                  <span id="yaw">
+                    —
+                  </span>
+                </span>
+              </span>
+              <span class="measurement-state" id="attitude-age">
+                Aucune donnée
+              </span>
+            </button>
+            <button aria-controls="inspector" aria-pressed="false" data-panel="telemetry" data-section="position" id="position-button" type="button">
+              <span class="measurement-label">
+                Position locale
+                <span aria-hidden="true" class="chevron">
+                  ›
+                </span>
+              </span>
+              <span class="attitude-values position-values">
+                <span>
+                  <small>
+                    Nord
+                  </small>
+                  <span id="position-north">
+                    —
+                  </span>
+                </span>
+                <span>
+                  <small>
+                    Est
+                  </small>
+                  <span id="position-east">
+                    —
+                  </span>
+                </span>
+                <span>
+                  <small>
+                    Bas
+                  </small>
+                  <span id="position-down">
+                    —
+                  </span>
+                </span>
+              </span>
+              <span class="measurement-state" id="position-age">
+                Aucune donnée
+              </span>
+            </button>
+          </div>
+        </section>
+      </section>
+      <aside aria-label="Inspection et réglages" class="inspector" id="inspector">
+        <header class="inspector-header">
+          <div>
+            <span class="eyebrow" id="inspector-kind">
+              INSPECTION
+            </span>
+            <h2 id="inspector-title">
+              Télémétrie MAVLink
+            </h2>
+          </div>
+          <button aria-label="Fermer le panneau" class="icon-button" id="inspector-close" type="button">
+            <svg aria-hidden="true" viewbox="0 0 20 20">
+              <path d="m5 5 10 10M15 5 5 15">
+              </path>
+            </svg>
+          </button>
+        </header>
+        <div class="inspector-empty" hidden="" id="inspector-empty">
+          <p>
+            Sélectionnez une réception ou une mesure pour en consulter les détails.
+          </p>
+          <button class="button button-outline" data-panel="sources" type="button">
+            Configurer les sources
+          </button>
+        </div>
+        <section class="inspector-content telemetry-inspector" data-panel-content="telemetry">
+          <div class="telemetry-context" id="telemetry-context">
+            <span class="eyebrow">
+              SOURCE MAVLINK
+            </span>
+            <p class="endpoint" id="source-telemetry-endpoint">
+              Non configuré
+            </p>
+            <div class="context-meta">
+              <span id="source-telemetry-id">
+                Aucune source sélectionnée
+              </span>
+              <span class="state-label" id="source-telemetry-state">
+                En attente
+              </span>
+            </div>
+          </div>
+          <div class="detail-navigation">
+            <div class="detail-group">
+              <span class="detail-group-label" id="measurements-nav-label">
+                Mesures
+              </span>
+              <nav aria-labelledby="measurements-nav-label" class="detail-tabs">
+                <button aria-pressed="false" data-telemetry-section="mode" type="button">
+                  Mode
+                </button>
+                <button aria-pressed="false" data-telemetry-section="battery" type="button">
+                  Batterie
+                </button>
+                <button aria-pressed="false" data-telemetry-section="attitude" type="button">
+                  Attitude
+                </button>
+                <button aria-pressed="false" data-telemetry-section="position" type="button">
+                  Position
+                </button>
+              </nav>
+            </div>
+            <div class="detail-group diagnostic-group">
+              <span class="detail-group-label" id="diagnostics-nav-label">
+                Diagnostics
+              </span>
+              <nav aria-labelledby="diagnostics-nav-label" class="diagnostic-tabs">
+                <button aria-pressed="true" data-telemetry-section="link" type="button">
+                  Liaison
+                </button>
+                <button aria-pressed="false" data-telemetry-section="events" type="button">
+                  Événements
+                </button>
+                <button aria-controls="messages-workspace" data-open-live="" id="inspect-live-button" type="button">Messages ↗</button>
+              </nav>
+            </div>
+          </div>
+          <div class="inspector-scroll" id="telemetry-details">
+            <section aria-labelledby="link-detail-title" data-telemetry-content="link">
+              <h3 class="detail-title" id="link-detail-title">
+                Liaison et réception
+              </h3>
+              <p class="section-note" id="telemetry-hint">
+                L’état de la réception apparaîtra ici.
+              </p>
+              <div class="reception-actions">
+                <button class="button button-outline" data-reconnect="mavlink" type="button">Réouvrir MAVLink</button>
+                <button class="button button-quiet" data-panel="reception" type="button">État des réceptions ›</button>
+              </div>
+              <p class="microcopy" data-reconnect-hint="mavlink"></p>
+              <dl class="detail-list">
+                <div>
+                  <dt>
+                    Messages reçus
+                  </dt>
+                  <dd id="count-rx">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Octets reçus
+                  </dt>
+                  <dd id="count-bytes">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Échantillons acceptés
+                  </dt>
+                  <dd id="count-accepted">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Échantillons refusés
+                  </dt>
+                  <dd id="count-rejected">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Autres sources
+                  </dt>
+                  <dd id="count-other-source">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Autres types
+                  </dt>
+                  <dd id="count-other-type">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Octets invalides
+                  </dt>
+                  <dd id="count-bad-bytes">
+                    —
+                  </dd>
+                </div>
+              </dl>
+              <p class="section-note" id="last-rejection">
+                Aucun refus reçu.
+              </p>
+              <p class="microcopy" id="details-service-state"></p>
+            </section>
+            <section aria-labelledby="mode-detail-title" data-telemetry-content="mode" hidden="">
+              <div class="detail-heading">
+                <h3 id="mode-detail-title">
+                  Mode déclaré
+                </h3>
+                <span class="state-label" id="detail-heartbeat-state">
+                  Absent
+                </span>
+              </div>
+              <p class="detail-origin">
+                HEARTBEAT
+              </p>
+              <dl class="detail-list">
+                <div>
+                  <dt>
+                    Mode
+                  </dt>
+                  <dd id="detail-mode-label">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Ancienneté de réception
+                  </dt>
+                  <dd id="detail-heartbeat-age">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Armement déclaré
+                  </dt>
+                  <dd id="detail-armed">
+                    —
+                  </dd>
+                </div>
+                <div><dt>État déclaré</dt><dd id="detail-system-status">—</dd></div>
+                <div>
+                  <dt>
+                    Type / pilote automatique
+                  </dt>
+                  <dd id="detail-autopilot">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Mode personnalisé brut
+                  </dt>
+                  <dd id="detail-custom-mode">
+                    —
+                  </dd>
+                </div>
+              </dl>
+              <p class="microcopy">
+                État déclaré par l’autopilote, sans commande depuis cette console.
+              </p>
+              <details class="autopilot-texts" id="autopilot-texts">
+                <summary id="autopilot-texts-summary">Messages de l’autopilote</summary>
+                <p class="section-note">Historique STATUSTEXT du composant observé. La sévérité est déclarée par l’émetteur ; un texte ancien ne décrit pas forcément son état actuel.</p>
+                <p class="microcopy" id="autopilot-texts-state"></p>
+                <ol aria-label="Historique STATUSTEXT" class="autopilot-text-list" id="autopilot-text-list"></ol>
+                <p class="microcopy" id="autopilot-texts-limits"></p>
+              </details>
+            </section>
+            <section aria-labelledby="battery-detail-title" data-telemetry-content="battery" hidden="">
+              <div class="detail-heading">
+                <h3 id="battery-detail-title">
+                  Batterie
+                </h3>
+                <span class="state-label" id="detail-battery-state">
+                  Absent
+                </span>
+              </div>
+              <p class="detail-origin">
+                SYS_STATUS
+              </p>
+              <dl class="detail-list">
+                <div>
+                  <dt>
+                    Charge restante déclarée
+                  </dt>
+                  <dd id="detail-battery-remaining">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Tension
+                  </dt>
+                  <dd id="detail-battery-voltage">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Courant
+                  </dt>
+                  <dd id="detail-battery-current">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Ancienneté de réception
+                  </dt>
+                  <dd id="detail-battery-age">
+                    —
+                  </dd>
+                </div>
+              </dl>
+              <p class="microcopy">
+                Une valeur inconnue reste vide. Le pourcentage reçu n’est pas une estimation d’autonomie.
+              </p>
+            </section>
+            <section aria-labelledby="attitude-detail-title" data-telemetry-content="attitude" hidden="">
+              <div class="detail-heading">
+                <h3 id="attitude-detail-title">
+                  Attitude
+                </h3>
+                <span class="state-label" id="detail-attitude-state">
+                  Absent
+                </span>
+              </div>
+              <p class="detail-origin">
+                ATTITUDE
+              </p>
+              <dl class="detail-list">
+                <div>
+                  <dt>
+                    Roulis
+                  </dt>
+                  <dd id="detail-roll">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Tangage
+                  </dt>
+                  <dd id="detail-pitch">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Lacet
+                  </dt>
+                  <dd id="detail-yaw">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Vitesses angulaires R / T / L
+                  </dt>
+                  <dd id="detail-angular-rates">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Ancienneté de réception
+                  </dt>
+                  <dd id="detail-attitude-age">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Horloge embarquée
+                  </dt>
+                  <dd id="detail-attitude-boot">
+                    —
+                  </dd>
+                </div>
+              </dl>
+              <p class="microcopy">
+                Angles en degrés. L’ancienneté décrit la réception locale ; l’horloge embarquée n’est pas synchronisée avec cette console.
+              </p>
+            </section>
+            <section aria-labelledby="position-detail-title" data-telemetry-content="position" hidden="">
+              <div class="detail-heading">
+                <h3 id="position-detail-title">
+                  Position locale
+                </h3>
+                <span class="state-label" id="detail-position-state">
+                  Absent
+                </span>
+              </div>
+              <p class="detail-origin">
+                LOCAL_POSITION_NED
+              </p>
+              <dl class="detail-list">
+                <div>
+                  <dt>
+                    Nord / Est / Bas
+                  </dt>
+                  <dd id="detail-position">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Vitesse Nord / Est / Bas
+                  </dt>
+                  <dd id="detail-velocity">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Ancienneté de réception
+                  </dt>
+                  <dd id="detail-position-age">
+                    —
+                  </dd>
+                </div>
+                <div>
+                  <dt>
+                    Horloge embarquée
+                  </dt>
+                  <dd id="detail-position-boot">
+                    —
+                  </dd>
+                </div>
+              </dl>
+              <p class="microcopy">
+                Repère local brut de l’autopilote. « Bas » n’est pas une altitude au-dessus du sol ou du décollage.
+              </p>
+            </section>
+            <section aria-labelledby="events-detail-title" data-telemetry-content="events" hidden="">
+              <h3 class="detail-title" id="events-detail-title">
+                Événements de l’observation
+              </h3>
+              <p class="section-note" id="events-context">
+                Les 60 derniers événements de réception, caméra et MAVLink.
+              </p>
+              <ol class="event-list" id="all-events">
+                <li class="empty-event">
+                  Aucun événement reçu.
+                </li>
+              </ol>
+            </section>
+          </div>
+        </section>
+        <section class="inspector-content inspector-scroll" data-panel-content="reception" hidden="">
+          <h3 class="detail-title">Disponibilité actuelle</h3>
+          <p class="section-note" id="reception-summary">En attente du service.</p>
+          <dl class="detail-list" id="reception-availability">
+            <div><dt>Image affichée</dt><dd id="available-video">—</dd></div>
+            <div><dt>Mode déclaré</dt><dd id="available-heartbeat">—</dd></div>
+            <div><dt>Batterie</dt><dd id="available-battery">—</dd></div>
+            <div><dt>Attitude</dt><dd id="available-attitude">—</dd></div>
+            <div><dt>Position locale</dt><dd id="available-local_position_ned">—</dd></div>
+          </dl>
+          <ol class="event-list reception-issues" id="reception-issues"></ol>
+          <p class="section-note" id="reception-recovery"></p>
+          <div class="reception-actions">
+            <button class="button button-outline" data-reconnect="video" type="button">Réouvrir la caméra</button>
+            <button class="button button-outline" data-reconnect="mavlink" type="button">Réouvrir MAVLink</button>
+          </div>
+          <p class="microcopy" data-reconnect-hint="video"></p>
+          <p class="microcopy" data-reconnect-hint="mavlink"></p>
+          <p class="form-feedback" id="reconnect-feedback" role="status"></p>
+          <button class="button button-quiet section-action" data-panel="telemetry" data-section="events" type="button">Historique des événements ›</button>
+          <p class="microcopy">La disponibilité décrit les réceptions locales, sans confirmer l’état physique du drone ni la cause d’une interruption.</p>
+        </section>
+        <section class="inspector-content inspector-scroll" data-panel-content="video" hidden="">
+          <div class="detail-heading">
+            <h3>
+              Réception du capteur
+            </h3>
+            <span class="state-label" id="source-video-state">
+              En attente
+            </span>
+          </div>
+          <p class="section-note" id="source-video-detail">
+            Aucun état reçu.
+          </p>
+          <div class="reception-actions">
+            <button class="button button-outline" data-reconnect="video" type="button">Réouvrir la caméra</button>
+            <button class="button button-quiet" data-panel="reception" type="button">État des réceptions ›</button>
+          </div>
+          <p class="microcopy" data-reconnect-hint="video"></p>
+          <dl class="detail-list">
+            <div>
+              <dt>
+                Caméra
+              </dt>
+              <dd id="source-video-label">
+                —
+              </dd>
+            </div>
+            <div>
+              <dt>
+                Point de réception
+              </dt>
+              <dd class="endpoint" id="source-video-endpoint">
+                —
+              </dd>
+            </div>
+            <div>
+              <dt>
+                Dimensions reçues
+              </dt>
+              <dd id="detail-video-size">
+                —
+              </dd>
+            </div>
+            <div>
+              <dt>
+                Ancienneté de l’image affichable
+              </dt>
+              <dd id="detail-video-age">
+                —
+              </dd>
+            </div>
+            <div>
+              <dt>
+                Limite d’ancienneté
+              </dt>
+              <dd id="source-video-limit">
+                —
+              </dd>
+            </div>
+            <div>
+              <dt>
+                Images refusées
+              </dt>
+              <dd id="count-video-rejected">
+                —
+              </dd>
+            </div>
+          </dl>
+          <p class="section-note" id="video-last-rejection"></p>
+          <p class="microcopy">
+            La réception vidéo est indépendante de MAVLink. Seule l’image entière de la caméra configurée est affichée.
+          </p>
+          <button class="button button-outline section-action" data-panel="sources" type="button">
+            Configurer la caméra
+          </button>
+        </section>
+        <section class="inspector-content inspector-scroll" data-panel-content="recording" hidden="">
+          <div aria-label="Commandes du journal MAVLink" class="journal-actions">
+            <button class="button button-primary" disabled="" id="recording-start" type="button">
+              Démarrer
+            </button>
+            <button class="button button-outline" disabled="" hidden="" id="recording-stop" type="button">
+              Arrêter
+            </button>
+            <a class="button button-outline" hidden="" id="recording-download">
+              Télécharger
+            </a>
+          </div>
+          <div class="detail-heading">
+            <h3 id="journal-detail-title">
+              Journal du service
+            </h3>
+            <span class="state-label" id="detail-recording-state">
+              En attente
+            </span>
+          </div>
+          <p class="section-note" id="recording-hint">
+            En attente du service.
+          </p>
+          <dl class="detail-list">
+            <div>
+              <dt>
+                Identifiant du journal
+              </dt>
+              <dd class="endpoint" id="recording-id">
+                —
+              </dd>
+            </div>
+            <div>
+              <dt>
+                Messages enregistrés
+              </dt>
+              <dd id="recording-events">
+                —
+              </dd>
+            </div>
+            <div>
+              <dt>
+                Durée
+              </dt>
+              <dd id="recording-duration">
+                —
+              </dd>
+            </div>
+            <div>
+              <dt>
+                Contenu
+              </dt>
+              <dd>
+                Trames MAVLink reçues
+              </dd>
+            </div>
+          </dl>
+          <p class="microcopy" id="recording-limits"></p>
+          <p class="microcopy">
+            La vidéo n’est pas enregistrée. Le dernier journal finalisé reste téléchargeable après un changement de sources ; il n’est pas réattribué à la nouvelle observation.
+          </p>
+        </section>
+        <section class="inspector-content inspector-scroll" data-panel-content="sources" hidden="">
+          <p class="section-note">
+            Appliquer les réglages ouvre une nouvelle observation. La configuration active reste utilisée pendant la saisie.
+          </p>
+          <p class="microcopy source-persistence-note">Les réglages saisis ici restent actifs jusqu’au redémarrage du service. Pour les retrouver au lancement suivant, reportez-les dans sa commande de démarrage.</p>
+          <form id="sources-form">
+            <fieldset>
+              <legend>
+                Environnement et caméra
+              </legend>
+              <label class="form-field" for="config-environment">
+                Environnement
+                <select id="config-environment" name="environment" required="">
+                  <option value="unconfigured">
+                    Non configuré
+                  </option>
+                  <option value="simulation">
+                    Simulation
+                  </option>
+                  <option value="real">
+                    Réel déclaré
+                  </option>
+                </select>
+              </label>
+              <label class="form-field" for="config-video-source">
+                Caméra
+                <select id="config-video-source" name="video_source" required="">
+                  <option value="none">
+                    Aucune
+                  </option>
+                  <option value="gazebo">
+                    Caméra Gazebo
+                  </option>
+                  <option value="device">
+                    Caméra physique Linux
+                  </option>
+                </select>
+              </label>
+              <div class="form-field" hidden="" id="config-video-row">
+                <label for="config-video-endpoint" id="config-video-label">
+                  Point de réception caméra
+                </label>
+                <input autocomplete="off" id="config-video-endpoint" maxlength="1024" name="video_endpoint" spellcheck="false" type="text"/>
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>
+                Liaison MAVLink
+              </legend>
+              <label class="form-field" for="config-transport">
+                Transport
+                <select id="config-transport" name="mavlink_transport" required="">
+                  <option value="none">
+                    Aucun
+                  </option>
+                  <option value="udp">
+                    UDP
+                  </option>
+                  <option value="tcp">
+                    TCP
+                  </option>
+                  <option value="serial">
+                    Série
+                  </option>
+                </select>
+              </label>
+              <div class="form-field" hidden="" id="config-bind-row">
+                <label for="config-bind">
+                  Réception UDP locale
+                </label>
+                <input autocomplete="off" id="config-bind" name="mavlink_bind" placeholder="127.0.0.1:14550" spellcheck="false" type="text"/>
+              </div>
+              <div class="form-field" hidden="" id="config-peer-row">
+                <label for="config-peer">
+                  Émetteur UDP attendu
+                </label>
+                <input autocomplete="off" id="config-peer" name="mavlink_peer" placeholder="127.0.0.1:14551" spellcheck="false" type="text"/>
+              </div>
+              <div class="form-field" hidden="" id="config-tcp-row">
+                <label for="config-tcp">
+                  Serveur TCP MAVLink
+                </label>
+                <input autocomplete="off" id="config-tcp" name="mavlink_tcp" placeholder="127.0.0.1:5760" spellcheck="false" type="text"/>
+              </div>
+              <div class="form-field" hidden="" id="config-device-row">
+                <label for="config-device">
+                  Port série MAVLink
+                </label>
+                <input autocomplete="off" id="config-device" name="mavlink_device" placeholder="/dev/ttyUSB0" spellcheck="false" type="text"/>
+              </div>
+              <div class="form-field" hidden="" id="config-baudrate-row">
+                <label for="config-baudrate">
+                  Débit série (bauds)
+                </label>
+                <input id="config-baudrate" min="1" name="baudrate" required="" step="1" type="number" value="115200"/>
+              </div>
+              <div class="form-field" hidden="" id="config-scope-row">
+                <label for="config-scope">
+                  Numérotation MAVLink
+                </label>
+                <select aria-describedby="config-scope-help" id="config-scope" name="sequence_scope">
+                  <option value="">
+                    Choisir explicitement
+                  </option>
+                  <option value="channel">
+                    Par canal
+                  </option>
+                  <option value="component">
+                    Par composant
+                  </option>
+                </select>
+              </div>
+              <p class="microcopy" id="config-scope-help">Par canal : les émetteurs partagent un compteur de séquence. Par composant : chaque composant a son propre compteur. Choisissez selon la liaison configurée ; un écart de séquence ne prouve pas une perte radio.</p>
+              <div class="form-pair">
+                <label class="form-field" for="config-system">
+                  Système
+                  <input id="config-system" max="255" min="1" name="system" required="" step="1" type="number" value="1"/>
+                </label>
+                <label class="form-field" for="config-component">
+                  Composant
+                  <input id="config-component" max="255" min="1" name="component" required="" step="1" type="number" value="1"/>
+                </label>
+              </div>
+            </fieldset>
+            <p class="section-note" id="sources-form-hint">
+              En attente de la configuration du service.
+            </p>
+            <p class="form-feedback" id="sources-action-status" role="status"></p>
+            <div class="form-actions">
+              <button class="button button-primary" disabled="" id="sources-apply" type="submit">
+                Appliquer les sources
+              </button>
+              <button class="button button-outline" disabled="" id="sources-reset" type="button">
+                Annuler les modifications
+              </button>
+            </div>
+          </form>
+          <div class="active-config">
+            <span class="eyebrow">
+              CONFIGURATION ACTIVE
+            </span>
+            <p id="source-environment">
+              Aucun état reçu.
+            </p>
+            <p class="section-note" id="active-source-summary"></p>
+          </div>
+        </section>
+      </aside>
+    </main>
+    <main class="sessions-workspace" hidden="" id="sessions-workspace" tabindex="-1">
+      <section aria-labelledby="archive-title" class="archive-browser">
+        <header class="archive-heading">
+          <div><h2 id="archive-title">Journaux locaux</h2><p class="section-note" id="archive-count"></p></div>
+          <button class="button button-outline" id="archive-refresh" type="button">Actualiser</button>
+        </header>
+        <p class="archive-feedback" id="archive-status" role="status"></p>
+        <ul aria-label="Journaux MAVLink disponibles" class="archive-list" id="archive-list"></ul>
+        <div class="archive-bottom">
+          <details class="archive-storage"><summary>Emplacement des journaux</summary><p id="archive-directory"></p></details>
+          <div><p class="state-label" id="archive-live-recording">État de la capture non actualisé</p><p class="section-note">Consulter un journal n’arrête pas la capture en cours.</p></div>
+          <button class="button button-outline" id="archive-journal" type="button">Gérer la capture</button>
+        </div>
+      </section>
+      <section aria-label="Relecture du journal" class="replay-panel">
+        <div class="archive-empty" id="replay-empty">
+          <span class="eyebrow">SESSIONS · MAVLINK</span>
+          <h2>Retrouver une capture</h2>
+          <p>Sélectionnez un journal pour vérifier son intégrité et parcourir les mesures reçues.</p>
+          <p class="section-note">Les captures contiennent la télémétrie, sans vidéo enregistrée.</p>
+        </div>
+        <p class="archive-feedback" id="replay-status" role="status"></p>
+        <div class="replay-content" hidden="" id="replay-content">
+          <header class="replay-heading">
+            <div><span class="eyebrow">RELECTURE · DONNÉES ENREGISTRÉES</span><h2 id="replay-title"></h2></div>
+            <a class="button button-outline" download="" id="archive-download">Télécharger le JSONL</a>
+          </header>
+          <div class="replay-metadata">
+            <span id="replay-duration"></span><span id="replay-events"></span><span>Intégrité vérifiée</span>
+          </div>
+          <p class="section-note replay-provenance" id="replay-provenance"></p>
+          <p class="section-note replay-end-detail" hidden="" id="replay-end-detail"></p>
+          <div aria-label="Présentation du journal" class="recording-view-controls">
+            <button aria-controls="recording-measure-view" aria-pressed="true" id="recording-view-measures" type="button">Mesures</button>
+            <button aria-controls="recording-message-view" aria-pressed="false" id="recording-view-messages" type="button">Messages MAVLink</button>
+            <button aria-controls="recording-analysis-view" aria-pressed="false" id="recording-view-analysis" type="button">Analyse</button>
+          </div>
+          <section aria-label="Analyse des réceptions enregistrées" hidden="" id="recording-analysis-view"><div id="recording-analysis-root"></div></section>
+          <div id="recording-measure-view">
+          <div class="replay-source-row">
+            <label for="replay-source">Composant à consulter</label>
+            <select id="replay-source"></select>
+          </div>
+          <p class="section-note" hidden="" id="replay-no-source">Aucun composant disponible pour les mesures. La vue Messages MAVLink et le fichier restent accessibles.</p>
+          <section aria-label="Curseur de relecture" class="replay-transport" id="replay-transport">
+            <div class="replay-controls">
+              <button class="button button-primary" disabled="" id="replay-play" type="button">Lire</button>
+              <button aria-label="Mesure précédente" class="button button-outline" disabled="" id="replay-previous" type="button">‹ Précédente</button>
+              <button aria-label="Mesure suivante" class="button button-outline" disabled="" id="replay-next" type="button">Suivante ›</button>
+              <label class="replay-speed" for="replay-speed">Vitesse <select id="replay-speed"><option value="0.5">× 0,5</option><option selected="" value="1">× 1</option><option value="2">× 2</option><option value="4">× 4</option></select></label>
+            </div>
+            <label class="replay-cursor-label" for="replay-cursor"><span>Temps depuis le début de la capture</span><output id="replay-time">0,00 s</output></label>
+            <input disabled="" id="replay-cursor" max="0" min="0" step="any" type="range" value="0"/>
+            <p class="microcopy" id="replay-cursor-status">Lecture en pause.</p>
+          </section>
+          <div aria-busy="false" id="replay-measures">
+            <div class="replay-measure-grid">
+              <section class="replay-measure" id="history-heartbeat">
+                <header><h3>Mode déclaré</h3><span class="history-age" id="history-heartbeat-age"></span></header>
+                <p class="history-value" id="history-mode">—</p>
+                <dl class="detail-list"><div><dt>Armement déclaré</dt><dd id="history-armed">—</dd></div><div><dt>Mode brut</dt><dd id="history-mode-raw">—</dd></div></dl>
+              </section>
+              <section class="replay-measure" id="history-battery">
+                <header><h3>Batterie</h3><span class="history-age" id="history-battery-age"></span></header>
+                <p class="history-value" id="history-remaining">—</p>
+                <dl class="detail-list"><div><dt>Tension</dt><dd id="history-voltage">—</dd></div><div><dt>Courant</dt><dd id="history-current">—</dd></div></dl>
+              </section>
+              <section class="replay-measure" id="history-attitude">
+                <header><h3>Attitude</h3><span class="history-age" id="history-attitude-age"></span></header>
+                <dl class="detail-list"><div><dt>Roulis</dt><dd id="history-roll">—</dd></div><div><dt>Tangage</dt><dd id="history-pitch">—</dd></div><div><dt>Lacet</dt><dd id="history-yaw">—</dd></div></dl>
+              </section>
+              <section class="replay-measure" id="history-local_position_ned">
+                <header><h3>Position locale · NED</h3><span class="history-age" id="history-local_position_ned-age"></span></header>
+                <dl class="detail-list"><div><dt>Nord</dt><dd id="history-north">—</dd></div><div><dt>Est</dt><dd id="history-east">—</dd></div><div><dt>Down</dt><dd id="history-down">—</dd></div></dl>
+                <p class="microcopy">Repère local reçu ; Down n’est pas une altitude sol.</p>
+              </section>
+            </div>
+            <p class="section-note replay-age-note" id="replay-age-note"></p>
+            <details class="replay-diagnostics">
+              <summary>Bilan des réceptions à cet instant</summary>
+              <p class="section-note">Ces compteurs couvrent le début du journal jusqu’au curseur : réceptions utilisées pour les mesures, ignorées ou refusées. Les identifiants proviennent des trames, sans indiquer la connexion ni l’environnement d’origine.</p>
+              <dl class="detail-list"><div><dt>Trames reçues, toutes sources</dt><dd id="history-received">—</dd></div><div><dt>Mesures acceptées du composant</dt><dd id="history-accepted">—</dd></div><div><dt>Payloads refusés</dt><dd id="history-rejected">—</dd></div><div><dt>Autres sources</dt><dd id="history-ignored-source">—</dd></div><div><dt>Autres types du composant</dt><dd id="history-ignored-type">—</dd></div><div><dt>Compteur ATTITUDE</dt><dd id="history-attitude-boot">—</dd></div><div><dt>Compteur LOCAL_POSITION_NED</dt><dd id="history-position-boot">—</dd></div></dl>
+              <p class="section-note" id="history-rejection"></p>
+            </details>
+          </div>
+          </div>
+          <section aria-label="Messages MAVLink enregistrés" hidden="" id="recording-message-view">
+            <p class="section-note message-scope">Journal entier, dans l’ordre de réception. Ouvrez une ligne pour voir les champs décodés et la trame originale en hexadécimal.</p>
+            <div class="message-filters">
+              <label for="messages-source">Source enregistrée<select id="messages-source"><option value="">Toutes les sources</option></select></label>
+              <label for="messages-type">Type de message<select id="messages-type"><option value="">Tous les types</option></select></label>
+            </div>
+            <div class="message-pagination">
+              <span id="messages-count" tabindex="-1"></span>
+              <div><button class="button button-outline" disabled="" id="messages-previous" type="button">‹ Page précédente</button><button class="button button-outline" disabled="" id="messages-next" type="button">Page suivante ›</button></div>
+            </div>
+            <p class="archive-feedback" id="messages-status" role="status"></p>
+            <button class="button button-outline" hidden="" id="messages-retry" type="button">Réessayer</button>
+            <ol aria-label="Trames enregistrées" aria-busy="false" class="message-list" id="messages-list"></ol>
+            <p class="microcopy message-format-note">Le temps est relatif au début de la capture. Les champs gardent les noms et unités MAVLink. Les grands entiers et les valeurs non finies (NaN, Infinity) sont écrits entre guillemets pour préserver leur valeur. Les trames non décodables ne font pas partie de ce journal.</p>
+          </section>
+        </div>
+      </section>
+    </main>
+    <main aria-label="Inspection MAVLink en direct" hidden="" id="messages-workspace" tabindex="-1"><div id="live-messages-root"></div></main>
+    <footer class="app-footer">
+      <span id="session-status">
+        Aucune observation reçue
+      </span>
+      <span>
+        Caméra & télémétrie
+      </span>
+      <span id="action-status" role="status"></span>
+    </footer>
+  </body>
+</html>

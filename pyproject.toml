@@ -1,0 +1,31 @@
+[project]
+name = "argos"
+version = "0.1.0"
+description = "Local drone observation console, passive MAVLink diagnostics and recorded-session analysis."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "argos/console/static/fonts/*-OFL.txt"]
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+mavlink = ["pymavlink==2.4.49", "pyserial==3.5"]
+plot = ["matplotlib==3.11.1"]
+console = ["fastapi==0.141.1", "uvicorn==0.52.4", "pillow==12.3.0"]
+console-test = ["httpx==0.28.1"]
+camera = ["opencv-python-headless==5.0.0.93"]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["argos*"]
+
+[tool.setuptools.package-data]
+"argos.console" = ["static/*.html", "static/*.css", "static/*.js",
+                   "static/fonts/*.woff2", "static/fonts/*-OFL.txt", "static/fonts/README.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
