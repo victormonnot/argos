@@ -7,8 +7,9 @@ also regulates altitude, while Stabilize uses manual throttle. The browser
 supplies pilot input. This is an opt-in simulation feature, separate from the
 default passive observation workflow.
 
-The current milestone does not implement visual following, target lock, VIO,
-position hold, radio control or HITL. It does not enable browser flight of
+Optional [visual framing](framing.md) adds explicit target selection and
+image-based centering/apparent-size assistance in AltHold. The current milestone
+does not implement VIO, position hold, radio control or HITL. It does not enable browser flight of
 physical aircraft. No markers, downward optical flow or simulated true position
 are substituted for a navigation capability.
 
@@ -172,7 +173,7 @@ and final landing speed (0.5 m/s), using the pinned firmware’s current paramet
 names and units.
 This bounds requests, not the resulting drift or distance traveled.
 
-The control service reads the twelve parameters in
+The control service reads the parameters in
 [`REQUIRED_PARAMETERS`](../argos/console/control.py) before allowing arming.
 It does not rewrite them or bypass a mismatch. It also requires recent selected
 ArduCopter heartbeat and SIMSTATE receipts. SIMSTATE is used only as a simulation
@@ -180,6 +181,9 @@ presence check: its coordinates are not retained by the controller or used to
 steer. This check is an accidental-hardware guard, not sender authentication.
 Taking control also requests HEARTBEAT and EXTENDED_SYS_STATE at 5 Hz, retaining
 the two-second receipt limit even when simulation runs below real-time speed.
+The digital profile sets RC stick and throttle deadzones to zero. Framing-enabled
+sessions add mapping, calibration and fixed-camera checks described in the
+[framing guide](framing.md).
 
 For an already prepared isolated instance, the equivalent opt-in console command
 without a camera is:
@@ -206,6 +210,7 @@ The local API uses JSON and the exact console Origin for all mutations.
 | `POST /api/control/claim` | `{}` → `{token, control}`. Requires a disarmed, available simulation. |
 | `POST /api/control/input` | `{token, seq, axes: {forward, right, up, yaw}, throttle}` → `{control}`. Axes are finite within `[-1, 1]`, throttle within `[0, 1]`, and `seq` increases strictly. |
 | `POST /api/control/action` | `{token, action}` → `{control}`. Actions: `prepare`, `arm`, `land`, `disarm`, `release`. Only `prepare` accepts optional `mode`: integer `0` (Stabilize) or `2` (AltHold; default). |
+| `POST /api/control/framing` | Explicit selection, engagement, manual takeover and apparent-size adjustment; see the [framing contract](framing.md#api-and-journals). |
 
 Stabilize requires `up=0` and an explicit throttle in armed input updates.
 Nonzero throttle is rejected while disarmed or in AltHold. Legacy AltHold

@@ -7,6 +7,7 @@ No simulator poses, telemetry or flight command transport enter the worker.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass
 import multiprocessing
 import math
@@ -67,6 +68,7 @@ class VisionService:
         self._last_sequence = None
         self._identifier = self._processed = 0
         self._tracker = ImageTracker()
+        self._selection_history = deque(maxlen=4)
 
     def start(self):
         if self.model_path is None or self._process is not None or self._closed:
@@ -101,6 +103,7 @@ class VisionService:
             self._frame = None
             self._last_sequence = None
             self._tracker.reset()
+            self._selection_history.clear()
             self._processed = 0
             # Leave the one outstanding job alone until it returns or times out.
             # Its original context below prevents acceptance by the new source.
@@ -144,6 +147,8 @@ class VisionService:
                         return
                     self._frame = AnalyzedFrame(candidate.sample, candidate.context, result)
                     self._processed += 1
+                    self._selection_history.append((candidate.context, candidate.sample.sequence,
+                        candidate.sample.received_at, frozenset(d["track_id"] for d in result["detections"])))
         if not self._process.is_alive():
             self._fail("Vision worker stopped; restart the console to retry")
             return
@@ -211,6 +216,20 @@ class VisionService:
                 or session.video.latest(now) is None):
             return None
         return candidate
+
+    def check_selection(self, session, values, now):
+        """Validate a displayed click using bounded metadata, never browser boxes."""
+        context = values["run_id"], values["video_id"]
+        if context != self._identity(session):
+            raise RuntimeError("The selected camera source changed")
+        if not any(ctx == context and sequence == values["frame_sequence"]
+                   and 0 <= now - at <= .75 and values["track_id"] in ids
+                   for ctx, sequence, at, ids in self._selection_history):
+            raise RuntimeError("The displayed detection expired; select a current person")
+        current = self.frame(session)
+        if (current is None or now - current.sample.received_at > .45
+                or not any(d["track_id"] == values["track_id"] for d in current.result["detections"])):
+            raise RuntimeError("The selected person is no longer visible in a recent image")
 
     def state(self, session):
         candidate = self.frame(session)

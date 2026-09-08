@@ -31,6 +31,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
     session = session or ConsoleSession(config or ConsoleConfig())
     archive = RecordingArchive(session.recorder.directory)
     vision = vision or VisionService(session.config.vision_model)
+    session.vision = vision
 
     def snapshot():
         result = session.state()
@@ -46,7 +47,6 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
         async def receive():
             while not stop.is_set():
                 session.tick()
-                vision.tick(session)
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=.05)
                 except asyncio.TimeoutError:
@@ -210,13 +210,14 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
         # inspect the retiring session midway through closing/replacing it.
         session.close()
         session = replacement
+        session.vision = vision
         app.state.session = replacement
         session.start()
         return JSONResponse(snapshot())
 
     @app.post("/api/control/{operation}")
     async def flight_control(operation: str, request: Request):
-        if operation not in {"claim", "input", "action"}:
+        if operation not in {"claim", "input", "action", "framing"}:
             raise HTTPException(404, "Unknown flight-control action")
         values = await mutation_body(request)
         try:

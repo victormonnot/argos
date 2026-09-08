@@ -19,6 +19,7 @@ def default_recordings_dir():
 @dataclass(frozen=True)
 class ConsoleConfig:
     sim_control: bool = False
+    sim_framing: bool = False
     vision_model: Path | None = None
     video_source: str = "none"
     video_endpoint: str | None = None
@@ -38,6 +39,12 @@ class ConsoleConfig:
     limits: TelemetryLimits = field(default_factory=lambda: TelemetryLimits(1., .2, .4))
 
     def __post_init__(self):
+        if not isinstance(self.sim_framing, bool):
+            raise ValueError("sim_framing must be a boolean")
+        if self.sim_framing and (not self.sim_control or self.vision_model is None
+                or self.video_source != "gazebo"
+                or self.video_endpoint != "/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image"):
+            raise ValueError("framing requires simulation control, a vision model and the validated person-scene camera")
         if self.vision_model is not None:
             object.__setattr__(self, "vision_model", Path(self.vision_model).expanduser().resolve())
         if not isinstance(self.sim_control, bool):

@@ -15,9 +15,10 @@ The console remains passive by default. Manual flight requires the explicit
 `--sim-control` option and the [isolated simulation profile](docs/web-control.md).
 It is not enabled for physical hardware. Neutral controls do not hold horizontal
 position: the simulated drone can drift without GPS.
-The repository also contains experimental perception, guidance and simulation
-modules, tested separately; they are not connected to the console's live
-receivers. Onboard autonomy and swarm coordination are research directions,
+Optional [person detection](docs/vision.md) and [visual framing](docs/framing.md)
+add image observations and explicit AltHold centering/apparent-size assistance.
+Other experimental perception, guidance and simulation modules are tested
+separately. Onboard autonomy and swarm coordination are research directions,
 not capabilities delivered by this interface.
 
 The interface is in English. This documentation uses its on-screen labels
@@ -118,12 +119,12 @@ reasons are described in the [console guide](docs/console.md).
 | `argos/console/` | Receivers, console state, recording, archives and local API. |
 | `argos/console/static/` | HTML/CSS/JavaScript interface with local fonts; no build server required. |
 | `argos/backends/mavlink/` | Transports, decoding, measurement validation and recording format. |
-| `argos/core/`, `argos/perception/`, `argos/guidance/`, `argos/safety/` | Contracts and experimental components independent of the console. |
+| `argos/core/`, `argos/perception/`, `argos/guidance/`, `argos/safety/` | Contracts and experiments, plus the optional live image detector, tracker and framing law. |
 | `argos/backends/attitude_sim.py`, `argos/harness/` | Simulation and instrumentation, including link statistics reused by live MAVLink. |
 | `tests/`, `examples/` | Automated checks and runnable examples. |
 
 Further reading: [architecture and data flow](docs/architecture.md), [console and API](docs/console.md),
-[manual web flight and control API](docs/web-control.md),
+[manual web flight and control API](docs/web-control.md), [visual framing](docs/framing.md),
 [MAVLink transport and recording format](docs/mavlink-transport.md),
 [validation environment](docs/validation.md).
 
@@ -159,4 +160,6 @@ ArduPilot and its Gazebo plugin are external projects with their own licenses.
 
 Optional [camera-based person detection and tracking](docs/vision.md) adds a
 walking-person Gazebo scene and CPU inference during manual simulated flight.
-The pilot retains flight control; automatic framing/following is future work.
+The pilot can explicitly engage experimental [visual framing](docs/framing.md)
+with `--framing`; manual input immediately stops that assistance. This does not
+establish outdoor following or horizontal position hold.

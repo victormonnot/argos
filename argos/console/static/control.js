@@ -5,6 +5,7 @@
   const directions = Array.from(document.querySelectorAll("[data-control-axis]"));
   const actionButtons = Array.from(document.querySelectorAll("[data-control-action]"));
   const throttleButtons = Array.from(document.querySelectorAll("[data-throttle-step]"));
+  const framingButtons = Array.from(document.querySelectorAll("[data-framing-operation]"));
   const zero = () => ({ forward: 0, right: 0, up: 0, yaw: 0 });
   const keys = { ArrowUp: ["forward", 1], ArrowDown: ["forward", -1], ArrowLeft: ["right", -1], ArrowRight: ["right", 1],
     r: ["up", 1], f: ["up", -1], q: ["yaw", -1], e: ["yaw", 1] };
@@ -14,6 +15,9 @@
   let runId = null, environment = null, focused = true;
   let claiming = false, actionPending = false, inputPending = false, inputChanged = false;
   let draftMode = 2, throttle = 0;
+  let framingIntent = 0, framingBusy = false, framingOperation = null, framingSuppressed = false;
+  let framingFeedback = "", acknowledgedInputSeq = -1;
+  let vision = { enabled: false, recent: false };
   let feedback = "", feedbackTone = "neutral";
   const active = () => document.body.dataset.view === "control" && !document.hidden && focused;
   const owned = () => Boolean(token && control?.owned && fresh && control?.available);
@@ -26,6 +30,29 @@
   const text = (id, value) => { if (node(id).textContent !== value) node(id).textContent = value; };
   const message = (value, tone = "neutral") => { feedback = value; feedbackTone = tone; };
   const commandPending = () => control?.command && ["sent", "accepted"].includes(control.command.state) && !control.command.observed;
+
+  function framingView() {
+    const view = control?.framing;
+    const finiteOrNull = value => value === null || (typeof value === "number" && Number.isFinite(value));
+    if (!view || typeof view !== "object" || typeof view.enabled !== "boolean" || typeof view.active !== "boolean"
+      || (view.paused !== undefined && typeof view.paused !== "boolean")
+      || typeof view.available !== "boolean" || !Number.isSafeInteger(view.revision) || view.revision < 0
+      || !["disabled", "idle", "selected", "active", "takeover"].includes(view.phase)
+      || !(view.target_id === null || (Number.isSafeInteger(view.target_id) && view.target_id > 0))
+      || ![view.error_x, view.error_y, view.height, view.reference_height, view.frame_age_s, view.takeover_remaining_s].every(finiteOrNull)) return null;
+    return view;
+  }
+
+  function manualIntent() {
+    const framing = framingView();
+    if (!framing?.enabled) return;
+    framingSuppressed = true;
+    if (framing.active || framing.phase === "takeover" || framingBusy) {
+      void requestFraming("stop", {}, { urgent: true });
+    } else {
+      framingIntent += 1;
+    }
+  }
 
   function axes() {
     const value = zero();
@@ -44,6 +71,7 @@
 
   function setThrottle(value) {
     if (!movingAllowed() || selectedMode() !== 0) return;
+    manualIntent();
     throttle = Math.round(Math.max(0, Math.min(100, value))) / 100;
     inputChanged = true;
     render();
@@ -91,6 +119,11 @@
     const releaseEpoch = epoch, releaseRun = runId;
     claiming = false;
     actionPending = false;
+    framingIntent += 1;
+    framingBusy = false;
+    framingOperation = null;
+    framingSuppressed = true;
+    framingFeedback = "";
     resetThrottle();
     clearInputs();
     if (reason) message(reason, "warning");
@@ -113,10 +146,12 @@
     inputPending = true;
     inputChanged = false;
     const currentToken = token, currentEpoch = epoch;
+    const sentSeq = ++seq;
     try {
-      const body = await post("input", { token: currentToken, seq: ++seq, axes: axes(), throttle: movingAllowed() && selectedMode() === 0 ? throttle : 0 }, { timeout: 500 });
+      const body = await post("input", { token: currentToken, seq: sentSeq, axes: axes(), throttle: movingAllowed() && selectedMode() === 0 ? throttle : 0 }, { timeout: 500 });
       if (token !== currentToken || epoch !== currentEpoch) return;
       adopt(body.control);
+      acknowledgedInputSeq = Math.max(acknowledgedInputSeq, sentSeq);
       if (!control.owned || !control.available) release("Control expired or unavailable. Take control again explicitly.", { send: false });
     } catch (error) {
       if (token === currentToken && epoch === currentEpoch) release(`${error.message} Control released.`);
@@ -126,6 +161,85 @@
       // Coalesce changes during one request into the latest axes, never a queue of maneuvers.
       if (inputChanged && active() && owned()) void sendInput();
     }
+  }
+
+  async function requestFraming(operation, values = {}, { urgent = false } = {}) {
+    if (!active() || !owned() || !framingView()?.enabled || (framingBusy && !urgent)) return;
+    const currentToken = token, currentEpoch = epoch, intent = ++framingIntent;
+    framingBusy = true;
+    framingOperation = operation;
+    if (operation === "stop" || operation === "clear") framingSuppressed = true;
+    framingFeedback = ({ select: "Selecting person…", engage: "Engaging framing…", stop: "Returning to manual…", clear: "Clearing selection…", closer: "Adjusting closer…", farther: "Adjusting farther…" })[operation];
+    render();
+    const current = () => intent === framingIntent && token === currentToken && epoch === currentEpoch && active() && owned();
+    try {
+      let extra = values;
+      if (operation === "engage") {
+        // Existing input requests stay serialized and keep the lease alive.
+        // Fence engagement with a confirmed neutral pilot input; periodic
+        // neutral keepalives may continue while the framing POST is pending.
+        while (inputPending && current()) await new Promise(resolve => window.setTimeout(resolve, 10));
+        if (!current() || Object.values(axes()).some(Boolean)) return;
+        await sendInput();
+        if (!current() || Object.values(axes()).some(Boolean) || !vision.enabled || !vision.recent) return;
+        extra = { revision: framingView().revision, input_seq: acknowledgedInputSeq };
+      }
+      if (!current()) return;
+      const body = await post("framing", { token: currentToken, operation, intent, ...extra }, { timeout: operation === "stop" ? 500 : 1800 });
+      if (!current()) return;
+      adopt(body.control);
+      framingFeedback = "";
+      if (operation === "engage" || operation === "select") framingSuppressed = false;
+    } catch (error) {
+      if (current()) {
+        framingFeedback = error.message;
+        // A stop without confirmation cannot be assumed to have reached the
+        // service. Relinquish the lease so the independent landing fallback acts.
+        if (operation === "stop") release("Manual takeover was not confirmed. Control released; landing requested.");
+      }
+    } finally {
+      if (intent === framingIntent && currentEpoch === epoch) { framingBusy = false; framingOperation = null; }
+      render();
+    }
+  }
+
+  function renderFraming() {
+    const framing = framingView(), hasControl = active() && owned();
+    node("framing-controls").hidden = !framing?.enabled;
+    const effectiveActive = hasControl && framing?.active && !framingSuppressed;
+    const paused = effectiveActive && framing.paused === true;
+    const takeover = framing?.phase === "takeover";
+    document.querySelector(".control-heading .eyebrow").textContent = takeover ? "MANUAL TAKEOVER" : paused ? "FRAMING PAUSED" : effectiveActive ? "ASSISTED FRAMING" : "MANUAL FLIGHT";
+    if (document.body.dataset.view === "control") text("view-context", paused ? "Framing paused · GPS-free" : effectiveActive ? "Assisted framing · GPS-free" : "Manual flight · GPS-free");
+    document.dispatchEvent(new CustomEvent("argos:framing-ui", { detail: {
+      allowed: Boolean(hasControl && framing?.enabled && vision.enabled && vision.recent && !framingBusy && !framing.active && !takeover),
+      target_id: hasControl ? framing?.target_id ?? null : null, active: Boolean(effectiveActive), paused: Boolean(paused),
+    } }));
+    if (!framing?.enabled) return;
+    text("framing-target", framing.target_id === null ? "No target" : `Person #${framing.target_id}`);
+    const motion = Object.values(axes()).some(Boolean);
+    const engage = hasControl && vision.enabled && vision.recent && framing.available && framing.target_id !== null
+      && selectedMode() === 2 && control.vehicle?.armed === true && control.vehicle?.landed === false
+      && !framing.active && !takeover && !framingBusy && !motion && !actionPending;
+    for (const button of framingButtons) {
+      const operation = button.dataset.framingOperation;
+      button.disabled = operation === "engage" ? !engage : operation === "stop" ? !hasControl || !(framing.active || takeover || framingBusy)
+        : operation === "clear" ? !hasControl || framing.target_id === null || framing.active || takeover || framingBusy
+        : !hasControl || !effectiveActive || paused || framingBusy || !vision.recent;
+    }
+    document.querySelector('[data-framing-operation="stop"]').setAttribute("aria-pressed", String(!effectiveActive && !takeover));
+    let status = !hasControl ? "Take control to select a person in the image." : !vision.enabled ? "Enable person detection, then select a person in the image."
+      : takeover ? `${framing.reason || "Tracking lost"} · Manual takeover required${Number.isFinite(framing.takeover_remaining_s) ? ` within ${Math.max(0, framing.takeover_remaining_s).toFixed(1)} s` : ""}.`
+      : paused ? `Framing paused · ${framing.reason || "Detection interrupted; corrections paused"}`
+      : framingFeedback || (effectiveActive ? "Framing active · Any manual direction returns control to you." : framing.reason || "Select a person, then engage framing after manual takeoff.");
+    if (framingFeedback && !takeover && !paused && hasControl) status = framingFeedback;
+    text("framing-status", status);
+    node("framing-status").dataset.phase = takeover ? "lost" : effectiveActive ? "active" : framing.phase;
+    const recent = hasControl && vision.recent && !paused && !takeover && Number.isFinite(framing.frame_age_s) && framing.frame_age_s <= 1;
+    const error = value => recent && Number.isFinite(value) && Math.abs(value) <= 1 ? `${value >= 0 ? "+" : ""}${value.toFixed(2)}` : "—";
+    const height = value => Number.isFinite(value) && value >= 0 && value <= 1 ? `${(value * 100).toFixed(1)}%` : "—";
+    text("framing-error", `${error(framing.error_x)} / ${error(framing.error_y)}`);
+    text("framing-height", `${recent ? height(framing.height) : "—"} / ${height(framing.reference_height)}`);
   }
 
   function render() {
@@ -173,6 +287,7 @@
     const hint = hasControl ? vehicle?.armed ? isStabilize ? "Adjust throttle; hold directions to fly." : "Hold the buttons to fly." : control?.profile?.ready ? isStabilize ? "Arm at 0% throttle, then increase gradually to take off." : "Arm, then hold Climb to take off." : "Waiting for GPS-free configuration confirmation." : vehicle?.armed !== false ? "Taking control requires a disarmed drone." : "Take control to prepare for flight.";
     text("control-feedback", unavailable || feedback || (["denied", "timeout", "send_failed"].includes(command?.state) ? commandText : profileIssue) || draftIssue || commandText || control?.last_error || hint);
     node("control-feedback").dataset.tone = unavailable || profileIssue ? "warning" : feedback ? feedbackTone : ["denied", "timeout", "send_failed"].includes(command?.state) ? "error" : "neutral";
+    renderFraming();
   }
 
   node("control-claim").addEventListener("click", async () => {
@@ -194,6 +309,9 @@
       }
       adopt(body.control);
       token = body.token;
+      framingIntent = 0;
+      framingSuppressed = false;
+      acknowledgedInputSeq = -1;
       draftMode = selectedMode();
       void sendInput();
     } catch (error) {
@@ -208,6 +326,9 @@
     const action = button.dataset.controlAction;
     if (action === "release") { release("Control released. Landing requested if the drone is armed."); return; }
     actionPending = true;
+    framingIntent += 1;
+    framingBusy = false;
+    framingSuppressed = true;
     clearInputs();
     if (action === "prepare" || action === "arm") resetThrottle();
     message("");
@@ -246,6 +367,7 @@
       if (!movingAllowed() || button.disabled || (event.pointerType === "mouse" && event.button !== 0)) return;
       event.preventDefault();
       try { button.setPointerCapture(event.pointerId); } catch { return; }
+      manualIntent();
       pointers.set(event.pointerId, { axis: button.dataset.controlAxis, value: Number(button.dataset.controlValue), button });
       render();
       void sendInput();
@@ -266,6 +388,7 @@
     if (event.repeat || pressedKeys.has(key)) return;
     const [axis, value] = keys[key];
     if (axis === "up" && selectedMode() === 0) { setThrottle(throttle * 100 + value * 2); return; }
+    manualIntent();
     pressedKeys.set(key, { axis, value });
     render();
     void sendInput();
@@ -287,6 +410,23 @@
   window.addEventListener("pagehide", () => release("Page left: control released."));
   document.addEventListener("argos:workspace-changed", (event) => {
     if (event.detail?.view !== "control") release("Flight controls left: control released.");
+    render();
+  });
+  for (const button of framingButtons) button.addEventListener("click", () => {
+    if (!button.disabled) void requestFraming(button.dataset.framingOperation, {}, { urgent: button.dataset.framingOperation === "stop" });
+  });
+  document.addEventListener("argos:select-person", event => {
+    const framing = framingView();
+    if (!active() || !owned() || !framing?.enabled || framing.active || framing.phase === "takeover" || framingBusy || !vision.enabled || !vision.recent) return;
+    const value = event.detail;
+    if (!value || value.run_id !== runId || value.video_id !== vision.video_id || !Number.isSafeInteger(value.frame_sequence)
+      || value.frame_sequence < 0 || !Number.isSafeInteger(value.track_id) || value.track_id < 1) return;
+    void requestFraming("select", { run_id: value.run_id, video_id: value.video_id, frame_sequence: value.frame_sequence, track_id: value.track_id });
+  });
+  document.addEventListener("argos:vision-state", event => {
+    const wasEnabled = vision.enabled;
+    vision = event.detail || { enabled: false, recent: false };
+    if (wasEnabled && !vision.enabled && owned() && framingView()?.enabled) void requestFraming("stop", {}, { urgent: true });
     render();
   });
   document.addEventListener("argos:control-state", (event) => {

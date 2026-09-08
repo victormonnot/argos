@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import math
 import secrets
+from collections import deque
+
+from .framing import FramingControl
 
 
 REQUIRED_PARAMETERS = {
@@ -33,6 +36,22 @@ REQUIRED_PARAMETERS = {
     "PILOT_SPD_DN": .7,
     "LAND_SPD_MS": .5,
     "ATC_ANGLE_MAX": 20.,
+    "RC1_DZ": 0., "RC2_DZ": 0., "RC3_DZ": 0., "RC4_DZ": 0., "THR_DZ": 0.,
+}
+# The optional body-camera framing law also depends on this digital input map.
+# MANUAL_CONTROL scales through MIN/MAX, but attitude axes use TRIM: explicitly
+# symmetric endpoints make zero stay neutral and preserve the .3-axis gain.
+FRAMING_PARAMETERS = {
+    "RCMAP_ROLL": 1., "RCMAP_PITCH": 2., "RCMAP_THROTTLE": 3., "RCMAP_YAW": 4.,
+    "RC1_REVERSED": 0., "RC2_REVERSED": 0., "RC3_REVERSED": 0., "RC4_REVERSED": 0.,
+    "RC1_MIN": 1100., "RC1_MAX": 1900., "RC1_TRIM": 1500.,
+    "RC2_MIN": 1100., "RC2_MAX": 1900., "RC2_TRIM": 1500.,
+    "RC3_MIN": 1100., "RC3_MAX": 1900., "RC3_TRIM": 1500.,
+    "RC4_MIN": 1100., "RC4_MAX": 1900., "RC4_TRIM": 1500.,
+    "SIMPLE": 0., "SUPER_SIMPLE": 0.,
+    "PILOT_Y_RATE": 202.5, "PILOT_Y_EXPO": 0.,
+    "MNT1_TYPE": 0.,
+    "SERVO9_FUNCTION": 0., "SERVO10_FUNCTION": 0., "SERVO11_FUNCTION": 0.,
 }
 AXES = ("forward", "right", "up", "yaw")
 INPUT_TIMEOUT = .65
@@ -42,6 +61,9 @@ LANDED_MAX_AGE = 2.
 COMMAND_TIMEOUT = 4.
 MANUAL_INTERVAL = .05
 HEARTBEAT_INTERVAL = 1.
+PARAMETER_INITIAL_BATCH = 17
+PARAMETER_READ_INTERVAL = .1
+PARAMETER_READ_WINDOW = 15.
 STABILIZE, ALT_HOLD, LAND = 0, 2, 9
 MANUAL_MODES = frozenset((STABILIZE, ALT_HOLD))
 _MISSING = object()
@@ -69,8 +91,13 @@ def _age(now, at):
 class FlightControl:
     """Bounded state and sends; all times are the session's monotonic run clock."""
 
-    def __init__(self, *, enabled=False, system=1, component=1):
+    def __init__(self, *, enabled=False, system=1, component=1, framing_enabled=False):
         self.enabled = enabled
+        self.framing = FramingControl(enabled=enabled and framing_enabled)
+        self._required_parameters = {
+            **REQUIRED_PARAMETERS, **(FRAMING_PARAMETERS if self.framing.enabled else {}),
+        }
+        self._landed_state = None
         self.system, self.component = system, component
         self._heartbeat_at = self._simstate_at = self._landed_at = None
         self._armed = self._mode = self._landed = None
@@ -78,12 +105,16 @@ class FlightControl:
         self._token = None
         self._claimed_at = self._input_at = None
         self._seq = -1
+        self._last_manual_seq = -1
+        self._framing_intent = 0
         self._axes = dict.fromkeys(AXES, 0.)
         self._selected_mode = ALT_HOLD
         self._prepared_mode = None
         self._throttle = 0.
         self._last_manual = self._last_gcs = None
         self._params = {}
+        self._parameter_reads = deque()
+        self._parameter_read_at = self._parameter_read_deadline = None
         self._command = None
         self._phase = "idle" if enabled else "disabled"
         self._error = ""
@@ -116,7 +147,10 @@ class FlightControl:
             kind, autopilot, base, custom, _status = values
             self._identity_valid = autopilot == 3 and kind in COPTER_TYPES
             self._heartbeat_at = at
+            was_armed = self._armed
             self._armed, self._mode = bool(base & 128), custom
+            if was_armed is True and self._armed is False:
+                self.framing.clear("Drone disarmed; framing stopped")
             if self._armed is False:
                 self._throttle = 0.
             if custom != self._selected_mode:
@@ -137,6 +171,7 @@ class FlightControl:
             if _integer(landed, maximum=4) and (
                     self._landed_at is None or at >= self._landed_at):
                 self._landed_at = at
+                self._landed_state = landed
                 self._landed = True if landed == 1 else False if landed in (2, 3, 4) else None
         elif event.type_name == "PARAM_VALUE" and self._claimed_at is not None:
             key = fields.get("param_id")
@@ -145,7 +180,7 @@ class FlightControl:
             if isinstance(key, str):
                 key = key.split("\0", 1)[0]
             value = fields.get("param_value")
-            if (isinstance(key, str) and key in REQUIRED_PARAMETERS and _number(value)
+            if (isinstance(key, str) and key in self._required_parameters and _number(value)
                     and at >= self._claimed_at):
                 previous = self._params.get(key)
                 if previous is None or at >= previous[1]:
@@ -226,11 +261,11 @@ class FlightControl:
 
     def _profile(self):
         values = {key: entry[0] for key, entry in self._params.items()}
-        missing = [key for key in REQUIRED_PARAMETERS if key not in values]
-        mismatched = [key for key, expected in REQUIRED_PARAMETERS.items()
+        missing = [key for key in self._required_parameters if key not in values]
+        mismatched = [key for key, expected in self._required_parameters.items()
                       if key in values and not math.isclose(values[key], expected, abs_tol=1e-5)]
         return {"ready": not missing and not mismatched, "values": values,
-                "required": dict(REQUIRED_PARAMETERS), "missing": missing,
+                "required": dict(self._required_parameters), "missing": missing,
                 "mismatched": mismatched}
 
     def state(self, now):
@@ -242,10 +277,14 @@ class FlightControl:
                 "input_timeout": INPUT_TIMEOUT, "axes": dict(self._axes),
                 "selected_mode": self._selected_mode, "throttle": self._throttle,
                 "prepared": self._prepared_mode == self._selected_mode,
+                "input_seq": self._seq,
+                "framing": self.framing.state(now, self._framing_vehicle_reason(now)),
                 "vehicle": {"armed": self._armed, "mode": self._mode,
                             "landed": self._landed if self._landed_at is not None
                             and now - self._landed_at <= LANDED_MAX_AGE else None,
-                            "heartbeat_age": _age(now, self._heartbeat_at)},
+                            "heartbeat_age": _age(now, self._heartbeat_at),
+                            "landed_state": self._landed_state if self._landed_at is not None
+                            and now - self._landed_at <= LANDED_MAX_AGE else None},
                 "profile": self._profile(),
                 "command": None if self._command is None else dict(self._command),
                 "last_error": self._error}
@@ -261,7 +300,8 @@ class FlightControl:
             return "error", str(exc)
 
     def _manual(self, link, now, *, neutral=False):
-        axes = dict.fromkeys(AXES, 0.) if neutral else self._axes
+        axes = (dict.fromkeys(AXES, 0.) if neutral else self.framing.axes(now)
+                if self.framing.phase in ("active", "takeover") else self._axes)
         if self._armed is not True:
             x = y = r = z = 0  # zero throttle before arm, regardless of UI input
         else:
@@ -275,6 +315,40 @@ class FlightControl:
         self._last_manual = now
         return self._send(link, message, now)
 
+    def _clear_parameter_reads(self):
+        self._parameter_reads.clear()
+        self._parameter_read_at = self._parameter_read_deadline = None
+
+    def _read_parameter(self, key, link, now):
+        message = self._dialect().MAVLink_param_request_read_message(
+            self.system, self.component, key.encode("ascii"), -1)
+        return self._send(link, message, now)
+
+    def _read_missing_parameter(self, link, now):
+        # ArduPilot's response queue is bounded. After the small initial batch,
+        # rotate missing reads at most once per interval without catch-up bursts.
+        # This retry window is absolute: input renewals never extend it, and no
+        # flight command is retained or retried by this queue.
+        if self._parameter_read_deadline is None:
+            return
+        if now >= self._parameter_read_deadline:
+            self._clear_parameter_reads()
+            return
+        if (self._token is None or self._armed is not False or self._arm_uncertain
+                or now < self._parameter_read_at):
+            return
+        while self._parameter_reads:
+            key = self._parameter_reads.popleft()
+            if key in self._params:
+                continue  # a valid receipt, even a mismatch, is not missing
+            self._parameter_reads.append(key)
+            self._parameter_read_at = now + PARAMETER_READ_INTERVAL
+            status, detail = self._read_parameter(key, link, now)
+            if status != "accepted":
+                self._revoke(link, now, reason=detail or "Parameter read request not sent", phase="error")
+            return
+        self._clear_parameter_reads()
+
     def claim(self, link, now):
         if self._token is not None:
             raise RuntimeError("A browser already owns control")
@@ -287,6 +361,9 @@ class FlightControl:
         self._token = secrets.token_urlsafe(24)
         self._claimed_at = self._input_at = now
         self._seq = -1
+        self._last_manual_seq = -1
+        self._framing_intent = 0
+        self.framing.clear("New control lease; select a person")
         self._axes = dict.fromkeys(AXES, 0.)
         self._selected_mode = ALT_HOLD
         self._prepared_mode = None
@@ -296,14 +373,16 @@ class FlightControl:
         self._last_manual = self._last_gcs = None
         self._phase = "claimed"
         self._error = ""
-        for key in REQUIRED_PARAMETERS:
-            message = self._dialect().MAVLink_param_request_read_message(
-                self.system, self.component, key.encode("ascii"), -1)
-            status, detail = self._send(link, message, now)
+        self._clear_parameter_reads()
+        self._parameter_reads.extend(self._required_parameters)
+        self._parameter_read_at = now + PARAMETER_READ_INTERVAL
+        self._parameter_read_deadline = now + PARAMETER_READ_WINDOW
+        for _ in range(min(PARAMETER_INITIAL_BATCH, len(self._parameter_reads))):
+            key = self._parameter_reads.popleft()
+            self._parameter_reads.append(key)
+            status, detail = self._read_parameter(key, link, now)
             if status != "accepted":
-                self._token = None
-                self._phase = "error"
-                self._error = detail or "Parameter read request not sent"
+                self._revoke(link, now, reason=detail or "Parameter read request not sent", phase="error")
                 raise RuntimeError(self._error)
         # Ask for HEARTBEAT and EXTENDED_SYS_STATE at 5 Hz. Sim time may run below
         # wall time; this keeps the same strict receipt-age bounds. A stream ACK
@@ -313,9 +392,7 @@ class FlightControl:
                 self.system, self.component, 511, 0, float(message_id), 200000., 0., 0., 0., 0., 0.)
             status, detail = self._send(link, interval, now)
             if status != "accepted":
-                self._token = None
-                self._phase = "error"
-                self._error = detail or "Vehicle state request not sent"
+                self._revoke(link, now, reason=detail or "Vehicle state request not sent", phase="error")
                 raise RuntimeError(self._error)
         self.tick(link, now)
         return {"token": self._token, "control": self.state(now)}
@@ -349,10 +426,92 @@ class FlightControl:
             accepted_throttle = 0. if throttle is _MISSING else float(throttle)
             if self._armed is not True and accepted_throttle != 0:
                 raise RuntimeError("Zero throttle required until arming is confirmed")
+        if any(axes.values()) or accepted_throttle != 0:
+            self._last_manual_seq = seq
+            self.framing.stop("Manual input; framing stopped")
         self._seq = seq
         self._input_at = now
         self._axes = {key: float(axes[key]) for key in AXES}
         self._throttle = 0. if self._phase == "landing" else accepted_throttle
+        return self.state(now)
+
+    def _framing_vehicle_reason(self, now):
+        reason = self._unavailable(now)
+        if reason:
+            return reason
+        if self._token is None:
+            return "Take control before selecting or engaging framing"
+        if self._input_at is None or now - self._input_at >= INPUT_TIMEOUT:
+            return "Pilot input lease expired"
+        if self._selected_mode != ALT_HOLD or self._mode != ALT_HOLD:
+            return "Framing requires AltHold"
+        if self._armed is not True:
+            return "Take off manually before engaging framing"
+        if self._prepared_mode != ALT_HOLD or not self._profile()["ready"]:
+            return "Prepared AltHold and the digital GPS-free profile are required"
+        if self._phase in ("landing", "released", "expired", "error") or self._recovery_at is not None:
+            return "Flight control is handing over or recovering"
+        if self._pending():
+            return "Wait for the autopilot command to complete"
+        if (self._landed_state != 2 or self._landed_at is None
+                or now - self._landed_at > LANDED_MAX_AGE):
+            return "A recent IN_AIR report is required"
+        if any(self._axes.values()) or self._throttle != 0:
+            return "Release manual inputs before engaging framing"
+        return ""
+
+    def framing_request(self, values, *, link, now, selection_check):
+        self._owner(values.get("token"), link, now)
+        operation = values.get("operation")
+        extra = {"select": {"run_id", "video_id", "frame_sequence", "track_id"},
+                 "engage": {"revision", "input_seq"}, "stop": set(),
+                 "clear": set(), "closer": set(), "farther": set()}
+        if not isinstance(operation, str) or operation not in extra:
+            raise ValueError("Unknown framing operation")
+        if set(values) != {"token", "operation", "intent"} | extra[operation]:
+            raise ValueError("Invalid framing fields")
+        intent = values["intent"]
+        if not _integer(intent, minimum=1, maximum=2**53 - 1):
+            raise ValueError("A positive framing intent sequence is required")
+        if intent <= self._framing_intent:
+            raise RuntimeError("Framing request superseded by a newer operator intent")
+        # Even a refused newer operation invalidates an older delayed Engage.
+        self._framing_intent = intent
+        if not self.framing.enabled:
+            raise RuntimeError("Framing is not enabled for this simulation")
+        if operation == "stop":
+            self.framing.stop("Manual control; framing stopped")
+        elif operation == "clear":
+            if self.framing.phase == "takeover":
+                raise RuntimeError("Take over manually before clearing the target")
+            self.framing.clear("Select a person in the camera image")
+        elif operation == "select":
+            if self._phase == "landing":
+                raise RuntimeError("Target selection is unavailable during landing")
+            if not all(isinstance(values[key], str) and 1 <= len(values[key]) <= 128
+                       for key in ("run_id", "video_id")) or not all(
+                       _integer(values[key], minimum=1, maximum=2**53 - 1)
+                       for key in ("frame_sequence", "track_id")):
+                raise ValueError("A valid camera frame and person ID are required")
+            selection_check(values, now)
+            self.framing.select(values["track_id"], (values["run_id"], values["video_id"]), now)
+        elif operation == "engage":
+            if (not _integer(values["revision"], maximum=2**53 - 1)
+                    or not _integer(values["input_seq"], maximum=2**53 - 1)):
+                raise ValueError("Engage requires an observed revision and pilot input sequence")
+            if values["revision"] != self.framing.revision:
+                raise RuntimeError("Framing selection changed; inspect it before engaging")
+            if not self._last_manual_seq <= values["input_seq"] <= self._seq:
+                raise RuntimeError("A manual input superseded this Engage request")
+            reason = self._framing_vehicle_reason(now)
+            if reason:
+                raise RuntimeError(reason)
+            self.framing.engage(now)
+        else:
+            reason = self._framing_vehicle_reason(now)
+            if reason:
+                raise RuntimeError(reason)
+            self.framing.adjust(operation, now)
         return self.state(now)
 
     def _pending(self):
@@ -394,6 +553,7 @@ class FlightControl:
         if reason:
             raise RuntimeError(reason)
         if action == "land":
+            self.framing.clear("Landing requested")
             if self._phase == "landing":
                 raise RuntimeError("Landing has already been requested")
             self._axes = dict.fromkeys(AXES, 0.)
@@ -428,6 +588,7 @@ class FlightControl:
             if status != "accepted":
                 self._error = detail or "Neutral input not sent"
                 raise RuntimeError(self._error)
+            self.framing.stop("Manual takeoff; framing must be engaged in the air")
             self._phase = "prepared" if self._prepared_mode == self._selected_mode else "claimed"
         elif action == "disarm":
             if self._armed is False:
@@ -440,8 +601,10 @@ class FlightControl:
         return self.state(now)
 
     def _revoke(self, link, now, *, reason, phase):
+        self._clear_parameter_reads()
         if self._token is None:
             return
+        self.framing.clear(reason)
         handoff_started = self._phase == "landing"
         self._token = None
         self._axes = dict.fromkeys(AXES, 0.)
@@ -474,6 +637,11 @@ class FlightControl:
             elif self._armed is True and not self._profile()["ready"]:
                 self._revoke(link, now, reason="Simulation profile changed during flight control", phase="error")
 
+        if self._token is not None and self._phase != "landing":
+            self.framing.tick(now, self._framing_vehicle_reason(now))
+            if self.framing.takeover_due(now):
+                self._revoke(link, now, reason="Framing lost; no manual takeover within 2 seconds. Landing requested", phase="released")
+
     def tick(self, link, now):
         if not self.enabled or self._closed:
             return
@@ -496,6 +664,7 @@ class FlightControl:
             status, detail = self._manual(link, now)
             if status != "accepted":
                 self._revoke(link, now, reason=detail or "Manual input not sent", phase="error")
+        self._read_missing_parameter(link, now)
 
     def check_reconfigure(self):
         if self.enabled and (self._token is not None or self._armed is True or self._arm_uncertain):
@@ -511,10 +680,12 @@ class FlightControl:
         self._recovery_at = now
         self._heartbeat_at = self._simstate_at = self._landed_at = None
         self._identity_valid = False
-        self._landed = None
+        self._landed = self._landed_state = None
+        self.framing.clear("MAVLink source reopening")
         self._link_available = False
         self._claimed_at = None
         self._params = {}
+        self._clear_parameter_reads()
 
     def close(self, link, now):
         self._revoke(link, now, reason="Flight-control session stopped", phase="released")

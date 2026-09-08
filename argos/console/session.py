@@ -23,6 +23,7 @@ from .views import battery_view, mode_view, reception_view, safe_text
 class ConsoleSession:
     def __init__(self, config: ConsoleConfig, *, clock=None, link_factory=None, recorder=None):
         self.config = config
+        self.vision = None
         origin = time.monotonic()
         self.clock = clock or (lambda: time.monotonic() - origin)
         self.run_id = uuid4().hex
@@ -52,7 +53,7 @@ class ConsoleSession:
         self._reconnect_task = None
         self.incidents = ReceptionIncidents()
         self.messages = LiveMessages()
-        self.control = FlightControl(enabled=config.sim_control, system=config.system,
+        self.control = FlightControl(enabled=config.sim_control, framing_enabled=config.sim_framing, system=config.system,
                                      component=config.component)
 
     def _open_link(self):
@@ -223,9 +224,26 @@ class ConsoleSession:
         if not self.camera.worker_stopped:
             raise RuntimeError("The previous camera reader has not released the device yet")
 
+    def _observe_vision(self):
+        try:
+            candidate = self.vision.frame(self) if self.vision is not None else None
+            observation = None if candidate is None else {
+                "run_id": candidate.context[0], "video_id": candidate.context[1],
+                "sequence": candidate.sample.sequence, "received_at": candidate.sample.received_at,
+                "detections": candidate.result["detections"],
+            }
+        except Exception:
+            # Optional perception must not terminate the MAVLink/control task.
+            # Unavailable observations trigger the normal manual-takeover path.
+            observation = None
+        self.control.framing.observe(observation)
+
     def tick(self):
         if self._closed:
             return
+        if self.vision is not None:
+            self.vision.tick(self)
+        self._observe_vision()
         now = self.clock()
         if self.link is not None and not self._error:
             try:
@@ -333,6 +351,14 @@ class ConsoleSession:
             raise RuntimeError("An open simulation link is required")
         if not isinstance(values, dict):
             raise ValueError("This action requires a JSON object")
+        if operation == "framing":
+            self._observe_vision()
+            def check_selection(body, now):
+                if self.vision is None:
+                    raise RuntimeError("Vision unavailable")
+                self.vision.check_selection(self, body, now)
+            return {"control": self.control.framing_request(values, link=self.link,
+                    now=self.clock(), selection_check=check_selection)}
         expected = {"claim": set(), "input": {"token", "seq", "axes"},
                     "action": {"token", "action"}}[operation]
         optional = {"claim": set(), "input": {"throttle"}, "action": {"mode"}}[operation]

@@ -24,6 +24,9 @@
   let frame = null;
   let visionEnabled = false;
   let frameEpoch = 0;
+  let visionSelection = { allowed: false, target_id: null, active: false, paused: false };
+  let visionStateSignature = "";
+  const visionIdentities = new WeakMap();
   let stopped = false;
   let mutation = null;
   let stateEpoch = 0;
@@ -238,20 +241,53 @@
 
   function drawVision(result) {
     const layer = element("vision-layer");
-    layer.replaceChildren();
-    if (!result) return;
+    if (!result) { layer.replaceChildren(); return; }
+    const existing = new Map(Array.from(layer.children, box => [Number(box.dataset.trackId), box]));
     for (const detection of result.detections) {
       const [x, y, width, height] = detection.box;
-      const box = document.createElement("div"), label = document.createElement("span");
-      box.className = "vision-box";
-      box.setAttribute("role", "listitem");
-      box.dataset.trackId = String(detection.track_id);
+      let box = existing.get(detection.track_id);
+      existing.delete(detection.track_id);
+      if (!box) {
+        box = document.createElement("div");
+        const label = document.createElement("span"), hit = document.createElement("button");
+        box.className = "vision-box";
+        box.setAttribute("role", "listitem");
+        box.dataset.trackId = String(detection.track_id);
+        label.className = "vision-box-label";
+        hit.className = "vision-hit";
+        hit.type = "button";
+        hit.hidden = true;
+        box.append(label, hit); layer.append(box);
+        let pressedIdentity = null;
+        box.addEventListener("pointerdown", () => { pressedIdentity = visionIdentities.get(box); });
+        box.addEventListener("pointercancel", () => { pressedIdentity = null; });
+        box.addEventListener("click", event => {
+          if (box.dataset.selectable !== "true" || layer.hidden) return;
+          event.preventDefault();
+          const identity = event.detail === 0 ? visionIdentities.get(box) : pressedIdentity || visionIdentities.get(box);
+          pressedIdentity = null;
+          document.dispatchEvent(new CustomEvent("argos:select-person", { detail: { ...identity } }));
+        });
+      }
       Object.assign(box.style, { left: `${100 * x}%`, top: `${100 * y}%`, width: `${100 * width}%`, height: `${100 * height}%` });
-      label.className = "vision-box-label";
-      label.textContent = `Person #${detection.track_id} · ${Math.round(detection.confidence * 100)}%`;
-      box.append(label); layer.append(box);
+      box.firstElementChild.textContent = `Person #${detection.track_id} · ${Math.round(detection.confidence * 100)}%`;
+      box.lastElementChild.setAttribute("aria-label", `Select person #${detection.track_id} for framing`);
+      visionIdentities.set(box, { run_id: frame.run_id, video_id: frame.video_id, frame_sequence: frame.sequence, track_id: detection.track_id });
     }
+    for (const box of existing.values()) box.remove();
     layoutVision();
+  }
+
+  function renderVisionSelection() {
+    const visible = !element("vision-layer").hidden;
+    const allowed = visible && visionSelection.allowed && document.body.dataset.view === "control";
+    for (const box of element("vision-layer").children) {
+      const selected = Number(box.dataset.trackId) === visionSelection.target_id;
+      box.dataset.selectable = String(allowed);
+      box.dataset.selected = String(selected);
+      box.lastElementChild.hidden = !allowed;
+      box.lastElementChild.setAttribute("aria-pressed", String(selected));
+    }
   }
 
   function renderVision(fresh, now) {
@@ -262,11 +298,19 @@
       && frame?.vision && currentFrameAge(now) <= frameLimit();
     element("vision-layer").hidden = !visible;
     if (visible) layoutVision();
+    renderVisionSelection();
+    const visionState = { enabled: visionEnabled, recent: Boolean(visible), run_id: current?.run_id ?? null, video_id: current?.video.source_id ?? null };
+    const signature = JSON.stringify(visionState);
+    if (signature !== visionStateSignature) {
+      visionStateSignature = signature;
+      document.dispatchEvent(new CustomEvent("argos:vision-state", { detail: visionState }));
+    }
     let detail = !view?.configured ? "Person detection is not configured" : "Person detection off";
     if (visionEnabled) {
       const state = !fresh ? "Service unavailable" : !view ? "Invalid vision status" : view.state === "recent" && !visionRecent(now) ? "Stale result" : view.state;
       detail = visible ? `${frame.vision.detections.length} ${frame.vision.detections.length === 1 ? "person" : "people"} · ${ageText(currentFrameAge(now))} · ${numeric(frame.vision.inference_ms, " ms")}` : imageFailure || view?.detail || (state === "recent" ? "Waiting for an analyzed image" : state);
-      detail = `Visual tracking only · ${detail}`;
+      const assistance = visionSelection.active && document.body.dataset.view === "control";
+      detail = `${assistance ? visionSelection.paused ? "Framing paused" : "Framing assistance active" : "Visual tracking only"} · ${detail}`;
     }
     text("vision-status", detail);
   }
@@ -405,7 +449,8 @@
           if (requestedEpoch !== frameEpoch || !serviceFresh() || current.run_id !== requestedRun || current.video.source_id !== requestedVideo || (requestedVision && !visionRecent())) continue;
           const now = performance.now();
           const previousUrl = frame?.url;
-          frame = { sequence, receivedAt, observedAt: now, initialAge: Math.max(0, runTime(now) - receivedAt), url: candidateUrl, vision: result };
+          frame = { sequence, receivedAt, observedAt: now, initialAge: Math.max(0, runTime(now) - receivedAt), url: candidateUrl, vision: result,
+            run_id: requestedRun, video_id: requestedVideo };
           // The decoded image and its own result enter the DOM in one turn.
           // Never overlay detections on a newer independently fetched raw JPEG.
           decoded.id = "camera-image";
@@ -1011,6 +1056,10 @@
     clearFrame();
     imageFailure = "";
     render();
+  });
+  document.addEventListener("argos:framing-ui", event => {
+    visionSelection = event.detail || { allowed: false, target_id: null, active: false, paused: false };
+    renderVisionSelection();
   });
   new ResizeObserver(layoutVision).observe(element("camera-stage"));
   if (!document.fullscreenEnabled) element("fullscreen-button").hidden = true;

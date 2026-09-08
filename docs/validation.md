@@ -218,3 +218,72 @@ hold or metric range. The animated actor does not physically react to the drone.
 Existing journals remain received-MAVLink captures; video and detections are not
 recorded or replayed. The eight existing journals were byte-identical after the
 trial and deployment.
+
+## Experimental visual framing — September 8, 2026
+
+The opt-in [framing controller](framing.md) connects an explicitly selected
+camera detection to bounded AltHold pilot inputs in the isolated GPS-free
+Gazebo/SITL session. The detector, confidence thresholds, actor dimensions and
+camera optics are unchanged from the vision milestone. No target coordinates,
+depth, known body size or simulated position enter the framing law.
+
+- **1,472 Python tests passed** on the supported Ubuntu/Python 3.12 environment.
+  They cover image-only guidance, independent output bounds, ownership and
+  delayed-intent fencing, manual priority, pause/takeover deadlines, perception
+  failure isolation, parameter mapping and paced parameter discovery, alongside
+  the complete existing suite. Two existing Starlette deprecation warnings remain.
+- **89 browser tests passed** using local Chrome on macOS with one worker,
+  including exact displayed-frame selection, touch/focus preservation, delayed
+  Engage/Manual requests and explicit pause/resume. Desktop, tablet and phone
+  layouts were inspected; these are browser emulations, not tablet hardware trials.
+- The rebuilt wheel passed isolated installation, CLI, packaged framing assets,
+  disabled-by-default state and dependency checks.
+- All **45 required parameters** were received and matched before flight.
+  The first attempted startup exposed ArduPilot's bounded parameter-response
+  queue: only 20 of the original 45 simultaneous requests received replies.
+  Keeping a small initial batch and pacing remaining/missing reads resolved this
+  without changing values or bypassing the arming gate.
+- An actual HTTP-controlled flight completed manual takeoff and **55.21 seconds
+  of framing engagement**, including three observed neutral-pause episodes. The
+  25-second initial stage and 20-second Closer stage completed. Farther ran about
+  9.93 seconds before an unusable selected-target observation outlasted the pause
+  and latched takeover. The script then explicitly requested Land; reported
+  landing and disarming completed. The planned 65-second uninterrupted trial
+  did **not** pass.
+- During that flight, median absolute horizontal centering error was about
+  5.3%, 5.2% and 2.2% of image width in the three stages. Vertical medians were
+  about 1.2%, 2.1% and 1.2% of image height. Reported estimator altitude stayed
+  between 1.02 and 1.07 m, peak pitch was 2.084 degrees and reported horizontal
+  speed reached 1.273 m/s. These are sampled camera/telemetry results, not an
+  independent ground-clearance measurement or guaranteed performance bounds.
+- **Apparent-size regulation did not settle reliably.** Median height/reference
+  ratios were 0.932, 0.959 and 0.734; the Closer stage's 5th–95th percentile range
+  was 0.686–1.324. These results establish an adjustable experimental objective,
+  not accurate distance keeping. The actor keeps walking during each stage.
+- A separate real-browser flight used held Climb, clicked Person #4, engaged
+  through the actual API and observed **8.16 seconds** of assistance before
+  Manual, Land and confirmed disarming/release. Engagement's `input_seq=92`
+  was acknowledged after the last nonzero manual input at sequence 77. There
+  were no mocked flight responses. Current box height changed from 13.1% to
+  16.0% against its 13.1% reference, again showing range-regulation limitations.
+- In a separate airborne fault trial, terminating the inference worker just
+  after confirmed engagement produced neutral takeover outputs. Continued
+  neutral browser traffic did not acknowledge the loss: authority was revoked
+  approximately **1.96 seconds after the first sampled takeover state**, then
+  Land and disarming were observed without an operator Land request.
+
+Earlier trials stopped on brief confidence/detection gaps or a changed track ID.
+A dedicated camera capture contained 291 unique frames, with the same track ID
+on all 289 detected frames. Both isolated missing-frame JPEGs visibly contained
+an unobstructed person. This justified the explicit 350 ms **neutral-output**
+pause: fresh same-ID recovery can continue engagement, with command/derivative
+history reset. No old box, predicted detection or lower threshold fills the gap.
+A changed ID, stale image or other invalid observation still latches takeover;
+a good frame arriving after the pause deadline cannot restore assistance.
+
+Centering is usable in the tested scene, while size regulation and perception
+continuity need further work before a dependable following demonstration.
+These trials do not validate outdoor following, physical flight, radio/HITL,
+VIO, horizontal position hold, obstacle clearance or metric range. Received
+MAVLink remains the journal format; visual commands and image history are not
+replayed in Sessions. Existing user recordings were preserved.

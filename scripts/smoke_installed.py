@@ -31,7 +31,7 @@ def main():
                 if response.status_code != 200 or not response.content:
                     raise RuntimeError(f"unavailable packaged resource: {path}")
                 if path == "/":
-                    for element in ("control-mode-select", "control-throttle", "control-throttle-value", "vision-toggle", "vision-layer"):
+                    for element in ("control-mode-select", "control-throttle", "control-throttle-value", "vision-toggle", "vision-layer", "framing-controls"):
                         if f'id="{element}"' not in response.text:
                             raise RuntimeError(f"missing packaged flight control: {element}")
             state = client.get("/api/state").json()
@@ -45,6 +45,8 @@ def main():
                 raise RuntimeError("default console retained a prepared flight mode or manual throttle")
             if state["vision"]["configured"] or state["vision"]["state"] != "disabled":
                 raise RuntimeError("default console enabled perception without a model")
+            if state["control"]["framing"]["enabled"] or state["control"]["framing"]["phase"] != "disabled":
+                raise RuntimeError("default console enabled image framing without opt-in")
             if client.get("/api/vision/frame.jpg").status_code != 503:
                 raise RuntimeError("unconfigured vision returned an image")
             if client.get("/api/frame.jpg").status_code != 503:

@@ -299,6 +299,23 @@
           <button class="button button-outline" data-control-action="land" disabled="" type="button">Land</button>
         </div>
         <p class="control-feedback" id="control-feedback" role="status">Connecting to simulation…</p>
+        <section aria-labelledby="framing-title" class="framing-controls" hidden id="framing-controls">
+          <div class="framing-heading">
+            <h3 id="framing-title">Visual framing <span id="framing-target">No target</span></h3>
+            <button aria-label="Clear selected person" class="button button-quiet" data-framing-operation="clear" disabled type="button">Clear</button>
+          </div>
+          <p class="framing-status" id="framing-status" role="status">Enable person detection, then select a person in the image.</p>
+          <div aria-label="Visual framing assistance" class="framing-actions" role="group">
+            <button class="button button-outline" data-framing-operation="engage" disabled type="button">Engage framing</button>
+            <button class="button button-outline" data-framing-operation="stop" disabled type="button">Manual</button>
+            <button class="button button-outline" data-framing-operation="farther" disabled type="button">Farther</button>
+            <button class="button button-outline" data-framing-operation="closer" disabled type="button">Closer</button>
+          </div>
+          <dl class="framing-metrics" aria-label="Image framing measurements">
+            <div><dt>Center error X / Y</dt><dd id="framing-error">— / —</dd></div>
+            <div><dt>Image height / reference</dt><dd id="framing-height">— / —</dd></div>
+          </dl>
+        </section>
         <div class="control-inputs" aria-describedby="control-hold-note control-neutral-note">
           <div class="control-pad-group">
             <h3>Tilt</h3>

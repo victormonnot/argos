@@ -75,6 +75,8 @@ def main():
     parser.add_argument("--mavlink-port", type=int, default=5860)
     parser.add_argument("--physics-port", type=int, default=9004)
     parser.add_argument("--gui", action="store_true")
+    parser.add_argument("--framing", action="store_true",
+                        help="enable opt-in visual framing for the fixed-camera person scene")
     parser.add_argument("--scene", choices=("runway", "person"), default="runway",
                         help="optional walking person in the onboard camera's view")
     parser.add_argument("--person-assets", type=Path, default=default_assets_dir(),
@@ -82,6 +84,8 @@ def main():
     parser.add_argument("--vision-model", type=Path,
                         help="local detector model forwarded to the ARGOS console")
     args = parser.parse_args()
+    if args.framing and (args.scene != "person" or args.vision_model is None):
+        parser.error("--framing requires --scene person and --vision-model")
     for port in (args.port, args.mavlink_port, args.physics_port):
         if not 1024 <= port <= 65535:
             parser.error("ports must be between 1024 and 65535")
@@ -190,6 +194,8 @@ def main():
                           "--mavlink-tcp", f"127.0.0.1:{args.mavlink_port}",
                           "--sequence-scope", "channel", "--heartbeat-age", "2.5",
                           "--port", str(args.port)]
+        if args.framing:
+            console_command += ["--sim-framing"]
         if args.vision_model is not None:
             console_command += ["--vision-model", str(args.vision_model)]
         start("console", console_command, repo)

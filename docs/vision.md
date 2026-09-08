@@ -5,9 +5,10 @@ The optional **Person detection** switch displays bounding boxes, confidence and
 short-lived track IDs. Each overlay accompanies the exact image analyzed by the
 model. Turning the switch off restores the normal camera stream.
 
-This milestone supplies visual observations only. It does not select a flight
-target, center the camera automatically, follow a person, hold position or
-estimate distance in metres. Track IDs associate nearby overlapping detections;
+Detection alone supplies visual observations. The separately enabled
+[visual framing controller](framing.md) can use an explicitly selected detection
+for centering and apparent-size assistance in AltHold. Neither feature holds
+position or estimates distance in metres. Track IDs associate nearby overlapping detections;
 they do not identify a person or provide appearance-based re-identification.
 After occlusion, fast motion or a scene/source change, an ID may change. Similar
 people crossing may exchange IDs. Missing detections produce no predicted boxes.
@@ -94,8 +95,8 @@ The model can miss people or detect unrelated shapes, particularly on synthetic
 images, small subjects, unusual poses, occlusion or fast camera motion. This is
 a perception baseline with visible failures, not evidence of reliable outdoor
 following. No marker, downward optical flow, known body height or hidden target
-coordinates corrects the model's output. Relative apparent size can support a
-later framing objective; it is not a metric range measurement.
+coordinates corrects the model's output. Relative apparent size supplies the
+optional framing objective; it is not a metric range measurement.
 
 Journals continue to store received MAVLink only. Images, detections and track
 IDs are live and are not replayed from Sessions. See [validation](validation.md)

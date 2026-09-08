@@ -2,7 +2,8 @@
 
 ARGOS integrates a local observation console: camera reception, MAVLink
 inspection, recording and historical analysis, plus opt-in manual simulation
-control and optional image-based person detection. The default console remains passive. This document explains how those
+control, optional image-based person detection and explicit visual framing in
+AltHold. The default console remains passive. This document explains how those
 parts fit together and the boundaries of the implementation. For setup and
 operator workflows, use the [console guide](console.md) and
 [web-control guide](web-control.md); for wire and file
@@ -37,7 +38,8 @@ flowchart LR
         recorder["ConsoleRecorder: active capture"]
         archive["RecordingArchive: verify, replay and analyze"]
         api["FastAPI: JSON, JPEG and web assets"]
-        pilot["FlightControl: opt-in simulation lease and pilot inputs"]
+        pilot["FlightControl: simulation lease, manual priority and sends"]
+        framing["FramingControl and image-only FramingLaw"]
     end
     camera --> video
     peer --> link
@@ -48,6 +50,8 @@ flowchart LR
     video --> api
     video -->|"one camera JPEG at a time"| vision
     vision -->|"boxes paired with original JPEG"| api
+    vision -->|"fresh boxes and image identity"| framing
+    framing -->|"explicitly engaged derived axes"| pilot
     state --> api
     archive --> api
     api --> browser
@@ -77,7 +81,8 @@ assembles the application and ties resource startup and cleanup to its lifespan.
 | MAVLink polling, measurement admission, live histories and capture writes | `ConsoleSession.tick()`, called by one asyncio task in the server event loop. |
 | Optional manual control | `FlightControl` receives selected vehicle reports; the same session tick checks lease expiry and transmits current pilot inputs. HTTP mutations run on that event loop. |
 | Gazebo images | Subscription callbacks publish into the thread-safe `VideoStore`. |
-| Optional person detection | App-owned `VisionService` submits bounded work to a spawned OpenCV process. Results and short-lived image-space associations are consumed without waiting on inference. |
+| Optional person detection | App-owned `VisionService`, serviced by `ConsoleSession.tick()`, submits bounded work to a spawned OpenCV process. Results and short-lived image-space associations are consumed without waiting on inference. |
+| Optional visual framing | `FramingControl` owns target selection, freshness and takeover; `FramingLaw` updates derived axes on distinct analyzed images. `FlightControl` retains authority and the MAVLink send boundary. |
 | V4L2 images | One worker thread owns the device reader and publishes into `VideoStore`. |
 | Recording verification, indexing, replay and analysis | Archive calls run through `asyncio.to_thread`; a lock protects the shared archive cache. |
 | Receiver reopening | Blocking replacement work runs in a thread; the session retains ownership until replacement or cleanup finishes. |
@@ -93,6 +98,18 @@ that mode while disarmed with a fresh landed report and neutral input. Arming
 requires observed preparation, the checked profile and zero manual throttle.
 AltHold maps vertical input to climb/descent; Stabilize maps explicit throttle
 to pilot gas and retains it when a direction is released. Neither holds position.
+
+With `--sim-framing`, explicit airborne AltHold engagement uses server-owned
+detection boxes to center a person and regulate apparent height. Manual input
+stops assistance. Neutral browser keepalives preserve authority but do not
+overwrite derived axes or acknowledge target loss. An isolated missing or
+low-confidence detection zeros corrections and permits same-ID recovery within
+an absolute 350 ms pause. Expiry or other invalid observations latch a two-second
+takeover deadline; no manual acknowledgement invokes the existing
+landing/revocation path. Image-provider
+failures cannot terminate manual/control servicing. The
+[framing guide](framing.md) details intent/revision ordering, profile checks and
+the absence of position, depth or metric range in the controller.
 
 The browser sends current axes and throttle at 10 Hz with one input request in flight; the
 service sends MANUAL_CONTROL at most every 50 ms while its lease is active and
@@ -297,12 +314,12 @@ The repository also contains contracts and experiments outside the live console:
 | --- | --- |
 | [core](../argos/core/) | Typed observation, command, `World` and `Truth` contracts for experiments. |
 | [perception](../argos/perception/) | Optional live `yolox.py` and `image_tracks.py` feed the console overlay. Earlier generic frame/detector/tracking experiments remain separately tested, without live guidance integration. |
-| [guidance](../argos/guidance/), [safety](../argos/safety/) | Experimental policies and contract tests, with no connection to the console's live receivers or vehicle command path. |
+| [guidance](../argos/guidance/), [safety](../argos/safety/) | `guidance/image_framing.py` supplies the explicit simulation framing path. Earlier policies and safety contracts remain separate experiments. |
 | [attitude_sim.py](../argos/backends/attitude_sim.py) | Simulated backend used to exercise those contracts. |
 | [harness](../argos/harness/) | Instrumentation: link statistics reused by live MAVLink, plus offline plotting and development utilities. |
 
 The MAVLink transport is not an implementation of `World`. The console does not
-run an autonomy loop, and the presence of a `safety` package does not make it a
+run a general navigation loop, and the presence of a `safety` package does not make it a
 vehicle safety controller. Experimental `World.time()` belongs to its backend;
 the live console clock is not a shared clock for every package or machine.
 
@@ -329,5 +346,7 @@ SITL/Gazebo checks and the hardware scenarios still unverified. Use the
 [SITL guide](sitl-observation.md) to reproduce the integrated simulation.
 
 The optional [vision guide](vision.md) specifies model provenance, bounded
-processing, source fencing and paired-image expiry. Vision has no path to
-`FlightControl` or vehicle commands. Journals still record received MAVLink only.
+processing, source fencing and paired-image expiry. Only separately enabled
+[visual framing](framing.md) and an explicit operator engagement connect these
+observations to derived inputs at `FlightControl`. Journals still record received
+MAVLink only.

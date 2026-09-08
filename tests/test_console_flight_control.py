@@ -46,9 +46,10 @@ def simstate(control, now=0., **source):
 
 
 def profile(control, now=0., **overrides):
-    for key, required in REQUIRED_PARAMETERS.items():
+    required_parameters = control.state(now)["profile"]["required"]
+    for key, required in required_parameters.items():
         control.append(event(mav.MAVLink_param_value_message(
-            key.encode(), overrides.get(key, required), 9, len(REQUIRED_PARAMETERS), 0),
+            key.encode(), overrides.get(key, required), 9, len(required_parameters), 0),
             now), now=now)
 
 
