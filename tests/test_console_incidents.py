@@ -2,11 +2,11 @@ from argos.console.incidents import ReceptionIncidents, LABELS
 
 
 def video(state="recent"):
-    return {"state": state, "detail": "Caméra de test"}
+    return {"state": state, "detail": "Camera de test"}
 
 
 def telemetry(state="receiving", **states):
-    return {"state": state, "detail": "Composant sélectionné", **{
+    return {"state": state, "detail": "Component sélectionné", **{
         name: {"state": states.get(name, "recent"),
                "fields": None if states.get(name) == "absent" else {}}
         for name in LABELS}}
@@ -45,12 +45,12 @@ def test_partial_loss_keeps_same_incident_when_transport_breaks():
     incidents.update(1., video(), telemetry(attitude="stale"))
     incidents.update(2., video(), telemetry(attitude="stale"))
     issue, = incidents.snapshot()["active"]
-    assert issue["title"] == "Télémétrie partielle"
+    assert issue["title"] == "Partial telemetry"
     assert issue["affected"] == ["attitude"]
     assert incidents.update(3., video(), telemetry("error")) == []
     changed, = incidents.snapshot()["active"]
     assert changed["id"] == issue["id"]
-    assert changed["title"] == "Réception MAVLink interrompue"
+    assert changed["title"] == "MAVLink reception interrupted"
 
 
 def test_never_received_optional_measure_does_not_generate_incident():

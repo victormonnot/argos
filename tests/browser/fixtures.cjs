@@ -13,16 +13,16 @@ function state(at, model) {
       mavlink_bind: null, mavlink_peer: null, mavlink_tcp: '127.0.0.1:5760', mavlink_device: null,
       baudrate: 115200, sequence_scope: 'channel', system: 1, component: 1 },
     recording: structuredClone(model.recording),
-    video: { source: 'none', source_id: 'video-1', state: 'unconfigured', label: 'Aucune caméra', detail: '', endpoint: null,
+    video: { source: 'none', source_id: 'video-1', state: 'unconfigured', label: 'No camera', detail: '', endpoint: null,
       sequence: 0, received_at: null, rx_age_s: null, age_limit_s: 1, width: null, height: null, rejected: 0, last_rejection: '' },
     reconnecting: null, reception: { active: [], last_recovery: null }, events: [],
-    telemetry: { state: 'receiving', detail: 'Réceptions du composant sélectionné', endpoint: 'TCP 127.0.0.1:5760',
+    telemetry: { state: 'receiving', detail: 'Receptions from the selected component', endpoint: 'TCP 127.0.0.1:5760',
       connection_id: model.connection, system: 1, component: 1, rx_messages: 60, rx_bytes: 1800, bad_bytes: 0,
       accepted: 30, ignored_source: 0, ignored_type: 30, rejected: 0, last_rejection: '',
       mode: { state: 'recent', rx_age_s: .01, age_limit_s: 2.5, label: 'STABILIZE', known: true, custom_mode: 0 },
       heartbeat, attitude: absent(), local_position_ned: absent(),
       battery: { ...absent(), voltage_v: null, current_a: null, remaining_percent: null },
-      autopilot_status: { declaration: { state: 'recent', system_status: 4, name: 'MAV_STATE_ACTIVE', label: 'Actif', known: true,
+      autopilot_status: { declaration: { state: 'recent', system_status: 4, name: 'MAV_STATE_ACTIVE', label: 'Active', known: true,
         received_at: at - .01, rx_age_s: .01, age_limit_s: 2.5 },
         texts: { system: 1, component: 1, connection_id: model.connection, entries: structuredClone(model.texts),
           max_entries: 60, evicted_entries: 0, pending: 0, max_pending: 8, max_chunks: 32, chunk_timeout_s: 2,
@@ -60,7 +60,7 @@ function analysis(query) {
 }
 function statusText(overrides = {}) {
   return { id: 1, system: 1, component: 1, connection_id: 'connection-1', status_id: 0, severity: 4,
-    severity_name: 'MAV_SEVERITY_WARNING', severity_label: 'Avertissement', text: 'Précontrôle déclaré', complete: true,
+    severity_name: 'MAV_SEVERITY_WARNING', severity_label: 'Warning', text: 'Pre-arm report', complete: true,
     reason: null, utf8_valid: true, first_received_at: 90, received_at: 90, rx_age_s: 10, chunks: 1, ...overrides };
 }
 const test = base.extend({
@@ -117,7 +117,7 @@ const test = base.extend({
 });
 async function open(page) {
   await page.goto('/');
-  await expect(page.locator('#service-status')).toHaveText('Service connecté');
+  await expect(page.locator('#service-status')).toHaveText('Service connected');
 }
 async function openArchive(page) {
   await page.locator('#view-sessions').click();

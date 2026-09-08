@@ -5,8 +5,8 @@ are debounced, so a brief scheduling gap does not produce a stream of alerts.
 An incident survives a receiver reopen until actual receipts resume.
 """
 
-LABELS = {"heartbeat": "mode", "battery": "batterie", "attitude": "attitude",
-          "local_position_ned": "position locale"}
+LABELS = {"heartbeat": "mode", "battery": "battery", "attitude": "attitude",
+          "local_position_ned": "local position"}
 
 
 class ReceptionIncidents:
@@ -25,21 +25,21 @@ class ReceptionIncidents:
         if source == "video":
             if state == "recent":
                 return None
-            title = {"error": "Caméra indisponible", "waiting": "Image attendue",
-                     "stale": "Images interrompues", "reconnecting": "Réouverture caméra"}[state]
+            title = {"error": "Camera unavailable", "waiting": "Waiting for image",
+                     "stale": "Images interrupted", "reconnecting": "Reopening camera"}[state]
             return title, data["detail"], ["video"], state
         self._seen.update(name for name in LABELS if data[name]["fields"] is not None)
         if state == "error":
-            return "Réception MAVLink interrompue", data["detail"], list(LABELS), state
+            return "MAVLink reception interrupted", data["detail"], list(LABELS), state
         if state == "reconnecting":
-            return "Réouverture MAVLink", data["detail"], list(self._seen), state
+            return "Reopening MAVLink", data["detail"], list(self._seen), state
         missing = [name for name in LABELS if name in self._seen and data[name]["state"] != "recent"]
         if missing:
-            title = "Télémétrie périmée" if not any(data[name]["state"] == "recent" for name in LABELS) else "Télémétrie partielle"
-            detail = "Sans réception valide récente : " + ", ".join(LABELS[name] for name in missing) + "."
+            title = "Stale telemetry" if not any(data[name]["state"] == "recent" for name in LABELS) else "Partial telemetry"
+            detail = "No recent valid reception: " + ", ".join(LABELS[name] for name in missing) + "."
             return title, detail, missing, "stale"
         if state == "waiting":
-            return "Télémétrie attendue", data["detail"], [], state
+            return "Waiting for telemetry", data["detail"], [], state
         return None
 
     def update(self, now, video, telemetry):
@@ -56,8 +56,8 @@ class ReceptionIncidents:
                 if now - since >= 1.:
                     duration = max(0., since - active["since"])
                     self._last_recovery = {"source": source, "at": now, "duration_s": duration}
-                    label = "Images reçues à nouveau" if source == "video" else "Réceptions MAVLink rétablies"
-                    events.append({"at": now, "level": "info", "message": f"{label} · interruption observée {duration:.1f} s"})
+                    label = "Images receiving again" if source == "video" else "MAVLink reception restored"
+                    events.append({"at": now, "level": "info", "message": f"{label} · observed interruption {duration:.1f} s"})
                     del self._active[source]
                     self._recovering.pop(source, None)
                 continue

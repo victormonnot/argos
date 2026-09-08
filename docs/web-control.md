@@ -1,6 +1,6 @@
 # Manual web flight in Gazebo/SITL
 
-**Pilotage** lets an operator fly the simulated drone with held mouse or touch
+**Flight controls** lets an operator fly the simulated drone with held mouse or touch
 buttons and optional keyboard shortcuts. The camera and current vehicle state
 remain visible. ArduPilot stabilizes attitude in both supported modes; AltHold
 also regulates altitude, while Stabilize uses manual throttle. The browser
@@ -58,28 +58,28 @@ QGroundControl or MAVProxy as a second client on that port.
 
 ## Fly from the interface
 
-If a MAVLink recording is wanted, start it in **Journal MAVLink** before entering
-Pilotage. The capture continues while flying.
+If a MAVLink recording is wanted, start it in **MAVLink recording** before entering
+Flight controls. The capture continues while flying.
 
-1. Open **Pilotage**, next to Observation. Wait for the simulation and its
+1. Open **Flight controls**, next to Observation. Wait for the simulation and its
    disarmed vehicle state to become available.
-2. Select **Prendre les commandes** (take control). One browser can own the
+2. Select **Take control**. One browser can own the
    controls at a time. Taking control starts neutral pilot inputs and checks the
    required simulation parameters; it does not arm or take off.
 3. Wait for a fresh landed report, choose **AltHold** or **Stabilize** while
-   disarmed, then select **Préparer** and wait for confirmation of that mode. Mode
+   disarmed, then select **Prepare** and wait for confirmation of that mode. Mode
    selection is locked while armed; in-flight transitions are not implemented.
-4. Select **Armer** with neutral axes and zero manual throttle. A new control
+4. Select **Arm** with neutral axes and zero manual throttle. A new control
    lease always requires explicit preparation, even if the vehicle already
    reports the chosen mode. Normal ArduPilot arming checks remain enabled.
-5. In **AltHold**, hold **Monter** to take off. In **Stabilize**, increase the
-   **Gaz maintenus** control progressively using its slider or +/− buttons. It
+5. In **AltHold**, hold **Climb** to take off. In **Stabilize**, increase the
+   **Held throttle** control progressively using its slider or +/− buttons. It
    starts at **0%** on arming: arming never applies an implicit 50% throttle.
 6. Hold the direction or yaw buttons to maneuver. Multiple fingers can combine
    inputs. In Stabilize, releasing a direction preserves the chosen throttle
    while control remains active; it does not automatically hold altitude.
-7. Select **Atterrir** to request ArduPilot's Land mode. After landing,
-   **Désarmer au sol** requires a fresh landed report. **Libérer** gives up the
+7. Select **Land** to request ArduPilot's Land mode. After landing,
+   **Disarm on ground** requires a fresh landed report. **Release** gives up the
    controls and requests landing when armed. A new lease starts with zero
    manual throttle; old throttle values are not restored.
 
@@ -95,15 +95,15 @@ Stabilize's climb speed. Both modes remain GPS-free and can drift horizontally.
 
 | Control | Optional keyboard shortcut | Input |
 | --- | --- | --- |
-| Avant / Arrière | Up / Down arrow | Forward / backward inclination |
-| Gauche / Droite | Left / Right arrow | Left / right inclination |
-| Monter / Descendre (AltHold) | R / F | Climb / descend while held |
-| Gaz maintenus (Stabilize) | R / F | Increase / decrease the displayed pilot throttle by 2 percentage points per press |
-| Rotation G / Rotation D | Q / E | Left / right yaw |
+| Forward / Backward | Up / Down arrow | Forward / backward inclination |
+| Left / Right | Left / Right arrow | Left / right inclination |
+| Climb / Descend (AltHold) | R / F | Climb / descend while held |
+| Held throttle (Stabilize) | R / F | Increase / decrease the displayed pilot throttle by 2 percentage points per press |
+| Yaw L / Yaw R | Q / E | Left / right yaw |
 
 Inputs follow the vehicle's axes. Letter shortcuts use the labeled key on the
 active keyboard layout. They are ignored when editing a field, using
-Ctrl/Meta/Alt modifiers or outside Pilotage. The range control also supports its
+Ctrl/Meta/Alt modifiers or outside Flight controls. The range control also supports its
 native keyboard interaction. Pointer capture supports releasing direction
 buttons outside their bounds; cancellation clears the affected held direction.
 The throttle slider sets a value rather than a held climb command.
@@ -115,10 +115,10 @@ altitude; it does not observe or hold horizontal position.
 
 ## What happens when control is lost
 
-Leaving Pilotage, moving to another window, hiding or closing the tab, changing
+Leaving Flight controls, moving to another window, hiding or closing the tab, changing
 the source, or losing current service state clears the held inputs and releases
 the browser's control token. Opening Sources or another workspace also leaves
-Pilotage. Returning does not resume old inputs or silently retake control.
+Flight controls. Returning does not resume old inputs or silently retake control.
 
 The browser sends the latest axes and manual throttle every 100 ms with one input request in
 flight. Changes are coalesced instead of queuing old movements. The service
@@ -138,7 +138,7 @@ This does not change the service's 0.65-second browser lease.
 These mechanisms request a descent; they are not horizontal braking, obstacle
 avoidance or a guarantee that any arbitrary scene permits a landing.
 
-An explicit **Atterrir** request suppresses subsequent manual flight inputs and
+An explicit **Land** request suppresses subsequent manual flight inputs and
 GCS heartbeat while the browser continues renewing its lease. This leaves the
 GCS fallback available even if that Land command is refused or never confirmed.
 Only a new explicit ground preparation resumes pilot transmissions. Mode change, local transmission,

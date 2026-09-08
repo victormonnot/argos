@@ -154,13 +154,13 @@ def test_claim_only_requests_parameters_and_stream_then_low_throttle_and_gcs_hea
 
 def test_claim_is_exclusive_and_failed_param_request_does_not_create_owner():
     control, link, token = claimed()
-    with pytest.raises(RuntimeError, match="détenu"):
+    with pytest.raises(RuntimeError, match="owns control"):
         control.claim(link, .1)
     with pytest.raises(RuntimeError):
         control.input("other", 0, ZERO, link=link, now=.1)
     control.action(token, "release", link=link, now=.1)
     link.status = SendStatus.BLOCKED
-    with pytest.raises(RuntimeError, match="paramètres"):
+    with pytest.raises(RuntimeError, match="Parameter"):
         control.claim(link, .2)
     assert control.state(.2)["owned"] is False
 
@@ -175,7 +175,7 @@ def test_claim_is_exclusive_and_failed_param_request_does_not_create_owner():
 def test_arming_refuses_mismatched_profile_without_modifying_parameters(parameters):
     control, link, token = claimed()
     profile(control, .01, **parameters)
-    with pytest.raises(RuntimeError, match="Profil"):
+    with pytest.raises(RuntimeError, match="profile"):
         control.action(token, "arm", link=link, now=.02)
     assert all(msg.command != ARM_DISARM for msg in link.messages("COMMAND_LONG"))
     assert not link.messages("PARAM_SET")
@@ -187,7 +187,7 @@ def test_arming_requires_new_parameter_receipts_for_this_claim_and_observed_alt_
     simstate(control)
     profile(control)  # unsolicited parameters before claim do not fulfill its request
     token = control.claim(link, 0.)["token"]
-    with pytest.raises(RuntimeError, match="Profil"):
+    with pytest.raises(RuntimeError, match="profile"):
         control.action(token, "arm", link=link, now=.01)
     profile(control, .02)
     with pytest.raises(RuntimeError, match="AltHold"):
@@ -209,7 +209,7 @@ def test_arming_requires_new_parameter_receipts_for_this_claim_and_observed_alt_
 def test_prepare_and_arm_require_released_controls(action):
     control, link, token = claimed()
     control.input(token, 0, {**ZERO, "forward": .2}, link=link, now=.1)
-    with pytest.raises(RuntimeError, match="Relâchez"):
+    with pytest.raises(RuntimeError, match="Release"):
         control.action(token, action, link=link, now=.1)
 
 
@@ -229,7 +229,7 @@ def test_send_ack_and_observed_state_are_distinct_without_duplicate_arm():
     observed = control.state(.05)["command"]
     assert observed["state"] == "observed" and observed["observed"]
     assert observed["ack"] == 0 and observed["observed_at"] == .05
-    with pytest.raises(RuntimeError, match="Désarmement"):
+    with pytest.raises(RuntimeError, match="(?i)disarming"):
         control.action(token, "arm", link=link, now=.06)
     assert sum(msg.command == ARM_DISARM for msg in link.messages("COMMAND_LONG")) == 1
 
@@ -239,7 +239,7 @@ def test_denied_arming_and_missing_confirmation_are_explicit_and_never_retried()
     control.action(token, "arm", link=link, now=.01)
     ack(control, ARM_DISARM, 2, .02)
     assert control.state(.02)["command"]["state"] == "denied"
-    assert "refusée" in control.state(.02)["last_error"]
+    assert "rejected" in control.state(.02)["last_error"]
     control.action(token, "arm", link=link, now=.03)  # new explicit operator attempt
     for i in range(1, 46):
         now = i * .1
@@ -249,7 +249,7 @@ def test_denied_arming_and_missing_confirmation_are_explicit_and_never_retried()
         control.tick(link, now)
     assert control.state(4.5)["command"]["state"] == "timeout"
     assert sum(msg.command == ARM_DISARM for msg in link.messages("COMMAND_LONG")) == 2
-    with pytest.raises(RuntimeError, match="Désarmement"):
+    with pytest.raises(RuntimeError, match="(?i)disarming"):
         control.action(token, "arm", link=link, now=4.51)
 
 
@@ -283,7 +283,7 @@ def test_out_of_order_request_cannot_restore_a_released_maneuver():
     control, link, token = armed()
     control.input(token, 10, {**ZERO, "forward": 1}, link=link, now=.1)
     control.input(token, 12, ZERO, link=link, now=.2)
-    with pytest.raises(ValueError, match="séquence"):
+    with pytest.raises(ValueError, match="sequence"):
         control.input(token, 11, {**ZERO, "forward": 1}, link=link, now=.3)
     control.tick(link, .3)
     assert link.messages("MANUAL_CONTROL")[-1].x == 0
@@ -293,13 +293,13 @@ def test_out_of_order_request_cannot_restore_a_released_maneuver():
 def test_delayed_input_expires_before_refresh_and_cannot_reclaim_armed_vehicle():
     control, link, token = armed()
     control.input(token, 0, {**ZERO, "up": 1}, link=link, now=.1)
-    with pytest.raises(RuntimeError, match="expiré"):
+    with pytest.raises(RuntimeError, match="expired"):
         control.input(token, 1, ZERO, link=link, now=.1 + INPUT_TIMEOUT)
     snapshot = control.state(.8)
     assert snapshot["phase"] == "expired" and not snapshot["owned"]
     land_command = link.messages("COMMAND_LONG")[-1]
     assert land_command.command == DO_SET_MODE and land_command.param2 == 9
-    with pytest.raises(RuntimeError, match="désarmement"):
+    with pytest.raises(RuntimeError, match="disarming"):
         control.claim(link, .8)
     before = len(link.sent)
     control.tick(link, .9)
@@ -340,7 +340,7 @@ def test_delayed_arm_ack_and_buffered_disarmed_heartbeat_cannot_resolve_expired_
     heartbeat(control, .71, armed=False, mode=2)
     with pytest.raises(RuntimeError):
         control.check_reconfigure()
-    with pytest.raises(RuntimeError, match="désarmement"):
+    with pytest.raises(RuntimeError, match="disarming"):
         control.claim(link, .72)
     ack(control, DO_SET_MODE, 0, .73)
     with pytest.raises(RuntimeError):
@@ -363,7 +363,7 @@ def test_explicit_land_suppresses_later_maneuvers_even_with_valid_input():
     control.tick(link, .2)
     assert len(link.messages("MANUAL_CONTROL")) == manual_count
     assert control.state(.2)["command"]["observed"]
-    with pytest.raises(RuntimeError, match="déjà"):
+    with pytest.raises(RuntimeError, match="already"):
         control.action(token, "land", link=link, now=.3)
 
 
@@ -372,7 +372,7 @@ def test_disarm_requires_fresh_selected_landed_state_and_never_uses_force():
     for state in (None, 0, 2):
         if state is not None:
             landed(control, .1, state)
-        with pytest.raises(RuntimeError, match="posé"):
+        with pytest.raises(RuntimeError, match="landed"):
             control.action(token, "disarm", link=link, now=.1)
     landed(control, .2, 1)
     result = control.action(token, "disarm", link=link, now=.2)
@@ -392,7 +392,7 @@ def test_stale_landed_state_never_allows_disarm():
         simstate(control, now)
         control.input(token, i, ZERO, link=link, now=now)
     assert control.state(2.5)["vehicle"]["landed"] is None
-    with pytest.raises(RuntimeError, match="posé"):
+    with pytest.raises(RuntimeError, match="landed"):
         control.action(token, "disarm", link=link, now=2.5)
 
 
@@ -473,7 +473,7 @@ def test_claim_does_not_treat_existing_mode_as_preparation_evidence():
     state = control.state(0.)
     assert state["selected_mode"] == 2 and state["throttle"] == 0
     assert state["phase"] == "claimed" and not state["prepared"]
-    with pytest.raises(RuntimeError, match="Préparez"):
+    with pytest.raises(RuntimeError, match="Prepare"):
         control.action(token, "arm", link=link, now=.1)
 
 
@@ -513,7 +513,7 @@ def test_prepare_requires_explicit_recent_landed_evidence(landed_state):
     control, link, token = claimed()
     if landed_state is not None:
         landed(control, .1, landed_state)
-    with pytest.raises(RuntimeError, match="posé"):
+    with pytest.raises(RuntimeError, match="landed"):
         control.action(token, "prepare", mode=0, link=link, now=.1)
     assert control.state(.1)["selected_mode"] == 2
 
@@ -526,7 +526,7 @@ def test_stale_landed_receipt_does_not_allow_ground_mode_change():
         heartbeat(control, now)
         simstate(control, now)
         control.input(token, i, ZERO, link=link, now=now)
-    with pytest.raises(RuntimeError, match="posé"):
+    with pytest.raises(RuntimeError, match="landed"):
         control.action(token, "prepare", mode=0, link=link, now=2.2)
 
 
@@ -548,7 +548,7 @@ def test_denied_prepare_and_external_ground_mode_changes_require_new_preparation
     ack(control, DO_SET_MODE, 2, .11)
     heartbeat(control, .12, mode=0)
     assert not control.state(.12)["prepared"]
-    with pytest.raises(RuntimeError, match="Préparez"):
+    with pytest.raises(RuntimeError, match="Prepare"):
         control.action(token, "arm", link=link, now=.13)
     control.action(token, "prepare", mode=0, link=link, now=.14)
     heartbeat(control, .15, mode=0)
@@ -578,7 +578,7 @@ def test_stabilize_uses_explicit_throttle_without_center_mapping(throttle):
 @pytest.mark.parametrize("throttle", [None, True, -.01, 1.01, float("nan"), float("inf"), "0.5"])
 def test_invalid_explicit_throttle_does_not_refresh_lease(throttle):
     control, link, token = armed(0)
-    with pytest.raises(ValueError, match="gaz"):
+    with pytest.raises(ValueError, match="Throttle"):
         control.input(token, 0, ZERO, throttle=throttle, link=link, now=.4)
     assert control.state(.4)["last_input_age"] == .4
     control.tick(link, INPUT_TIMEOUT)
@@ -588,15 +588,15 @@ def test_invalid_explicit_throttle_does_not_refresh_lease(throttle):
 def test_stabilize_disarmed_accepts_old_neutral_input_but_not_preloaded_throttle():
     control, link, token = prepared(0)
     control.input(token, 0, ZERO, link=link, now=.1)
-    with pytest.raises(RuntimeError, match="armement"):
+    with pytest.raises(RuntimeError, match="arming"):
         control.input(token, 1, ZERO, throttle=.5, link=link, now=.2)
     assert control.state(.2)["throttle"] == 0
     assert control.state(.2)["last_input_age"] == pytest.approx(.1)
     control.action(token, "arm", link=link, now=.2)
-    with pytest.raises(RuntimeError, match="armement"):
+    with pytest.raises(RuntimeError, match="arming"):
         control.input(token, 1, ZERO, throttle=.5, link=link, now=.3)
     heartbeat(control, .31, armed=True, mode=0)
-    with pytest.raises(ValueError, match="explicite"):
+    with pytest.raises(ValueError, match="explicit"):
         control.input(token, 1, ZERO, link=link, now=.32)
     assert control.state(.32)["throttle"] == 0
 
@@ -691,7 +691,7 @@ def test_land_stops_gcs_even_when_browser_stays_active_and_land_is_not_confirmed
     expected = {"no_receipt": "timeout", "denied": "denied", "send_failed": "send_failed",
                 "observed": "observed"}
     assert state["command"]["state"] == expected[outcome]
-    with pytest.raises(RuntimeError, match="déjà"):
+    with pytest.raises(RuntimeError, match="already"):
         control.action(token, "land", link=link, now=5.)
     control.action(token, "release", link=link, now=5.)
     assert len(link.sent) == before

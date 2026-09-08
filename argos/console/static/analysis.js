@@ -7,8 +7,8 @@
   const nonnegative = (value) => finite(value) && value >= 0;
   const integer = (value) => Number.isSafeInteger(value) && value >= 0;
   const nullable = (value) => value === null || nonnegative(value);
-  const format = new Intl.NumberFormat("fr-FR", { maximumSignificantDigits: 5 });
-  const fmt = (value) => finite(value) ? format.format(value) : "Inconnu";
+  const format = new Intl.NumberFormat("en-US", { maximumSignificantDigits: 5 });
+  const fmt = (value) => finite(value) ? format.format(value) : "Unknown";
   const aggregationBins = (duration) => Math.max(1, Math.min(160, Math.ceil(duration)));
   const identifier = (value) => typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
   const revision = (value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
@@ -26,18 +26,18 @@
   };
   const setText = (element, value) => { if (element.textContent !== value) element.textContent = value; };
   const filters = make("form", "analysis-filters");
-  filters.setAttribute("aria-label", "Filtres de l’analyse du journal");
-  const sourceLabel = make("label", "", "Source enregistrée");
+  filters.setAttribute("aria-label", "Recording analysis filters");
+  const sourceLabel = make("label", "", "Recorded source");
   const source = make("select");
   source.id = "analysis-source";
-  source.append(new Option("Toutes les sources", ""));
+  source.append(new Option("All sources", ""));
   sourceLabel.append(source);
-  const typeLabel = make("label", "", "Type de message");
+  const typeLabel = make("label", "", "Message type");
   const type = make("select");
   type.id = "analysis-type";
-  type.append(new Option("Tous les types", ""));
+  type.append(new Option("All types", ""));
   typeLabel.append(type);
-  const thresholdLabel = make("label", "", "Sans réception à partir de (s)");
+  const thresholdLabel = make("label", "", "Reception gap threshold (s)");
   const thresholdRow = make("span", "analysis-threshold-row");
   const threshold = make("input");
   threshold.id = "analysis-gap-threshold";
@@ -47,7 +47,7 @@
   threshold.step = "any";
   threshold.value = "1";
   threshold.required = true;
-  const apply = make("button", "button button-outline", "Appliquer");
+  const apply = make("button", "button button-outline", "Apply");
   apply.type = "submit";
   thresholdRow.append(threshold, apply);
   thresholdLabel.append(thresholdRow);
@@ -55,14 +55,14 @@
   const status = make("p", "analysis-status");
   status.id = "analysis-status";
   status.setAttribute("role", "status");
-  const retry = make("button", "button button-outline", "Réessayer l’analyse");
+  const retry = make("button", "button button-outline", "Retry analysis");
   retry.type = "button";
   retry.hidden = true;
   const results = make("div", "analysis-results");
   results.hidden = true;
   const summary = make("dl", "analysis-summary");
   const summaryNodes = {};
-  for (const [name, label] of [["events", "Messages filtrés"], ["mean", "Cadence moyenne"], ["gap", "Plus longue période sans réception"]]) {
+  for (const [name, label] of [["events", "Filtered messages"], ["mean", "Mean rate"], ["gap", "Longest reception gap"]]) {
     const row = make("div");
     const output = summaryNodes[name] = make("dd");
     row.append(make("dt", "", label), output);
@@ -70,20 +70,20 @@
   }
   const charts = make("div", "analysis-charts");
   const chartSpecs = [
-    { field: "rate_hz", title: "Cadence des réceptions", unit: "Hz", className: "analysis-rate", description: "Nombre de messages reçus par seconde, moyenné dans chaque intervalle." },
-    { field: "max_age_s", title: "Âge maximal de réception", unit: "s", className: "analysis-age", description: "Temps depuis la dernière réception filtrée, au maximum de chaque intervalle ; âge inconnu avant la première réception. Il ne s’agit pas de l’âge de mesure du capteur." },
+    { field: "rate_hz", title: "Reception rate", unit: "Hz", className: "analysis-rate", description: "Messages received per second, averaged within each interval." },
+    { field: "max_age_s", title: "Maximum reception age", unit: "s", className: "analysis-age", description: "Time since the last filtered reception, at the maximum within each interval; age is unknown before the first reception. This is not sensor measurement age." },
   ];
   for (const spec of chartSpecs) {
     spec.figure = make("figure", `analysis-chart ${spec.className}`);
     const heading = make("figcaption", "", spec.title);
-    spec.svg = svgNode("svg", { role: "img", "aria-label": `${spec.title}, en ${spec.unit}, selon le temps depuis le début de la capture.` });
+    spec.svg = svgNode("svg", { role: "img", "aria-label": `${spec.title}, in ${spec.unit}, over time since capture start.` });
     spec.empty = make("p", "analysis-chart-empty");
     const description = make("p", "analysis-note", spec.description);
     spec.figure.append(heading, spec.svg, spec.empty, description);
     charts.append(spec.figure);
   }
   const cursorControls = make("div", "analysis-cursor");
-  const cursorLabel = make("label", "", "Lire un intervalle");
+  const cursorLabel = make("label", "", "Inspect an interval");
   cursorLabel.htmlFor = "analysis-bin-cursor";
   const cursor = make("input");
   cursor.type = "range";
@@ -93,13 +93,13 @@
   const readout = make("p", "analysis-bin-readout");
   cursorControls.append(cursorLabel, cursor, readout);
   const gapsSection = make("section", "analysis-gaps");
-  const gapsTitle = make("h3", "", "Périodes sans réception");
+  const gapsTitle = make("h3", "", "Reception gaps");
   const gapsNote = make("p", "analysis-note");
-  const distinction = make("p", "analysis-note", "Une période sans réception ne prouve pas une perte de paquets.");
+  const distinction = make("p", "analysis-note", "A reception gap does not prove packet loss.");
   const gapsTable = make("table", "analysis-gap-table");
   const tableHead = make("thead");
   const headers = make("tr");
-  for (const label of ["Dans la capture", "Durée", "Position"]) {
+  for (const label of ["Within capture", "Duration", "Position"]) {
     const cell = make("th", "", label);
     cell.scope = "col";
     headers.append(cell);
@@ -110,7 +110,7 @@
   gapsSection.append(gapsTitle, gapsNote, distinction, gapsTable);
   results.append(summary, charts, cursorControls, gapsSection);
   const contextDetails = make("details", "analysis-context");
-  contextDetails.append(make("summary", "", "Contexte enregistré pendant la capture"));
+  contextDetails.append(make("summary", "", "Context recorded during capture"));
   const contextStatus = make("p", "analysis-note");
   const contextFields = make("dl", "analysis-context-fields");
   contextDetails.append(contextStatus, contextFields);
@@ -173,10 +173,10 @@
     if (menuKey === signature) return;
     menuKey = signature;
     const sourceValue = source.value, typeValue = type.value;
-    source.replaceChildren(new Option("Toutes les sources", ""));
-    for (const item of value.sources) source.append(new Option(`Système ${item.system} · composant ${item.component}`, `${item.system}:${item.component}`));
-    type.replaceChildren(new Option("Tous les types", ""));
-    for (const item of value.message_types) type.append(new Option(`${item.type_name ? `${item.type_name} · ` : "Message "}${item.message_id} · ${fmt(item.events)} reçus`, String(item.message_id)));
+    source.replaceChildren(new Option("All sources", ""));
+    for (const item of value.sources) source.append(new Option(`System ${item.system} · component ${item.component}`, `${item.system}:${item.component}`));
+    type.replaceChildren(new Option("All types", ""));
+    for (const item of value.message_types) type.append(new Option(`${item.type_name ? `${item.type_name} · ` : "Message "}${item.message_id} · ${fmt(item.events)} received`, String(item.message_id)));
     source.value = sourceValue;
     type.value = typeValue;
   }
@@ -185,24 +185,24 @@
     contextFields.replaceChildren();
     const recorded = metadata?.context_status === "recorded" && metadata.context;
     if (!recorded) {
-      setText(contextStatus, metadata?.context_status === "unavailable" ? "Ce journal ne contient pas de contexte de capture exploitable." : "Le contexte de capture est inconnu pour ce journal.");
+      setText(contextStatus, metadata?.context_status === "unavailable" ? "This recording contains no usable capture context." : "Capture context is unknown for this recording.");
       return;
     }
-    setText(contextStatus, "Paramètres enregistrés avec le journal. Les filtres et le seuil ci-dessus sont des réglages de cette analyse.");
+    setText(contextStatus, "Settings saved with the recording. The filters and threshold above apply to this analysis.");
     const configuration = recorded.configuration || {};
     const entries = [
-      ["Début de capture · UTC", recorded.captured_at_utc], ["Observation", recorded.run_id],
-      ["Environnement", ({ simulation: "Simulation déclarée", real: "Réel déclaré", unconfigured: "Non configuré" })[configuration.environment] || configuration.environment],
-      ["Liaison reçue", recorded.telemetry_endpoint], ["Transport MAVLink", configuration.mavlink_transport],
-      ["Source des mesures", configuration.system == null ? null : `${configuration.system} / ${configuration.component}`],
-      ["Comptage des séquences", configuration.sequence_scope],
-      ["Source vidéo", configuration.video_source], ["Point d’entrée vidéo", configuration.video_endpoint],
+      ["Capture start · UTC", recorded.captured_at_utc], ["Observation", recorded.run_id],
+      ["Environment", ({ simulation: "Reported as simulation", real: "Reported as real", unconfigured: "Not configured" })[configuration.environment] || configuration.environment],
+      ["Received link", recorded.telemetry_endpoint], ["MAVLink transport", configuration.mavlink_transport],
+      ["Measurement source", configuration.system == null ? null : `${configuration.system} / ${configuration.component}`],
+      ["Sequence counting", configuration.sequence_scope],
+      ["Video source", configuration.video_source], ["Video endpoint", configuration.video_endpoint],
       ["Adresse UDP locale", configuration.mavlink_bind], ["Correspondant UDP", configuration.mavlink_peer],
-      ["Adresse TCP", configuration.mavlink_tcp], ["Port série", configuration.mavlink_device],
-      ["Débit série", configuration.mavlink_transport === "serial" ? configuration.baudrate : null],
+      ["TCP address", configuration.mavlink_tcp], ["Serial port", configuration.mavlink_device],
+      ["Baud rate", configuration.mavlink_transport === "serial" ? configuration.baudrate : null],
     ];
-    const names = { video: "image", heartbeat: "mode déclaré", attitude: "attitude", local_position_ned: "position", battery: "batterie" };
-    for (const [name, value] of Object.entries(recorded.age_limits_s || {})) entries.push([`Seuil de réception · ${names[name] || name}`, finite(value) ? `${fmt(value)} s` : value]);
+    const names = { video: "image", heartbeat: "reported mode", attitude: "attitude", local_position_ned: "position", battery: "battery" };
+    for (const [name, value] of Object.entries(recorded.age_limits_s || {})) entries.push([`Reception threshold · ${names[name] || name}`, finite(value) ? `${fmt(value)} s` : value]);
     for (const [label, value] of entries) {
       if (value === null || value === undefined || value === "") continue;
       const row = make("div");
@@ -231,7 +231,7 @@
       const values = data.bins.map((bin) => bin[spec.field]).filter(finite);
       const known = values.length > 0 && data.duration_s > 0;
       spec.empty.hidden = known;
-      setText(spec.empty, data.duration_s === 0 ? "Durée nulle : cette courbe n’est pas définie." : spec.field === "max_age_s" ? "Aucune réception filtrée pour calculer cet âge." : "Aucun intervalle de cadence disponible.");
+      setText(spec.empty, data.duration_s === 0 ? "Zero duration: this chart is undefined." : spec.field === "max_age_s" ? "No filtered reception available to calculate this age." : "No rate interval available.");
       svg.toggleAttribute("hidden", !known);
       if (!known) continue;
       const maximum = axisMaximum(Math.max(...values));
@@ -275,7 +275,7 @@
     cursor.max = String(data.bins.length - 1);
     cursor.value = String(binIndex);
     cursor.disabled = data.bins.length < 2;
-    setText(readout, `${fmt(bin.start_s)} → ${fmt(bin.end_s)} s · ${fmt(bin.events)} messages · ${bin.rate_hz === null ? "cadence inconnue" : `${fmt(bin.rate_hz)} Hz`} · ${bin.max_age_s === null ? "âge de réception inconnu" : `âge maximal ${fmt(bin.max_age_s)} s`}`);
+    setText(readout, `${fmt(bin.start_s)} → ${fmt(bin.end_s)} s · ${fmt(bin.events)} messages · ${bin.rate_hz === null ? "unknown rate" : `${fmt(bin.rate_hz)} Hz`} · ${bin.max_age_s === null ? "unknown reception age" : `maximum age ${fmt(bin.max_age_s)} s`}`);
     cursor.setAttribute("aria-valuetext", readout.textContent);
     for (const spec of chartSpecs) if (spec.marker && spec.plot && data.duration_s > 0) {
       const middle = (bin.start_s + bin.end_s) / 2;
@@ -289,11 +289,11 @@
     if (!data) return;
     results.hidden = false;
     setText(summaryNodes.events, fmt(data.events));
-    setText(summaryNodes.mean, data.summary.mean_rate_hz === null ? "Non définie" : `${fmt(data.summary.mean_rate_hz)} Hz`);
-    setText(summaryNodes.gap, data.summary.max_gap_s === null ? "Inconnue" : `${fmt(data.summary.max_gap_s)} s`);
-    setText(gapsNote, data.gap_count ? `${fmt(data.gap_count)} périodes d’au moins ${fmt(data.gap_threshold_s)} s.${data.gaps_truncated ? ` Les ${data.gaps.length} plus longues sont affichées.` : " De la plus longue à la plus courte."}` : `Aucune période sans réception d’au moins ${fmt(data.gap_threshold_s)} s pour ces filtres.`);
+    setText(summaryNodes.mean, data.summary.mean_rate_hz === null ? "Undefined" : `${fmt(data.summary.mean_rate_hz)} Hz`);
+    setText(summaryNodes.gap, data.summary.max_gap_s === null ? "Unknown" : `${fmt(data.summary.max_gap_s)} s`);
+    setText(gapsNote, data.gap_count ? `${fmt(data.gap_count)} gaps of at least ${fmt(data.gap_threshold_s)} s.${data.gaps_truncated ? ` Showing the ${data.gaps.length} longest gaps.` : " Longest to shortest."}` : `No reception gap of at least ${fmt(data.gap_threshold_s)} s for these filters.`);
     gapRows.replaceChildren();
-    const boundaries = { start: "Avant la première réception", end: "Après la dernière réception", interior: "Entre deux réceptions", whole: "Capture entière · aucun message filtré" };
+    const boundaries = { start: "Before the first reception", end: "After the last reception", interior: "Between two receptions", whole: "Entire capture · no filtered messages" };
     for (const gap of data.gaps) {
       const row = make("tr");
       row.append(make("td", "", `${fmt(gap.start_s)} → ${fmt(gap.end_s)} s`), make("td", "", `${fmt(gap.duration_s)} s`), make("td", "", boundaries[gap.boundary]));
@@ -306,11 +306,11 @@
   async function load(force = false) {
     if (!active()) return;
     const selected = selection();
-    if (!selected) { cancel(); clear("Le seuil doit être compris entre 0,001 et 86 400 secondes."); return; }
+    if (!selected) { cancel(); clear("The threshold must be between 0.001 and 86,400 seconds."); return; }
     const key = JSON.stringify([metadata.id, metadata.revision, selected]);
     if (!force && queryKey === key && (request || data)) return;
     cancel();
-    clear("Calcul de l’analyse du journal…");
+    clear("Computing recording analysis…");
     queryKey = key;
     const token = epoch;
     const controller = request = new AbortController();
@@ -322,17 +322,17 @@
       const response = await fetch(`/api/recordings/${metadata.id}/analysis?${parameters}`, { signal: controller.signal, cache: "no-store" });
       const value = await response.json();
       if (token !== epoch || !active()) return;
-      if (!response.ok) throw new Error(typeof value.detail === "string" ? value.detail : "L’analyse n’a pas pu être ouverte.");
-      if (!valid(value, selected)) throw new Error("Réponse d’analyse invalide. Aucun résultat affiché.");
+      if (!response.ok) throw new Error(typeof value.detail === "string" ? value.detail : "Unable to open analysis.");
+      if (!valid(value, selected)) throw new Error("Invalid analysis response. No results displayed.");
       data = value;
       binIndex = 0;
       fillMenus(value);
       const width = value.duration_s / value.bins.length;
-      setText(status, `${fmt(value.duration_s)} s de capture · ${value.bins.length} intervalle${value.bins.length > 1 ? "s" : ""} ${width > 0 ? `d’environ ${fmt(width)} s` : "de durée nulle"} · temps relatif au début du journal.`);
+      setText(status, `${fmt(value.duration_s)} s of capture · ${value.bins.length} interval${value.bins.length > 1 ? "s" : ""} ${width > 0 ? `approximately ${fmt(width)} s` : "with zero duration"} · time relative to recording start.`);
       render();
     } catch (error) {
       if (token !== epoch || !active()) return;
-      clear(error.name === "AbortError" ? "L’analyse ne répond pas. Vous pouvez réessayer." : error.message);
+      clear(error.name === "AbortError" ? "Analysis is not responding. You can retry." : error.message);
       retry.hidden = false;
     } finally {
       clearTimeout(timeout);
@@ -343,7 +343,7 @@
   filters.addEventListener("submit", (event) => { event.preventDefault(); void load(); });
   source.addEventListener("change", () => void load());
   type.addEventListener("change", () => void load());
-  threshold.addEventListener("input", () => { cancel(); clear(selection() ? "Appliquer le seuil pour recalculer les périodes sans réception." : "Le seuil doit être compris entre 0,001 et 86 400 secondes."); });
+  threshold.addEventListener("input", () => { cancel(); clear(selection() ? "Apply the threshold to recalculate reception gaps." : "The threshold must be between 0.001 and 86,400 seconds."); });
   retry.addEventListener("click", () => void load(true));
   cursor.addEventListener("input", () => { binIndex = Number(cursor.value); renderCursor(); });
   for (const spec of chartSpecs) spec.svg.addEventListener("pointermove", (event) => {
@@ -366,7 +366,7 @@
     visible = Boolean(next.visible);
     metadata = validMetadata ? candidate : null;
     if (changed) {
-      cancel(); clear(); menuKey = null; source.replaceChildren(new Option("Toutes les sources", "")); type.replaceChildren(new Option("Tous les types", ""));
+      cancel(); clear(); menuKey = null; source.replaceChildren(new Option("All sources", "")); type.replaceChildren(new Option("All types", ""));
       contextDetails.open = false;
       renderContext();
     }

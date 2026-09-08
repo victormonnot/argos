@@ -209,7 +209,7 @@ def test_explicit_rotorcraft_types_use_installed_copter_mode_names(vehicle):
 ])
 def test_other_vehicle_firmware_or_disabled_custom_flag_never_uses_copter_mapping(fields):
     result = interpret_mode(fields)
-    assert result["label"] == "Inconnu (0)" and not result["known"]
+    assert result["label"] == "Unknown (0)" and not result["known"]
     assert result["mapping"] is None and result["custom_mode"] == 0
     assert result["base_mode"] == fields["base_mode"]
     assert result["autopilot"] == fields["autopilot"]
@@ -218,7 +218,7 @@ def test_other_vehicle_firmware_or_disabled_custom_flag_never_uses_copter_mappin
 def test_unknown_mode_keeps_exact_raw_id():
     pytest.importorskip("pymavlink")
     result = interpret_mode(heartbeat(custom_mode=2**32 - 1))
-    assert result["label"] == "Inconnu (4294967295)"
+    assert result["label"] == "Unknown (4294967295)"
     assert result["custom_mode"] == 4294967295 and not result["known"]
 
 

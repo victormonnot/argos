@@ -4,9 +4,9 @@
   const node = (id) => document.getElementById(id);
   const text = (id, value) => { node(id).textContent = value; };
   const finite = (value) => typeof value === "number" && Number.isFinite(value);
-  const number = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 });
+  const number = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
   const numeric = (value, unit = "") => finite(value) ? `${number.format(value)}${unit}` : "—";
-  const date = new Intl.DateTimeFormat("fr-FR", { dateStyle: "short", timeStyle: "short" });
+  const date = new Intl.DateTimeFormat("en-US", { dateStyle: "short", timeStyle: "short" });
   const identifier = (value) => typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
   const hash = (value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
   const kinds = ["heartbeat", "battery", "attitude", "local_position_ned"];
@@ -34,7 +34,7 @@
     try {
       const response = await fetch(url, { signal: controller.signal, cache: "no-store" });
       const value = await response.json();
-      if (!response.ok) throw new Error(typeof value.detail === "string" ? value.detail : "Lecture refusée par le service.");
+      if (!response.ok) throw new Error(typeof value.detail === "string" ? value.detail : "Read request rejected by the service.");
       return value;
     } finally {
       clearTimeout(timeout);
@@ -44,7 +44,7 @@
   function pause() {
     playing = false;
     clearTimeout(timer);
-    text("replay-play", "Lire");
+    text("replay-play", "Play");
   }
 
   function clampTime(offset) {
@@ -97,7 +97,7 @@
     for (const element of node("replay-measures").querySelectorAll("dd,.history-value")) element.textContent = "—";
     for (const kind of kinds) {
       node(`history-${kind}`).dataset.state = "absent";
-      text(`history-${kind}-age`, "En attente de la relecture");
+      text(`history-${kind}-age`, "Waiting for replay");
     }
     text("history-rejection", "");
     text("replay-cursor-status", message);
@@ -115,12 +115,12 @@
     catalogRequest?.abort();
     const controller = catalogRequest = new AbortController();
     node("archive-refresh").disabled = true;
-    text("archive-status", "Lecture du dossier…");
+    text("archive-status", "Reading folder…");
     try {
       const catalog = await getJSON("/api/recordings", controller);
       if (token !== catalogEpoch || !visible) return;
-      if (!Array.isArray(catalog.items) || !Number.isSafeInteger(catalog.total) || !catalog.items.every((item) => identifier(item.id) && finite(item.modified_at) && finite(item.size_bytes) && ["unverified", "recording", "error", "too_large"].includes(item.state))) throw new Error("Liste de journaux invalide.");
-      text("archive-directory", typeof catalog.directory === "string" ? catalog.directory : "Emplacement non communiqué par le service.");
+      if (!Array.isArray(catalog.items) || !Number.isSafeInteger(catalog.total) || !catalog.items.every((item) => identifier(item.id) && finite(item.modified_at) && finite(item.size_bytes) && ["unverified", "recording", "error", "too_large"].includes(item.state))) throw new Error("Invalid recording list.");
+      text("archive-directory", typeof catalog.directory === "string" ? catalog.directory : "Location not provided by the service.");
       const fragment = document.createDocumentFragment();
       for (const item of catalog.items) {
         const row = document.createElement("li");
@@ -130,8 +130,8 @@
         button.dataset.state = item.state;
         button.disabled = item.state !== "unverified";
         button.title = item.id;
-        const state = { unverified: "Ouvrir et vérifier", recording: "Enregistrement en cours", error: "Capture en erreur", too_large: "Hors limite de relecture" }[item.state];
-        for (const [name, value] of [["id", `Journal ${item.id.slice(0, 8)}`], ["date", `Fichier modifié le ${date.format(new Date(item.modified_at * 1000))}`], ["state", `${numeric(item.size_bytes / 1024, " Kio")} · ${state}`]]) {
+        const state = { unverified: "Open and verify", recording: "Recording in progress", error: "Capture error", too_large: "Exceeds replay limit" }[item.state];
+        for (const [name, value] of [["id", `Recording ${item.id.slice(0, 8)}`], ["date", `File modified ${date.format(new Date(item.modified_at * 1000))}`], ["state", `${numeric(item.size_bytes / 1024, " KiB")} · ${state}`]]) {
           const span = document.createElement("span");
           span.className = `archive-item-${name}`;
           span.textContent = value;
@@ -143,10 +143,10 @@
       }
       node("archive-list").replaceChildren(fragment);
       markSelection();
-      text("archive-count", `${number.format(catalog.total)} ${catalog.total === 1 ? "journal" : "journaux"}`);
-      text("archive-status", catalog.total === 0 ? "Aucun journal. Démarrez puis arrêtez une capture depuis Observation → Journal MAVLink." : catalog.total > catalog.limit ? `Les ${catalog.limit} fichiers les plus récemment modifiés sont affichés.` : "");
+      text("archive-count", `${number.format(catalog.total)} ${catalog.total === 1 ? "recording" : "recordings"}`);
+      text("archive-status", catalog.total === 0 ? "No recordings. Start and stop a capture from Observation → MAVLink recording." : catalog.total > catalog.limit ? `Showing the ${catalog.limit} most recently modified files.` : "");
     } catch (error) {
-      if (token === catalogEpoch && visible) text("archive-status", error.name === "AbortError" ? "Le dossier n’a pas répondu à temps. Réessayez avec Actualiser." : error.message);
+      if (token === catalogEpoch && visible) text("archive-status", error.name === "AbortError" ? "The folder did not respond in time. Try Refresh again." : error.message);
     } finally {
       if (token === catalogEpoch) {
         node("archive-refresh").disabled = false;
@@ -173,49 +173,49 @@
     messagesPage = null;
     renderDetailView();
     node("messages-list").replaceChildren();
-    node("messages-source").replaceChildren(new Option("Toutes les sources", ""));
-    node("messages-type").replaceChildren(new Option("Tous les types", ""));
+    node("messages-source").replaceChildren(new Option("All sources", ""));
+    node("messages-type").replaceChildren(new Option("All types", ""));
     node("replay-content").hidden = true;
     node("replay-empty").hidden = true;
     node("archive-download").removeAttribute("href");
-    text("replay-status", `Vérification du journal ${id.slice(0, 8)}…`);
+    text("replay-status", `Verifying recording ${id.slice(0, 8)}…`);
     markSelection();
     const opener = document.activeElement;
     const controller = request = new AbortController();
     try {
       const value = await getJSON(`/api/recordings/${id}`, controller);
       if (token !== epoch || !visible) return;
-      if (!validMetadata(value, id)) throw new Error("Description du journal invalide.");
+      if (!validMetadata(value, id)) throw new Error("Invalid recording description.");
       metadata = value;
       text("replay-status", "");
-      text("replay-title", `Journal ${id.slice(0, 8)}`);
+      text("replay-title", `Recording ${id.slice(0, 8)}`);
       node("replay-title").title = id;
-      text("replay-duration", `Durée ${numeric(value.duration_s, " s")}`);
-      text("replay-events", `${number.format(value.events)} trames`);
+      text("replay-duration", `Duration ${numeric(value.duration_s, " s")}`);
+      text("replay-events", `${number.format(value.events)} frames`);
       const context = value.context;
       const originDate = context?.captured_at_utc ? new Date(context.captured_at_utc) : null;
       text("replay-provenance", context && originDate && Number.isFinite(originDate.getTime())
-        ? `Capture du ${date.format(originDate)} · ${context.configuration.environment === "simulation" ? "Simulation" : context.configuration.environment === "real" ? "Réel déclaré" : "Environnement non configuré"} · contexte dans Analyse · sans vidéo enregistrée.`
-        : "Télémétrie seule · date et configuration d’origine indisponibles dans ce journal · sans vidéo enregistrée.");
-      const endLabels = { transport_error: "Capture interrompue", shutdown: "Capture interrompue", event_limit: "Limite de messages atteinte", size_limit: "Limite de taille atteinte" };
+        ? `Captured on ${date.format(originDate)} · ${context.configuration.environment === "simulation" ? "Simulation" : context.configuration.environment === "real" ? "Reported as real" : "Environment not configured"} · context in Analysis · no recorded video.`
+        : "Telemetry only · original date and configuration unavailable in this recording · no recorded video.");
+      const endLabels = { transport_error: "Capture interrupted", shutdown: "Capture interrupted", event_limit: "Message limit reached", size_limit: "Size limit reached" };
       const endLabel = endLabels[value.end_reason];
-      text("replay-end-detail", endLabel ? `${endLabel}. ${typeof value.end_detail === "string" ? value.end_detail : ""} Les réceptions conservées restent consultables.` : "");
+      text("replay-end-detail", endLabel ? `${endLabel}. ${typeof value.end_detail === "string" ? value.end_detail : ""} Retained receptions remain available for viewing.` : "");
       node("replay-end-detail").hidden = !endLabel;
       const limits = value.limits || { heartbeat: 1, battery: 2, attitude: .2, local_position_ned: .4 };
-      text("replay-age-note", `Les dernières valeurs reçues restent consultables, même anciennes. Leur âge est calculé au curseur. Seuils ${value.limits_origin === "capture" ? "enregistrés à la capture" : "d’analyse par défaut (seuils de capture inconnus)"} : mode ${numeric(limits.heartbeat, " s")} · batterie ${numeric(limits.battery, " s")} · attitude ${numeric(limits.attitude, " s")} · position ${numeric(limits.local_position_ned, " s")}.`);
+      text("replay-age-note", `Last received values remain viewable even when stale. Age is calculated at the cursor. Thresholds ${value.limits_origin === "capture" ? "recorded at capture time" : "from analysis defaults (capture thresholds unknown)"} : mode ${numeric(limits.heartbeat, " s")} · battery ${numeric(limits.battery, " s")} · attitude ${numeric(limits.attitude, " s")} · position ${numeric(limits.local_position_ned, " s")}.`);
       node("archive-download").href = value.download_url;
       node("replay-content").hidden = false;
       node("replay-cursor").max = String(value.duration_s);
       node("replay-cursor").value = "0";
       node("replay-source").replaceChildren();
       const sources = value.sources.filter((item) => item.system > 0 && item.component > 0);
-      if (sources.length !== 1) node("replay-source").add(new Option(sources.length ? "Choisir un composant enregistré" : "Aucun composant", ""));
-      for (const item of sources) node("replay-source").add(new Option(`Système ${item.system} · composant ${item.component} · ${number.format(item.events)} trames`, `${item.system}:${item.component}`));
-      for (const item of value.sources) node("messages-source").add(new Option(`Système ${item.system} · composant ${item.component}`, `${item.system}:${item.component}`));
+      if (sources.length !== 1) node("replay-source").add(new Option(sources.length ? "Select a recorded component" : "No component", ""));
+      for (const item of sources) node("replay-source").add(new Option(`System ${item.system} · component ${item.component} · ${number.format(item.events)} frames`, `${item.system}:${item.component}`));
+      for (const item of value.sources) node("messages-source").add(new Option(`System ${item.system} · component ${item.component}`, `${item.system}:${item.component}`));
       node("replay-source").disabled = !sources.length;
       node("replay-no-source").hidden = sources.length > 0;
       node("replay-transport").hidden = sources.length === 0;
-      clearMeasures(sources.length ? "Choisissez le composant dont vous voulez relire les mesures." : "");
+      clearMeasures(sources.length ? "Select the component whose measurements you want to replay." : "");
       text("replay-time", `0 s / ${numeric(value.duration_s, " s")}`);
       if (moveFocus && document.activeElement === opener) {
         (sources.length ? node("replay-source") : node("archive-download")).focus({ preventScroll: true });
@@ -226,7 +226,7 @@
         void seek(0);
       }
     } catch (error) {
-      if (token === epoch && visible) text("replay-status", error.name === "AbortError" ? "La vérification n’a pas répondu à temps. Ouvrez à nouveau le journal pour réessayer." : error.message);
+      if (token === epoch && visible) text("replay-status", error.name === "AbortError" ? "Verification timed out. Reopen the recording to retry." : error.message);
     } finally {
       if (token === epoch && request === controller) request = null;
     }
@@ -246,11 +246,11 @@
     for (const kind of kinds) {
       const view = value[kind];
       node(`history-${kind}`).dataset.state = view.state;
-      text(`history-${kind}-age`, view.state === "absent" ? "Pas encore reçue au curseur" : `${view.state === "stale" ? "Ancienne au curseur" : "Récente au curseur"} · âge ${numeric(view.rx_age_s, " s")}`);
+      text(`history-${kind}-age`, view.state === "absent" ? "Not yet received at the cursor" : `${view.state === "stale" ? "Stale at the cursor" : "Recent at the cursor"} · age ${numeric(view.rx_age_s, " s")}`);
     }
     text("history-mode", value.heartbeat.fields ? value.mode.label : "—");
     const baseMode = value.heartbeat.fields?.base_mode;
-    text("history-armed", finite(baseMode) ? baseMode & 128 ? "Armé" : "Désarmé" : "—");
+    text("history-armed", finite(baseMode) ? baseMode & 128 ? "Armed" : "Disarmed" : "—");
     text("history-mode-raw", numeric(value.mode.custom_mode));
     text("history-remaining", numeric(value.battery.remaining_percent, " %"));
     text("history-voltage", numeric(value.battery.voltage_v, " V"));
@@ -258,11 +258,11 @@
     for (const name of ["roll", "pitch", "yaw"]) text(`history-${name}`, numeric(finite(value.attitude.fields?.[name]) ? value.attitude.fields[name] * 180 / Math.PI : null, "°"));
     for (const [name, axis] of [["north", "x"], ["east", "y"], ["down", "z"]]) text(`history-${name}`, numeric(value.local_position_ned.fields?.[axis], " m"));
     for (const name of ["received", "accepted", "rejected", "ignored-source", "ignored-type"]) text(`history-${name}`, number.format(value[name.replaceAll("-", "_")]));
-    const progress = { first: "première réception", advanced: "avance", repeated: "répété", decreased: "en baisse" };
-    for (const [name, view] of [["attitude", value.attitude], ["position", value.local_position_ned]]) text(`history-${name}-boot`, view.fields ? `${numeric(view.fields.time_boot_ms, " ms")} · ${progress[view.boot_progress] || "inconnu"}` : "—");
-    text("history-rejection", value.last_rejection ? `Dernier refus à cet instant : ${value.last_rejection}` : "Aucun payload refusé à cet instant pour ce composant.");
+    const progress = { first: "first reception", advanced: "advancing", repeated: "repeated", decreased: "decreasing" };
+    for (const [name, view] of [["attitude", value.attitude], ["position", value.local_position_ned]]) text(`history-${name}-boot`, view.fields ? `${numeric(view.fields.time_boot_ms, " ms")} · ${progress[view.boot_progress] || "unknown"}` : "—");
+    text("history-rejection", value.last_rejection ? `Last rejection at this point: ${value.last_rejection}` : "No payload rejected at this point for this component.");
     node("replay-measures").hidden = false;
-    text("replay-cursor-status", playing ? "Relecture en cours · réceptions historiques." : cursor >= metadata.duration_s ? "Fin du journal · relecture en pause." : "Relecture en pause · réceptions historiques.");
+    text("replay-cursor-status", playing ? "Replay running · historical receptions." : cursor >= metadata.duration_s ? "End of recording · replay paused." : "Replay paused · historical receptions.");
     controls(false);
   }
 
@@ -279,7 +279,7 @@
       node("replay-cursor").value = String(cursor);
       text("replay-time", `${numeric(cursor, " s")} / ${numeric(metadata.duration_s, " s")}`);
       // The old values must never sit under the new time/source label.
-      clearMeasures("Lecture des réceptions à cet instant…");
+      clearMeasures("Reading receptions at this point…");
     } else {
       // During playback keep the last confirmed cursor and its values together
       // until the next response arrives; no flicker or invented interpolation.
@@ -291,7 +291,7 @@
       const query = new URLSearchParams({ revision: metadata.revision, at: target, system: pair.system, component: pair.component });
       const value = await getJSON(`/api/recordings/${id}/replay?${query}`, controller);
       if (token !== epoch || !visible) return;
-      if (!validSnapshot(value, id, target, pair)) throw new Error("Réponse de relecture invalide.");
+      if (!validSnapshot(value, id, target, pair)) throw new Error("Invalid replay response.");
       cursor = target;
       node("replay-cursor").value = String(cursor);
       text("replay-time", `${numeric(cursor, " s")} / ${numeric(metadata.duration_s, " s")}`);
@@ -304,8 +304,8 @@
     } catch (error) {
       if (token !== epoch || !visible) return;
       pause();
-      clearMeasures("Relecture interrompue. Déplacez le curseur pour réessayer.");
-      text("replay-status", error.name === "AbortError" ? "La relecture n’a pas répondu à temps." : error.message);
+      clearMeasures("Replay interrupted. Move the cursor to retry.");
+      text("replay-status", error.name === "AbortError" ? "Replay did not respond in time." : error.message);
     } finally {
       if (token === epoch && request === controller) request = null;
     }
@@ -360,8 +360,8 @@
     const row = document.createElement("li");
     const details = document.createElement("details");
     const summary = document.createElement("summary");
-    const time = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 6 }).format(item.at_s);
-    summary.setAttribute("aria-label", `Message ${item.index}, ${item.type_name}, ${time} secondes après le début, système ${item.system}, composant ${item.component}, séquence ${item.sequence}`);
+    const time = new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 }).format(item.at_s);
+    summary.setAttribute("aria-label", `Message ${item.index}, ${item.type_name}, ${time} seconds after start, system ${item.system}, component ${item.component}, sequence ${item.sequence}`);
     for (const [className, content] of [["message-number", `#${item.index}`], ["message-time", `+${time} s`], ["message-name", item.type_name], ["message-origin", `${item.system} / ${item.component}`], ["message-sequence", `seq ${item.sequence}`]]) {
       const span = document.createElement("span");
       span.className = className;
@@ -372,7 +372,7 @@
     body.className = "message-body";
     const heading = document.createElement("p");
     heading.className = "section-note";
-    heading.textContent = `MAVLink ${item.wire_version} · message ID ${item.message_id} · ${item.frame_bytes} octets · réception locale ${item.received_at} s`;
+    heading.textContent = `MAVLink ${item.wire_version} · message ID ${item.message_id} · ${item.frame_bytes} bytes · local reception ${item.received_at} s`;
     const fields = document.createElement("dl");
     fields.className = "message-fields";
     for (const [key, value] of Object.entries(item.fields)) {
@@ -385,10 +385,10 @@
       fields.append(line);
     }
     const hexTitle = document.createElement("h3");
-    hexTitle.textContent = "Trame originale · hexadécimal";
+    hexTitle.textContent = "Original frame · hexadecimal";
     const hex = document.createElement("pre");
     hex.tabIndex = 0;
-    hex.setAttribute("aria-label", "Octets de la trame originale");
+    hex.setAttribute("aria-label", "Original frame bytes");
     hex.textContent = item.frame_hex.match(/.{1,32}/g).map((line) => line.match(/../g).join(" ")).join("\n");
     body.append(heading, fields, hexTitle, hex);
     details.append(summary, body);
@@ -412,7 +412,7 @@
     node("messages-next").disabled = true;
     node("messages-retry").hidden = true;
     text("messages-count", "");
-    text("messages-status", "Lecture des messages…");
+    text("messages-status", "Reading messages…");
     const controller = request = new AbortController();
     try {
       const query = new URLSearchParams({ revision, offset, limit: 50 });
@@ -423,16 +423,16 @@
       if (filters.type) query.set("message_id", filters.type);
       const value = await getJSON(`/api/recordings/${id}/messages?${query}`, controller);
       if (token !== epoch || !visible || detailView !== "messages") return;
-      if (!validMessages(value, id, revision, offset, filters)) throw new Error("Réponse de messages invalide.");
+      if (!validMessages(value, id, revision, offset, filters)) throw new Error("Invalid messages response.");
       messagesPage = value;
-      node("messages-type").replaceChildren(new Option("Tous les types", ""));
+      node("messages-type").replaceChildren(new Option("All types", ""));
       for (const item of value.message_types) node("messages-type").add(new Option(`${item.type_name} · ID ${item.message_id}`, String(item.message_id)));
       node("messages-type").value = filters.type;
       const fragment = document.createDocumentFragment();
       for (const item of value.items) fragment.append(messageRow(item));
       node("messages-list").replaceChildren(fragment);
-      text("messages-count", value.total ? `${offset + 1}–${offset + value.items.length} / ${number.format(value.total)} messages` : "0 message");
-      text("messages-status", value.total ? "" : "Aucun message ne correspond à ces filtres.");
+      text("messages-count", value.total ? `${offset + 1}–${offset + value.items.length} / ${number.format(value.total)} messages` : "0 messages");
+      text("messages-status", value.total ? "" : "No messages match these filters.");
       node("messages-previous").disabled = offset === 0;
       node("messages-next").disabled = offset + value.items.length >= value.total;
       if (restoreFocus && [document.body, opener].includes(document.activeElement)) {
@@ -440,7 +440,7 @@
       }
     } catch (error) {
       if (token !== epoch || !visible || detailView !== "messages") return;
-      text("messages-status", error.name === "AbortError" ? "Les messages n’ont pas répondu à temps." : error.message);
+      text("messages-status", error.name === "AbortError" ? "Messages did not respond in time." : error.message);
       node("messages-retry").hidden = false;
       if (restoreFocus && [document.body, opener].includes(document.activeElement)) node("messages-retry").focus({ preventScroll: true });
     } finally {
@@ -466,14 +466,14 @@
     cancelReplay();
     const [system, component] = node("replay-source").value.split(":").map(Number);
     source = metadata.sources.find((item) => item.system === system && item.component === component) || null;
-    clearMeasures("Choisissez le composant dont vous voulez relire les mesures.");
+    clearMeasures("Select the component whose measurements you want to replay.");
     if (source) void seek(cursor);
   });
   node("replay-cursor").addEventListener("input", () => {
     cancelReplay();
     cursor = clampTime(Number(node("replay-cursor").value));
     text("replay-time", `${numeric(cursor, " s")} / ${numeric(metadata.duration_s, " s")}`);
-    clearMeasures("Lecture des réceptions à cet instant…");
+    clearMeasures("Reading receptions at this point…");
     seekTimer = setTimeout(() => { void seek(cursor); }, 70);
   });
   node("replay-play").addEventListener("click", () => {
@@ -481,7 +481,7 @@
       // Stop the in-flight seek too: Pause preserves the last confirmed cursor.
       cancelReplay();
       controls(false);
-      text("replay-cursor-status", "Relecture en pause · réceptions historiques.");
+      text("replay-cursor-status", "Replay paused · historical receptions.");
       return;
     }
     if (!metadata || !source || !snapshot) return;
@@ -503,7 +503,7 @@
         cancelReplay();
         controls(false);
       } else pause();
-      text("replay-cursor-status", "Relecture en pause · onglet masqué.");
+      text("replay-cursor-status", "Replay paused · tab hidden.");
     }
   });
   window.addEventListener("pagehide", () => {

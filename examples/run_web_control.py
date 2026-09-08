@@ -134,7 +134,7 @@ def main():
                           "--mavlink-tcp", f"127.0.0.1:{args.mavlink_port}",
                           "--sequence-scope", "channel", "--heartbeat-age", "2.5",
                           "--port", str(args.port)], repo)
-        print(f"ARGOS: http://127.0.0.1:{args.port} — Pilotage (initialization may take a few seconds)", flush=True)
+        print(f"ARGOS: http://127.0.0.1:{args.port} — Flight controls (initialization may take a few seconds)", flush=True)
         while True:
             for name, process in children:
                 if process.poll() is not None:

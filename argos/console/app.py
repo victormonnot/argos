@@ -115,7 +115,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
     @app.get("/fonts/{filename}")
     async def font(filename: str):
         if filename not in FONT_FILES:
-            raise HTTPException(404, "Police introuvable")
+            raise HTTPException(404, "Font not found")
         return FileResponse(STATIC / "fonts" / filename, media_type="font/woff2")
 
     @app.get("/api/state")
@@ -130,7 +130,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
     async def frame():
         sample = session.video.latest(session.clock())
         if sample is None:
-            return JSONResponse({"detail": "Aucune image récente disponible"}, status_code=503)
+            return JSONResponse({"detail": "No recent image available"}, status_code=503)
         return Response(sample.jpeg, media_type="image/jpeg", headers={
             "X-Frame-Sequence": str(sample.sequence),
             "X-Frame-Received-At": str(sample.received_at),
@@ -142,28 +142,28 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
         # Browser write requests must originate from this local console. No CORS,
         # cross-site form or optional Origin bypass for socket/file operations.
         if request.headers.get("origin") != str(request.base_url).rstrip("/"):
-            raise HTTPException(403, "Cette action doit venir de la console locale")
+            raise HTTPException(403, "This action must come from the local console")
         if request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/json":
-            raise HTTPException(415, "Un corps JSON est requis")
+            raise HTTPException(415, "A JSON body is required")
         body = bytearray()
         async for chunk in request.stream():
             body.extend(chunk)
             if len(body) > 8192:
-                raise HTTPException(413, "Configuration trop volumineuse")
+                raise HTTPException(413, "Configuration too large")
         import json
         try:
             return json.loads(body)
         except (ValueError, UnicodeDecodeError, RecursionError) as exc:
-            raise HTTPException(422, "JSON invalide") from exc
+            raise HTTPException(422, "Invalid JSON") from exc
 
     @app.post("/api/sources")
     async def sources(request: Request):
         nonlocal session
         values = await mutation_body(request)
         if session.reconnecting or session.replacing:
-            raise HTTPException(409, "Une réouverture de source est déjà en cours")
+            raise HTTPException(409, "A source is already reopening")
         if session.recorder.active:
-            raise HTTPException(409, "Arrêtez le journal avant de changer les sources")
+            raise HTTPException(409, "Stop recording before changing sources")
         try:
             session.control.check_reconfigure()
         except RuntimeError as exc:
@@ -191,7 +191,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
     @app.post("/api/control/{operation}")
     async def flight_control(operation: str, request: Request):
         if operation not in {"claim", "input", "action"}:
-            raise HTTPException(404, "Action de pilotage inconnue")
+            raise HTTPException(404, "Unknown flight-control action")
         values = await mutation_body(request)
         try:
             return JSONResponse(session.control_request(operation, values))
@@ -203,9 +203,9 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
     @app.post("/api/sources/{source}/reconnect")
     async def reconnect(source: str, request: Request):
         if await mutation_body(request) != {}:
-            raise HTTPException(422, "Cette action attend un objet vide")
+            raise HTTPException(422, "This action requires an empty object")
         if source not in {"video", "mavlink"}:
-            raise HTTPException(404, "Source inconnue")
+            raise HTTPException(404, "Unknown source")
         try:
             return JSONResponse(await session.reconnect(source))
         except RuntimeError as exc:
@@ -214,11 +214,11 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
     @app.post("/api/recordings/start")
     async def start_recording(request: Request):
         if await mutation_body(request) != {}:
-            raise HTTPException(422, "Cette action attend un objet vide")
+            raise HTTPException(422, "This action requires an empty object")
         if (not session.config.has_telemetry or session.link is None or session._error
                 or session._closed or session.recorder.active or session.replacing
                 or session.reconnecting == "mavlink"):
-            raise HTTPException(409, "Une liaison ouverte sans journal actif est requise")
+            raise HTTPException(409, "An open link without an active recording is required")
         context = capture_context(session.config, session.run_id, session._endpoint)
         result = session.recorder.start(session.clock(), context=context)
         return JSONResponse(result, status_code=500 if result["state"] == "error" else 200)
@@ -226,9 +226,9 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
     @app.post("/api/recordings/stop")
     async def stop_recording(request: Request):
         if await mutation_body(request) != {}:
-            raise HTTPException(422, "Cette action attend un objet vide")
+            raise HTTPException(422, "This action requires an empty object")
         if not session.recorder.active:
-            raise HTTPException(409, "Aucun enregistrement en cours")
+            raise HTTPException(409, "No recording in progress")
         result = session.recorder.stop(session.clock())
         return JSONResponse(result, status_code=500 if result["state"] == "error" else 200)
 
@@ -243,7 +243,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
     def require_closed(identifier):
         status = session.recorder.snapshot()
         if status["id"] == identifier and status["state"] in ("recording", "error"):
-            raise HTTPException(404, "Journal terminé indisponible")
+            raise HTTPException(404, "Completed recording unavailable")
 
     @app.get("/api/recordings")
     async def recordings():

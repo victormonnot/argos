@@ -79,14 +79,14 @@ class ConsoleSession:
             try:
                 self.link = self._link_factory()
             except Exception as exc:
-                self._error = f"Ouverture MAVLink impossible : {exc}"
+                self._error = f"Unable to open MAVLink: {exc}"
         if self.config.video_source != "none":
             self.camera = (GazeboCamera(self.video, python_path=self.config.gazebo_python_path)
                            if self.config.video_source == "gazebo" else DeviceCamera(self.video))
             try:
                 self.camera.start()
             except Exception as exc:
-                self.video.fail(f"Ouverture caméra impossible : {exc}")
+                self.video.fail(f"Unable to open camera: {exc}")
         self.tick()
 
     def _event(self, at, level, message):
@@ -95,22 +95,22 @@ class ConsoleSession:
 
     def _check_reconnect(self, source):
         if source not in {"video", "mavlink"}:
-            raise ValueError("Source inconnue")
+            raise ValueError("Unknown source")
         if source == "mavlink":
             self.control.check_reconnect()
         else:
             self.control.check_reconfigure()
         if self._closed or not self._started:
-            raise RuntimeError("La session n’est pas ouverte")
+            raise RuntimeError("The session is not open")
         if self.reconnecting or self.replacing:
-            raise RuntimeError("Une réouverture de source est déjà en cours")
+            raise RuntimeError("A source is already reopening")
         if source == "mavlink":
             if not self.config.has_telemetry:
-                raise RuntimeError("Configurez d’abord une source MAVLink")
+                raise RuntimeError("Configure a MAVLink source first")
             if self.recorder.active:
-                raise RuntimeError("Arrêtez le journal avant de rouvrir la liaison MAVLink")
+                raise RuntimeError("Stop recording before reopening the MAVLink link")
         elif self.config.video_source == "none":
-            raise RuntimeError("Configurez d’abord une caméra")
+            raise RuntimeError("Configure a camera first")
 
     async def reconnect(self, source):
         """Reopen one passive receiver without pausing the other acquisition.
@@ -121,8 +121,8 @@ class ConsoleSession:
         """
         self._check_reconnect(source)
         self.reconnecting = source
-        self._event(self.clock(), "info", "Réouverture demandée : " +
-                    ("caméra" if source == "video" else "liaison MAVLink"))
+        self._event(self.clock(), "info", "Reopening requested: " +
+                    ("camera" if source == "video" else "MAVLink link"))
         if source == "video":
             previous, self.camera = self.camera, None
             self.video.stop()
@@ -155,7 +155,7 @@ class ConsoleSession:
         if previous is not None:
             previous.close()
             if isinstance(previous, DeviceCamera) and not previous.worker_stopped:
-                raise RuntimeError("Le précédent lecteur caméra n’a pas encore libéré le périphérique")
+                raise RuntimeError("The previous camera reader has not released the device yet")
         if self._closed:
             return None
         if source == "mavlink":
@@ -184,7 +184,7 @@ class ConsoleSession:
             else:
                 self.camera = result
         except Exception as exc:
-            detail = f"Réouverture {'MAVLink' if source == 'mavlink' else 'caméra'} impossible : {exc}"
+            detail = f"Reopening {'MAVLink' if source == 'mavlink' else 'camera'} failed: {exc}"
             if source == "mavlink":
                 self._error = detail
                 self.link = previous
@@ -205,7 +205,7 @@ class ConsoleSession:
         if not isinstance(self.camera, DeviceCamera):
             return
         if self.reconnecting:
-            raise RuntimeError("Une réouverture de source est déjà en cours")
+            raise RuntimeError("A source is already reopening")
         self.reconnecting = "video"
 
         async def retire():
@@ -219,9 +219,9 @@ class ConsoleSession:
         self._reconnect_task = asyncio.create_task(retire())
         await asyncio.shield(self._reconnect_task)
         if self._closed:
-            raise RuntimeError("La session est arrêtée")
+            raise RuntimeError("The session is stopped")
         if not self.camera.worker_stopped:
-            raise RuntimeError("Le précédent lecteur caméra n’a pas encore libéré le périphérique")
+            raise RuntimeError("The previous camera reader has not released the device yet")
 
     def tick(self):
         if self._closed:
@@ -243,9 +243,9 @@ class ConsoleSession:
                 self.control.tick(self.link, now)
                 self._report = self.link.report(now)
                 if self._report.closed:
-                    self._error = f"Liaison MAVLink interrompue : {self._report.last_error}"
+                    self._error = f"MAVLink link interrupted: {self._report.last_error}"
             except Exception as exc:
-                self._error = f"Réception MAVLink interrompue : {exc}"
+                self._error = f"MAVLink reception interrupted: {exc}"
                 self.link.close()
         if self.link is None or self._error:
             now = self.clock()
@@ -259,7 +259,7 @@ class ConsoleSession:
         rejected = telemetry["rejected"]
         if rejected != self._last_rejected:
             self._last_rejected = rejected
-            self._event(now, "warning", f"Télémétrie refusée ({rejected} au total) : {telemetry['last_rejection']}")
+            self._event(now, "warning", f"Telemetry rejected ({rejected} in total) : {telemetry['last_rejection']}")
 
     def state(self, now=None):
         now = self.clock() if now is None else now
@@ -271,22 +271,22 @@ class ConsoleSession:
         views["battery"] = battery_view(health.battery, self.config.battery_age)
         mode = mode_view(views["heartbeat"])
         if not self.config.has_telemetry:
-            state, detail = "unconfigured", "Aucune source de télémétrie configurée"
+            state, detail = "unconfigured", "No telemetry source configured"
         elif self.reconnecting == "mavlink":
-            state, detail = "reconnecting", "Réouverture de la liaison MAVLink en cours"
+            state, detail = "reconnecting", "Reopening MAVLink link"
         elif self._error or self._closed:
-            state, detail = "error", self._error or "Session arrêtée"
+            state, detail = "error", self._error or "Session stopped"
         elif any(view["state"] == "recent" for view in views.values()):
-            state, detail = "receiving", "Télémétrie reçue du composant sélectionné"
+            state, detail = "receiving", "Telemetry received from the selected component"
         elif any(view["fields"] is not None for view in views.values()):
-            state, detail = "stale", "Télémétrie périmée : aucune réception valide récente"
+            state, detail = "stale", "Stale telemetry: no recent valid reception"
         else:
-            state, detail = "waiting", "En attente de télémétrie du composant sélectionné"
+            state, detail = "waiting", "Waiting for telemetry from the selected component"
         report = self._report
         video = self.video.snapshot(now)
         video["source_id"] = self.video_source_id
         if self.reconnecting == "video":
-            video.update(state="reconnecting", detail="Réouverture de la caméra en cours")
+            video.update(state="reconnecting", detail="Reopening camera")
         return {
             "schema_version": 1, "run_id": self.run_id, "at": now,
             "environment": self.config.environment,
@@ -330,14 +330,14 @@ class ConsoleSession:
     def control_request(self, operation, values):
         if (self._closed or not self._started or self.replacing or self.reconnecting
                 or self.link is None or self._error):
-            raise RuntimeError("Une liaison de simulation ouverte est requise")
+            raise RuntimeError("An open simulation link is required")
         if not isinstance(values, dict):
-            raise ValueError("Cette action attend un objet JSON")
+            raise ValueError("This action requires a JSON object")
         expected = {"claim": set(), "input": {"token", "seq", "axes"},
                     "action": {"token", "action"}}[operation]
         optional = {"claim": set(), "input": {"throttle"}, "action": {"mode"}}[operation]
         if not expected <= set(values) or not set(values) <= expected | optional:
-            raise ValueError("Champs de commande invalides")
+            raise ValueError("Invalid command fields")
         now = self.clock()
         if operation == "claim":
             return self.control.claim(self.link, now)
@@ -358,7 +358,7 @@ class ConsoleSession:
             self.video.stop()
             try:
                 if self.recorder.active:
-                    self.recorder.stop(self.clock(), reason="shutdown", detail="Arrêt de la console.")
+                    self.recorder.stop(self.clock(), reason="shutdown", detail="Console shutdown.")
                 if self.camera is not None:
                     self.camera.close()
             finally:

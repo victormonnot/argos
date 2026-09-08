@@ -53,7 +53,7 @@ class ConsoleRecorder:
 
     def start(self, now, *, context=None):
         if self.active:
-            raise ValueError("Un enregistrement est déjà en cours")
+            raise ValueError("A recording is already in progress")
         identifier = uuid4().hex
         self._status = {"state": "recording", "id": identifier, "events": 0,
                         "started_at": now, "ended_at": None, "error": "", "download_url": None,
@@ -64,7 +64,7 @@ class ConsoleRecorder:
             self._stream = self._path.open("xb")
             self._writer = RecordingWriter(self._stream, started_at=now, context=context, with_completion=True)
         except Exception as exc:
-            self.fail(f"Création du journal impossible : {exc}")
+            self.fail(f"Unable to create recording: {exc}")
         return self.snapshot()
 
     def append(self, event):
@@ -74,15 +74,15 @@ class ConsoleRecorder:
                 # before accepting a frame that could consume the footer space.
                 if self._writer.bytes_written + 3 * MAX_LINE_BYTES > self.max_bytes:
                     self.stop(event.received_at, reason="size_limit",
-                              detail="Limite de taille atteinte ; le journal a été conservé.")
+                              detail="Size limit reached; the recording was preserved.")
                     return
                 self._writer.append(event)
                 self._status["events"] += 1
                 if self._status["events"] >= self.max_events:
                     self.stop(event.received_at, reason="event_limit",
-                              detail=f"Limite de {self.max_events} messages atteinte ; le journal a été conservé.")
+                              detail=f"Limit of {self.max_events} messages reached; the recording was preserved.")
             except Exception as exc:
-                self.fail(f"Écriture du journal interrompue : {exc}")
+                self.fail(f"Recording write interrupted: {exc}")
 
     def fail(self, detail):
         if self._writer is not None:
@@ -98,7 +98,7 @@ class ConsoleRecorder:
 
     def stop(self, now, *, reason="stopped", detail=""):
         if not self.active:
-            raise ValueError("Aucun enregistrement en cours")
+            raise ValueError("No recording in progress")
         try:
             detail = _bounded_detail(detail)
             self._writer.finish(now, reason=reason, detail=detail)
@@ -109,7 +109,7 @@ class ConsoleRecorder:
             self._status.update(state="complete", ended_at=now, end_reason=reason, end_detail=detail,
                 download_url=f"/api/recordings/{self._status['id']}/download")
         except Exception as exc:
-            self.fail(f"Clôture du journal impossible : {exc}")
+            self.fail(f"Unable to finalize recording: {exc}")
         return self.snapshot()
 
     def completed_path(self, identifier):

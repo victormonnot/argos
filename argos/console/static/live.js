@@ -5,7 +5,7 @@
   if (!root) return;
   const finite = (value) => typeof value === "number" && Number.isFinite(value);
   const integer = (value) => Number.isSafeInteger(value) && value >= 0;
-  const number = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 1 });
+  const number = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
   const fmt = (value) => finite(value) ? number.format(value) : "—";
   const key = (item) => `${item.system}:${item.component}:${item.message_id}`;
   const sourceKey = (item) => `${item.system}:${item.component}`;
@@ -23,40 +23,40 @@
   }
   const heading = make("div", "live-heading");
   const identity = make("div", "live-identity");
-  const title = make("h2", "live-title", "Messages décodés");
+  const title = make("h2", "live-title", "Decoded messages");
   title.id = "live-messages-title";
-  const endpoint = make("p", "live-endpoint", "Liaison non configurée");
+  const endpoint = make("p", "live-endpoint", "Link not configured");
   identity.append(title, endpoint);
   const actions = make("div", "live-actions");
-  const freeze = button("Figer", "button button-outline live-freeze");
+  const freeze = button("Freeze", "button button-outline live-freeze");
   freeze.setAttribute("aria-pressed", "false");
-  const returnButton = button("Retour à Observation", "button button-outline live-return");
+  const returnButton = button("Back to Observation", "button button-outline live-return");
   returnButton.addEventListener("click", () => document.dispatchEvent(new Event("argos:show-observation")));
   actions.append(freeze, returnButton);
   heading.append(identity, actions);
-  const status = make("p", "live-status", "Ouvrir cette vue lance l’inspection.");
+  const status = make("p", "live-status", "Opening this view starts inspection.");
   status.setAttribute("role", "status");
   const mobileNavigation = make("div", "live-mobile-navigation");
   mobileNavigation.setAttribute("role", "group");
-  mobileNavigation.setAttribute("aria-label", "Vue des messages");
-  const showTypes = button("Types reçus", "button button-outline");
-  const showFields = button("Voir les champs", "button button-outline");
+  mobileNavigation.setAttribute("aria-label", "Message view");
+  const showTypes = button("Received types", "button button-outline");
+  const showFields = button("View fields", "button button-outline");
   mobileNavigation.append(showTypes, showFields);
-  const caption = make("p", "live-note", "Cette vue présente toutes les sources reçues, avant le filtrage des mesures de l’Observation. Les champs et la trame correspondent au dernier message reçu pour le type sélectionné.");
+  const caption = make("p", "live-note", "This view shows all received sources before Observation measurement filtering. Fields and frame correspond to the last received message of the selected type.");
   const columns = make("div", "live-columns");
   const browser = make("section", "live-browser");
-  browser.setAttribute("aria-label", "Types de messages reçus");
+  browser.setAttribute("aria-label", "Received message types");
   const filters = make("div", "live-filters");
-  const sourceLabel = make("label", "", "Source reçue");
+  const sourceLabel = make("label", "", "Received source");
   const source = make("select");
   source.id = "live-source-filter";
-  source.append(new Option("Toutes les sources", "*"));
+  source.append(new Option("All sources", "*"));
   sourceLabel.append(source);
-  const searchLabel = make("label", "", "Type ou ID");
+  const searchLabel = make("label", "", "Type or ID");
   const search = make("input");
   search.id = "live-type-filter";
   search.type = "search";
-  search.placeholder = "Ex. ATTITUDE, 30";
+  search.placeholder = "e.g. ATTITUDE, 30";
   search.maxLength = 80;
   search.autocomplete = "off";
   searchLabel.append(search);
@@ -64,13 +64,13 @@
   const listSummary = make("p", "live-list-summary");
   const list = make("div", "live-type-list");
   list.setAttribute("role", "group");
-  list.setAttribute("aria-label", "Types MAVLink reçus ; choisir pour voir les champs");
-  const empty = make("p", "live-note live-empty", "Aucun message décodé.");
+  list.setAttribute("aria-label", "Received MAVLink types; select to view fields");
+  const empty = make("p", "live-note live-empty", "No decoded messages.");
   const detailPane = make("div", "live-detail-pane");
   detailPane.tabIndex = 0;
   detailPane.setAttribute("role", "region");
-  detailPane.setAttribute("aria-label", "Champs, trame et compteurs de réception");
-  const detailEmpty = make("p", "live-note live-detail-empty", "Les champs apparaîtront à la réception d’un message.");
+  detailPane.setAttribute("aria-label", "Fields, frame and reception counters");
+  const detailEmpty = make("p", "live-note live-detail-empty", "Fields will appear when a message arrives.");
   const selected = make("section", "live-selected");
   selected.setAttribute("aria-labelledby", "live-selected-title");
   selected.hidden = true;
@@ -80,31 +80,31 @@
   const selectedMeta = make("p", "live-note live-selected-meta");
   const payload = make("details", "live-payload");
   payload.open = true;
-  payload.append(make("summary", "", "Champs décodés"));
+  payload.append(make("summary", "", "Decoded fields"));
   const fields = make("dl", "live-fields");
   payload.append(fields);
   const wire = make("details", "live-wire");
-  wire.append(make("summary", "", "Trame hexadécimale"));
+  wire.append(make("summary", "", "Hexadecimal frame"));
   const hex = make("pre", "live-hex");
   wire.append(hex);
   selected.append(selectedTitle, selectedMeta, payload, wire);
   const diagnostics = make("details", "live-diagnostics");
-  diagnostics.append(make("summary", "", "Compteurs de cette connexion"));
+  diagnostics.append(make("summary", "", "Counters for this connection"));
   const counts = make("dl", "detail-list");
   const counterNodes = {};
-  for (const [name, label] of [["rx_messages", "Messages décodés"], ["rx_bytes", "Octets reçus"],
-    ["bad_bytes", "Octets invalides"], ["unsupported_frames", "Trames non prises en charge"],
-    ["read_errors", "Erreurs de lecture"]]) {
+  for (const [name, label] of [["rx_messages", "Decoded messages"], ["rx_bytes", "Received bytes"],
+    ["bad_bytes", "Invalid bytes"], ["unsupported_frames", "Unsupported frames"],
+    ["read_errors", "Read errors"]]) {
     const row = make("div");
     const value = counterNodes[name] = make("dd", "", "—");
     row.append(make("dt", "", label), value);
     counts.append(row);
   }
-  const diagnosticNote = make("p", "live-note", "Les octets invalides sont comptés séparément. Seules les trames décodées sont consultables dans cette vue.");
+  const diagnosticNote = make("p", "live-note", "Invalid bytes are counted separately. Only decoded frames can be inspected in this view.");
   diagnostics.append(counts, diagnosticNote);
   const limits = make("p", "live-note live-limits");
   const explanation = make("details", "live-explanation");
-  explanation.append(make("summary", "", "Lire ces données"), caption, limits);
+  explanation.append(make("summary", "", "Understanding this data"), caption, limits);
   const toolbar = make("div", "live-toolbar");
   toolbar.append(heading, status, mobileNavigation);
   browser.append(filters, listSummary, list, empty);
@@ -174,8 +174,8 @@
     if (sourceSignature === signature) return;
     sourceSignature = signature;
     const previous = source.value;
-    source.replaceChildren(new Option("Toutes les sources", "*"));
-    for (const choice of choices) source.append(new Option(`Système ${choice.split(":")[0]} · composant ${choice.split(":")[1]}`, choice));
+    source.replaceChildren(new Option("All sources", "*"));
+    for (const choice of choices) source.append(new Option(`System ${choice.split(":")[0]} · component ${choice.split(":")[1]}`, choice));
     source.value = choices.includes(previous) ? previous : "*";
   }
 
@@ -223,20 +223,20 @@
   }
 
   function render() {
-    setText(endpoint, context.endpoint || "Liaison non configurée");
+    setText(endpoint, context.endpoint || "Link not configured");
     freeze.disabled = !data;
     freeze.setAttribute("aria-pressed", String(paused));
-    setText(freeze, paused ? "Reprendre" : "Figer");
-    if (paused && data) setText(status, `Instantané figé à t + ${fmt(data.at)} s. Seul cet affichage est figé.${context.serviceFresh ? "" : " Service local indisponible."}`);
-    else if (!context.serviceFresh) setText(status, "Service local indisponible. Les derniers champs restent consultables ; les débits ne sont plus actualisés.");
+    setText(freeze, paused ? "Resume" : "Freeze");
+    if (paused && data) setText(status, `Snapshot frozen at t + ${fmt(data.at)} s. Only this display is frozen.${context.serviceFresh ? "" : " Local service unavailable."}`);
+    else if (!context.serviceFresh) setText(status, "Local service unavailable. Last received fields remain viewable; rates are no longer refreshed.");
     else if (error) setText(status, error);
-    else if (!data) setText(status, "Lecture des messages…");
-    else if (!fresh()) setText(status, "Inspection non actualisée. Derniers champs conservés.");
-    else if (data.state === "unconfigured") setText(status, "Aucune liaison MAVLink configurée.");
-    else if (data.state === "reconnecting") setText(status, "Réouverture de la liaison en cours…");
-    else if (data.state === "error") setText(status, "Liaison interrompue. Derniers messages conservés.");
-    else if (!data.types.length) setText(status, "En attente du premier message décodé.");
-    else setText(status, "En direct · dernière réception de chaque type.");
+    else if (!data) setText(status, "Reading messages…");
+    else if (!fresh()) setText(status, "Inspection not refreshed. Last received fields retained.");
+    else if (data.state === "unconfigured") setText(status, "No MAVLink link configured.");
+    else if (data.state === "reconnecting") setText(status, "Reopening link…");
+    else if (data.state === "error") setText(status, "Link interrupted. Last received messages retained.");
+    else if (!data.types.length) setText(status, "Waiting for the first decoded message.");
+    else setText(status, "Live · latest reception of each type.");
     root.dataset.stale = String(!paused && !fresh());
     updateSources();
     const query = search.value.trim().toUpperCase();
@@ -260,25 +260,25 @@
       setText(row.name, `${item.type_name} · ${item.message_id}`);
       const hz = paused ? item.hz : fresh() ? age(item) >= data.window_s ? 0 : item.hz : null;
       setText(row.rate, hz == null ? "— Hz" : `${hz > 0 ? "≈ " : ""}${fmt(hz)} Hz`);
-      setText(row.origin, `${item.system} / ${item.component} · ${fmt(item.count)} reçus`);
+      setText(row.origin, `${item.system} / ${item.component} · ${fmt(item.count)} received`);
       setText(row.ageLabel, `Dernier : ${fmt(age(item))} s`);
     }
-    setText(listSummary, data ? `${shown.length} / ${items.length} types · système / composant` : "");
+    setText(listSummary, data ? `${shown.length} / ${items.length} types · system / component` : "");
     empty.hidden = shown.length > 0;
-    setText(empty, items.length ? "Aucun type pour ces filtres." : "Aucun message décodé pour cette connexion.");
+    setText(empty, items.length ? "No types match these filters." : "No decoded messages for this connection.");
     const item = items.find((entry) => key(entry) === chosen);
     selected.hidden = !item;
     detailEmpty.hidden = Boolean(item);
-    setText(detailEmpty, items.length ? "Choisir un type dans la liste pour consulter ses champs." : "Les champs apparaîtront à la réception d’un message.");
+    setText(detailEmpty, items.length ? "Select a type in the list to inspect its fields." : "Fields will appear when a message arrives.");
     showFields.disabled = !item;
     if (item) {
       setText(selectedTitle, `${item.type_name} · ${item.message_id}`);
-      setText(selectedMeta, `Système ${item.system} · composant ${item.component} · séquence ${item.sequence} · MAVLink ${item.wire_version} · ${item.frame_bytes} octets\nReçu à t + ${fmt(item.last_received_at)} s${paused ? " · instantané figé" : ""}`);
+      setText(selectedMeta, `System ${item.system} · component ${item.component} · sequence ${item.sequence} · MAVLink ${item.wire_version} · ${item.frame_bytes} bytes\nReceived at t + ${fmt(item.last_received_at)} s${paused ? " · frozen snapshot" : ""}`);
       renderFields(item);
       setText(hex, item.frame_hex.match(/.{1,2}/g)?.join(" ") || "");
     }
     for (const [name, element] of Object.entries(counterNodes)) setText(element, data ? fmt(data[name]) : "—");
-    if (data) setText(limits, `Débit approximatif sur ${fmt(data.window_s)} s, résolution ${fmt(data.rate_resolution_s)} s. ${data.max_types} couples source/type maximum.${data.evicted_types ? ` ${data.evicted_types} évictions ; le compteur d’un type revenu repart à zéro.` : ""} Les entiers sur 64 bits et valeurs non finies peuvent être affichés en texte pour préserver leur valeur.`);
+    if (data) setText(limits, `Approximate rate over ${fmt(data.window_s)} s, resolution ${fmt(data.rate_resolution_s)} s. ${data.max_types} source/type pairs maximum.${data.evicted_types ? ` ${data.evicted_types} evictions; the counter resets to zero when a type returns.` : ""} 64-bit integers and non-finite values may be displayed as text to preserve their value.`);
   }
 
   async function poll() {
@@ -292,9 +292,9 @@
       if (!response.ok) throw new Error("Inspection indisponible. Nouvelle tentative automatique.");
       const value = await response.json();
       if (token !== epoch || !canFetch()) return;
-      if (!valid(value)) throw new Error("Réponse d’inspection invalide. Derniers champs conservés.");
+      if (!valid(value)) throw new Error("Invalid inspection response. Last received fields retained.");
       if (value.run_id !== context.run_id || value.connection_id !== context.connection_id) return;
-      if (data && value.at < data.at) throw new Error("Horloge d’inspection incohérente. Derniers champs conservés.");
+      if (data && value.at < data.at) throw new Error("Inconsistent inspection clock. Last received fields retained.");
       acceptedAt = performance.now();
       if (!data || value.at > data.at) {
         progressedAt = acceptedAt;
@@ -304,7 +304,7 @@
       error = "";
     } catch (cause) {
       if (token !== epoch || !canFetch()) return;
-      error = cause.name === "AbortError" ? "Inspection sans réponse. Derniers champs conservés." : cause.message;
+      error = cause.name === "AbortError" ? "Inspection not responding. Last received fields retained." : cause.message;
     } finally {
       clearTimeout(timeout);
       if (token === epoch) {
@@ -352,7 +352,7 @@
       paused = false;
       error = "";
       sourceSignature = "";
-      source.replaceChildren(new Option("Toutes les sources", "*"));
+      source.replaceChildren(new Option("All sources", "*"));
       mobileView("types");
     }
     if (activityChanged) refreshActivity();

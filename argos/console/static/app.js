@@ -9,12 +9,12 @@
   const text = (id, value) => { const node = element(id); const next = String(value); if (node.textContent !== next) node.textContent = next; };
   const finite = (value) => typeof value === "number" && Number.isFinite(value);
   const delay = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
-  const number = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 1 });
-  const integer = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 });
+  const number = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
+  const integer = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
   const ageText = (age) => finite(age) ? `${number.format(Math.max(0, age))} s` : "—";
   const numeric = (value, unit = "") => finite(value) ? `${number.format(value)}${unit}` : "—";
-  const states = { absent: "Absent", recent: "Récent", stale: "Périmé", unconfigured: "Non configurée", waiting: "En attente", receiving: "En réception", error: "Erreur", reconnecting: "Réouverture en cours" };
-  const bootLabels = { first: "Premier échantillon", advanced: "En progression", repeated: "Valeur répétée", decreased: "Valeur en recul" };
+  const states = { absent: "Missing", recent: "Recent", stale: "Stale", unconfigured: "Not configured", waiting: "Waiting", receiving: "Receiving", error: "Error", reconnecting: "Reopening" };
+  const bootLabels = { first: "First sample", advanced: "Advancing", repeated: "Repeated value", decreased: "Decreasing value" };
   let current = null;
   let lastReceived = null;
   let lastAdvance = null;
@@ -53,13 +53,13 @@
       else button.removeAttribute("aria-current");
     }
     element("control-panel").hidden = view !== "control";
-    const title = { observation: "Observation", control: "Pilotage", messages: "MAVLink en direct", sessions: "Sessions" }[view];
+    const title = { observation: "Observation", control: "Flight controls", messages: "Live MAVLink", sessions: "Sessions" }[view];
     text("view-title", title);
     document.title = `ARGOS · ${title}`;
-    text("view-context", { observation: "Réceptions en cours", control: "Vol manuel · sans GPS", messages: "Inspection du flux actuel", sessions: "Historique · relecture" }[view]);
+    text("view-context", { observation: "Incoming data", control: "Manual flight · GPS-free", messages: "Current stream inspection", sessions: "History · replay" }[view]);
     const skip = document.querySelector(".skip-link");
     skip.href = { observation: "#workspace", control: "#control-panel", messages: "#messages-workspace", sessions: "#sessions-workspace" }[view];
-    skip.textContent = { observation: "Aller à l’observation", control: "Aller aux commandes de vol", messages: "Aller aux messages en direct", sessions: "Aller aux sessions" }[view];
+    skip.textContent = { observation: "Skip to observation", control: "Skip to flight controls", messages: "Skip to live messages", sessions: "Skip to sessions" }[view];
     document.dispatchEvent(new CustomEvent("argos:workspace-changed", { detail: { view, previous } }));
     renderPanel();
     if (view === "messages") element("messages-workspace").focus({ preventScroll: true });
@@ -70,8 +70,8 @@
   }
 
   function renderPanel() {
-    const titles = { telemetry: "Télémétrie MAVLink", video: "Vidéo", recording: "Journal MAVLink", reception: "État des réceptions", sources: "Configurer les sources" };
-    text("inspector-kind", inspectorPanel === "sources" ? "RÉGLAGES" : "INSPECTION");
+    const titles = { telemetry: "MAVLink telemetry", video: "Video", recording: "MAVLink recording", reception: "Reception status", sources: "Configure sources" };
+    text("inspector-kind", inspectorPanel === "sources" ? "SETTINGS" : "INSPECTION");
     text("inspector-title", titles[inspectorPanel] || "Inspecteur");
     element("inspector-empty").hidden = inspectorPanel !== null;
     element("inspector-close").hidden = inspectorPanel === null;
@@ -94,7 +94,7 @@
   function focusView(expanded) {
     document.body.classList.toggle("focus-mode", expanded);
     element("focus-button").setAttribute("aria-pressed", String(expanded));
-    text("focus-button", expanded ? "Rétablir le panneau" : "Vue étendue");
+    text("focus-button", expanded ? "Restore panel" : "Expanded view");
     renderPanel();
   }
 
@@ -211,7 +211,7 @@
   }
 
   function acceptState(body, started) {
-    if (!validState(body) || !validReception(body.reception) || (body.reconnecting != null && !["video", "mavlink"].includes(body.reconnecting)) || [body.video.source_id, body.telemetry.connection_id].some((id) => id !== undefined && (typeof id !== "string" || !id.length))) throw new Error("Réponse du service invalide");
+    if (!validState(body) || !validReception(body.reception) || (body.reconnecting != null && !["video", "mavlink"].includes(body.reconnecting)) || [body.video.source_id, body.telemetry.connection_id].some((id) => id !== undefined && (typeof id !== "string" || !id.length))) throw new Error("Invalid service response");
     const received = performance.now();
     if (!current && !panelChosen && body.environment === "unconfigured") inspectorPanel = "sources";
     if (!current || body.run_id !== current.run_id) {
@@ -220,7 +220,7 @@
       imageFailure = "";
       eventSignatures.clear();
     } else if (body.at < current.at) {
-      throw new Error("Horloge du service en recul");
+      throw new Error("Service clock moved backwards");
     } else if (body.at > current.at) {
       lastAdvance = started;
     }
@@ -261,7 +261,7 @@
           if (pollingAllowed() && requestedEpoch === stateEpoch) acceptState(body, started);
         }
       } catch (error) {
-        if (pollingAllowed() && requestedEpoch === stateEpoch) requestFailure = error.name === "AbortError" ? "Le service ne répond pas à temps." : "Impossible de lire l’état du service.";
+        if (pollingAllowed() && requestedEpoch === stateEpoch) requestFailure = error.name === "AbortError" ? "The service did not respond in time." : "Unable to read service status.";
       }
       render();
       await delay(Math.max(0, STATE_INTERVAL_MS - (performance.now() - started)));
@@ -271,7 +271,7 @@
   async function decodeImage(url) {
     const probe = new Image();
     await new Promise((resolve, reject) => {
-      const timer = window.setTimeout(() => { probe.src = ""; reject(new Error("Décodage trop long")); }, REQUEST_TIMEOUT_MS);
+      const timer = window.setTimeout(() => { probe.src = ""; reject(new Error("Decoding timed out")); }, REQUEST_TIMEOUT_MS);
       probe.onload = () => { window.clearTimeout(timer); resolve(); };
       probe.onerror = () => { window.clearTimeout(timer); reject(new Error("Image illisible")); };
       probe.src = url;
@@ -293,7 +293,7 @@
           const receivedAt = receivedHeader === null ? NaN : Number(receivedHeader);
           const responseRun = response.headers.get("X-Run-Id");
           if (!serviceFresh() || current.run_id !== requestedRun || responseRun !== requestedRun || current.video.source_id !== requestedVideo || (requestedVideo && response.headers.get("X-Video-Id") !== requestedVideo)) continue;
-          if (!Number.isSafeInteger(sequence) || sequence < 0 || !finite(receivedAt) || receivedAt < 0 || !body.type.startsWith("image/jpeg")) throw new Error("Réponse image invalide");
+          if (!Number.isSafeInteger(sequence) || sequence < 0 || !finite(receivedAt) || receivedAt < 0 || !body.type.startsWith("image/jpeg")) throw new Error("Invalid image response");
           if (frame && sequence <= frame.sequence) continue;
           candidateUrl = URL.createObjectURL(body);
           await decodeImage(candidateUrl);
@@ -306,7 +306,7 @@
           if (previousUrl) URL.revokeObjectURL(previousUrl);
           imageFailure = "";
         } catch (error) {
-          if (current?.run_id === requestedRun && current.video.source_id === requestedVideo) imageFailure = error.name === "AbortError" ? "Le flux image ne répond pas à temps." : "L’image n’est pas disponible ou n’a pas pu être décodée.";
+          if (current?.run_id === requestedRun && current.video.source_id === requestedVideo) imageFailure = error.name === "AbortError" ? "The image stream did not respond in time." : "The image is unavailable or could not be decoded.";
         } finally {
           if (candidateUrl) URL.revokeObjectURL(candidateUrl);
           render();
@@ -329,7 +329,7 @@
     if (!selected.length) {
       const empty = document.createElement("li");
       empty.className = "empty-event";
-      empty.textContent = "Aucun événement reçu.";
+      empty.textContent = "No events received.";
       list.append(empty);
       return;
     }
@@ -340,7 +340,7 @@
       const level = document.createElement("span");
       level.className = "event-level";
       level.dataset.level = event.level;
-      level.textContent = { info: "Information", warning: "Attention", error: "Erreur" }[event.level] || "Événement";
+      level.textContent = { info: "Information", warning: "Warning", error: "Error" }[event.level] || "Event";
       const time = document.createElement("span");
       time.textContent = finite(event.at) ? `T + ${number.format(event.at)} s` : "—";
       meta.append(level, time);
@@ -377,7 +377,7 @@
       control.disabled = !shown || blocked;
     }
     for (const name of ["environment", "video-source", "transport", "system", "component"]) element(`config-${name}`).disabled = blocked;
-    text("config-video-label", video === "device" ? "Périphérique caméra Linux" : "Topic image Gazebo");
+    text("config-video-label", video === "device" ? "Linux camera device" : "Gazebo image topic");
     const endpoint = element("config-video-endpoint");
     endpoint.placeholder = video === "device" ? "/dev/video0" : "/world/…/sensor/…/image";
     endpoint.pattern = video === "device" ? "/dev/video[0-9]+" : String.raw`/[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*`;
@@ -417,12 +417,12 @@
       });
       const body = await response.json();
       if (!response.ok) {
-        const detail = typeof body.detail === "string" ? body.detail : typeof body.error === "string" ? body.error : `Le service a refusé la demande (HTTP ${response.status}).`;
+        const detail = typeof body.detail === "string" ? body.detail : typeof body.error === "string" ? body.error : `The service rejected the request (HTTP ${response.status}).`;
         throw new Error(detail);
       }
       return body;
     } catch (error) {
-      if (error.name === "AbortError" || error instanceof TypeError) throw new Error("Réponse non confirmée. Vérifiez l’état de la session avant de réessayer.");
+      if (error.name === "AbortError" || error instanceof TypeError) throw new Error("Response unconfirmed. Check session status before retrying.");
       throw error;
     } finally {
       window.clearTimeout(timer);
@@ -439,7 +439,7 @@
     configureFormVisibility();
     element("sources-apply").disabled = blocked || active || !sourcesDirty;
     element("sources-reset").disabled = blocked || !sourcesDirty;
-    text("sources-form-hint", !fresh ? "Le service doit être connecté pour modifier les sources." : mutation === "sources" ? "Application des sources en cours…" : active ? "Arrêtez le journal MAVLink avant de changer les sources." : sourcesDirty ? "Réglages modifiés, pas encore appliqués." : "Ces réglages correspondent à la configuration active.");
+    text("sources-form-hint", !fresh ? "Connect to the service to change sources." : mutation === "sources" ? "Applying sources…" : active ? "Stop the MAVLink recording before changing sources." : sourcesDirty ? "Settings changed, not yet applied." : "These settings match the active configuration.");
     element("recording-start").disabled = blocked || active || !current || ["unconfigured", "error", "reconnecting"].includes(current.telemetry.state);
     // Stopping stays available after a telemetry fault while the service is
     // reachable; the server decides whether the journal can be finalized.
@@ -448,23 +448,23 @@
     element("recording-stop").hidden = !active;
     const interrupted = recording?.state === "complete" && ["transport_error", "shutdown"].includes(recording.end_reason);
     const atLimit = recording?.state === "complete" && ["event_limit", "size_limit"].includes(recording.end_reason);
-    const labels = { idle: "Prêt", recording: "Enregistrement", complete: interrupted ? "Interrompu" : atLimit ? "Limite atteinte" : "Terminé", error: "Erreur" };
+    const labels = { idle: "Ready", recording: "Recording", complete: interrupted ? "Interrupted" : atLimit ? "Limit reached" : "Complete", error: "Error" };
     const tone = !fresh ? "neutral" : recording.state === "error" ? "error" : interrupted || atLimit ? "warning" : active ? "positive" : "neutral";
-    badge("recording-state", fresh ? labels[recording.state] : "Non actualisé", tone);
-    const globalLabel = !fresh ? "Capture · non actualisée" : active ? "Capture en cours" : recording.state === "error" ? "Capture en erreur" : interrupted ? "Capture interrompue" : atLimit ? "Capture · limite atteinte" : recording.state === "complete" ? "Capture terminée" : "Capture prête";
+    badge("recording-state", fresh ? labels[recording.state] : "Not refreshed", tone);
+    const globalLabel = !fresh ? "Capture · not refreshed" : active ? "Capture in progress" : recording.state === "error" ? "Capture error" : interrupted ? "Capture interrupted" : atLimit ? "Capture · limit reached" : recording.state === "complete" ? "Capture complete" : "Capture ready";
     badge("global-recording-state", globalLabel, tone);
     element("global-recording").dataset.tone = tone;
     element("global-recording-dot").dataset.tone = tone;
-    element("global-recording").title = !fresh ? "L’état de capture n’est plus actualisé. Ouvrir le journal MAVLink." : `${globalLabel}${recording.end_detail || recording.error ? ` · ${recording.end_detail || recording.error}` : ""}. Ouvrir le journal MAVLink.`;
-    text("recording-limits", fresh && Number.isSafeInteger(recording.max_events) && Number.isSafeInteger(recording.max_bytes) ? `Clôture automatique à ${integer.format(recording.max_events)} messages ou ${numeric(recording.max_bytes / 1048576, " Mio")}. Taille actuelle : ${numeric(recording.size_bytes / 1048576, " Mio")}.` : "");
+    element("global-recording").title = !fresh ? "Capture status is no longer refreshed. Open the MAVLink recording panel." : `${globalLabel}${recording.end_detail || recording.error ? ` · ${recording.end_detail || recording.error}` : ""}. Open the MAVLink recording panel.`;
+    text("recording-limits", fresh && Number.isSafeInteger(recording.max_events) && Number.isSafeInteger(recording.max_bytes) ? `Automatically closes at ${integer.format(recording.max_events)} messages or ${numeric(recording.max_bytes / 1048576, " MiB")}. Current size: ${numeric(recording.size_bytes / 1048576, " MiB")}.` : "");
     badge("detail-recording-state", element("recording-state").textContent, element("recording-state").dataset.tone);
-    badge("archive-live-recording", !fresh ? "État de la capture non actualisé" : active ? `Capture en cours · ${integer.format(recording.events)} trames` : recording.state === "error" ? "Capture en erreur · consulter le journal" : interrupted || atLimit ? `${globalLabel} · journal disponible` : "Aucune capture en cours", element("recording-state").dataset.tone);
-    text("journal-detail-title", active ? "Capture en cours" : recording?.id ? "Dernier journal du service" : "Enregistrement des réceptions");
-    text("recording-id", recording?.id || "Aucun journal");
+    badge("archive-live-recording", !fresh ? "Capture status not refreshed" : active ? `Capture in progress · ${integer.format(recording.events)} frames` : recording.state === "error" ? "Capture error · inspect recording" : interrupted || atLimit ? `${globalLabel} · recording available` : "No capture in progress", element("recording-state").dataset.tone);
+    text("journal-detail-title", active ? "Capture in progress" : recording?.id ? "Latest service recording" : "Recording incoming data");
+    text("recording-id", recording?.id || "No recording");
     text("recording-events", fresh ? integer.format(recording.events) : "—");
     const end = active ? runTime(now) : recording?.ended_at;
     text("recording-duration", fresh && finite(recording.started_at) && finite(end) ? ageText(end - recording.started_at) : "—");
-    text("recording-hint", !fresh ? "Le service doit être connecté pour agir sur le journal." : mutation?.startsWith("recording") ? "Demande en cours…" : recording.state === "error" ? `Échec de l’écriture : ${recording.error || "le journal ne peut pas être finalisé."}` : active ? "Capture en cours. Arrêter finalise le journal téléchargeable." : interrupted || atLimit ? `${interrupted ? "Capture interrompue" : "Limite de capture atteinte"}. ${recording.end_detail || ""} Le journal finalisé reste téléchargeable et consultable dans Sessions.` : current.telemetry.state === "unconfigured" ? "Configurez une source MAVLink dans Sources pour enregistrer ses réceptions." : current.telemetry.state === "error" ? "La liaison MAVLink doit être rétablie avant une nouvelle capture." : recording.state === "complete" ? "Journal finalisé. Il reste disponible dans Sessions, même après une nouvelle capture." : "Prêt à enregistrer les prochaines réceptions MAVLink.");
+    text("recording-hint", !fresh ? "Connect to the service to control recording." : mutation?.startsWith("recording") ? "Request in progress…" : recording.state === "error" ? `Write failed: ${recording.error || "the recording cannot be finalized."}` : active ? "Capture in progress. Stop finalizes the downloadable recording." : interrupted || atLimit ? `${interrupted ? "Capture interrupted" : "Capture limit reached"}. ${recording.end_detail || ""} The finalized recording remains available for download and viewing in Sessions.` : current.telemetry.state === "unconfigured" ? "Configure a MAVLink source in Sources to record incoming data." : current.telemetry.state === "error" ? "Restore the MAVLink link before starting a new capture." : recording.state === "complete" ? "Recording finalized. It remains available in Sessions, even after a new capture." : "Ready to record incoming MAVLink data.");
     const download = element("recording-download");
     const downloadable = fresh && recording.state === "complete" && typeof recording.download_url === "string" && recording.download_url === `/api/recordings/${recording.id}/download`;
     download.hidden = !downloadable;
@@ -481,41 +481,41 @@
   function renderSources(fresh) {
     if (!current) return;
     const { video, telemetry, environment } = current;
-    const unavailable = expectedPause() ? "Actualisation en attente" : "Service inaccessible";
-    const env = { simulation: "Simulation", real: "Réel déclaré", unconfigured: "Aucun environnement configuré" }[environment] || "Environnement inconnu";
-    text("source-environment", fresh ? env : `${env} · dernière configuration reçue, ${unavailable.toLowerCase()}`);
-    text("source-video-label", video.source === "none" ? "Aucune caméra configurée" : video.label);
-    text("source-video-endpoint", video.endpoint || "Non configuré");
+    const unavailable = expectedPause() ? "Refresh pending" : "Service unreachable";
+    const env = { simulation: "Simulation", real: "Reported as real", unconfigured: "No environment configured" }[environment] || "Unknown environment";
+    text("source-environment", fresh ? env : `${env} · last received configuration, ${unavailable.toLowerCase()}`);
+    text("source-video-label", video.source === "none" ? "No camera configured" : video.label);
+    text("source-video-endpoint", video.endpoint || "Not configured");
     text("source-video-limit", ageText(video.age_limit_s));
-    text("source-video-detail", video.detail || "Aucun détail disponible.");
+    text("source-video-detail", video.detail || "No details available.");
     badge("source-video-state", fresh ? (states[video.state] || video.state) : unavailable, fresh && video.state === "recent" ? "positive" : fresh && video.state === "error" ? "error" : "neutral");
-    text("source-telemetry-endpoint", telemetry.endpoint || "Non configuré");
-    text("source-telemetry-id", `Système ${telemetry.system} · composant ${telemetry.component}`);
+    text("source-telemetry-endpoint", telemetry.endpoint || "Not configured");
+    text("source-telemetry-id", `System ${telemetry.system} · component ${telemetry.component}`);
     const effectiveTelemetryState = telemetryState(performance.now());
     badge("source-telemetry-state", fresh ? (states[effectiveTelemetryState] || effectiveTelemetryState) : unavailable, fresh && effectiveTelemetryState === "receiving" ? "positive" : fresh && effectiveTelemetryState === "error" ? "error" : fresh && effectiveTelemetryState === "stale" ? "warning" : "neutral");
-    text("active-source-summary", `${video.label} · ${telemetry.endpoint || "MAVLink non configuré"}`);
+    text("active-source-summary", `${video.label} · ${telemetry.endpoint || "MAVLink not configured"}`);
     text("detail-video-size", fresh && finite(video.width) && finite(video.height) ? `${video.width} × ${video.height}` : "—");
     text("detail-video-age", fresh ? ageText(currentFrameAge(performance.now())) : "—");
     badge("source-video-state", element("video-status").textContent, element("video-status").dataset.tone);
-    text("video-last-rejection", fresh ? video.last_rejection || "Aucune image refusée." : "Refus non actualisés.");
+    text("video-last-rejection", fresh ? video.last_rejection || "No rejected images." : "Rejections not refreshed.");
   }
 
   function renderDetails(fresh, now) {
     if (!current) return;
     const t = current.telemetry;
-    text("details-service-state", fresh ? "Compteurs de cette observation. Ils ne mesurent ni les pertes ni la latence radio." : "État non actualisé : les valeurs sont masquées. Les événements conservés décrivent la dernière observation reçue.");
+    text("details-service-state", fresh ? "Counters for this observation. They do not measure radio loss or latency." : "Status not refreshed: values are hidden. Retained events describe the last received observation.");
     for (const [id, value] of Object.entries({ "count-rx": t.rx_messages, "count-bytes": t.rx_bytes, "count-accepted": t.accepted, "count-rejected": t.rejected, "count-other-source": t.ignored_source, "count-other-type": t.ignored_type, "count-bad-bytes": t.bad_bytes, "count-video-rejected": current.video.rejected })) text(id, fresh && finite(value) ? integer.format(value) : "—");
     const rejection = t.last_rejection;
-    text("last-rejection", fresh ? (rejection || "Aucun refus signalé.") : "Refus non actualisés.");
+    text("last-rejection", fresh ? (rejection || "No rejections reported.") : "Rejections not refreshed.");
     for (const [name, view] of [["heartbeat", t.heartbeat], ["position", t.local_position_ned], ["battery", t.battery], ["attitude", t.attitude]]) {
       const recent = fresh && viewRecent(view, now);
-      badge(`detail-${name}-state`, fresh ? (t.state === "error" ? "Liaison interrompue" : states[viewState(view, now)] || "Absent") : "Non actualisé", recent ? "positive" : fresh && viewState(view, now) === "stale" ? "warning" : "neutral");
+      badge(`detail-${name}-state`, fresh ? (t.state === "error" ? "Link interrupted" : states[viewState(view, now)] || "Missing") : "Not refreshed", recent ? "positive" : fresh && viewState(view, now) === "stale" ? "warning" : "neutral");
       text(`detail-${name}-age`, fresh ? ageText(stateAge(view, now)) : "—");
     }
     const heartbeat = fresh && viewRecent(t.heartbeat, now) ? t.heartbeat.fields : null;
     const mode = fresh && viewRecent(t.mode, now) ? t.mode : null;
-    text("detail-mode-label", mode ? mode.known ? mode.label : finite(mode.custom_mode) ? `Inconnu · brut ${mode.custom_mode}` : "Inconnu" : "—");
-    text("detail-armed", Number.isSafeInteger(heartbeat?.base_mode) ? ((heartbeat.base_mode & 128) !== 0 ? "Armé" : "Désarmé") : "—");
+    text("detail-mode-label", mode ? mode.known ? mode.label : finite(mode.custom_mode) ? `Unknown · raw ${mode.custom_mode}` : "Unknown" : "—");
+    text("detail-armed", Number.isSafeInteger(heartbeat?.base_mode) ? ((heartbeat.base_mode & 128) !== 0 ? "Armed" : "Disarmed") : "—");
     text("detail-autopilot", heartbeat && finite(heartbeat.type) && finite(heartbeat.autopilot) ? `${heartbeat.type} / ${heartbeat.autopilot}` : "—");
     text("detail-custom-mode", heartbeat && finite(heartbeat.custom_mode) ? heartbeat.custom_mode : "—");
     const battery = fresh && viewRecent(t.battery, now) ? t.battery : null;
@@ -532,10 +532,10 @@
     text("detail-position-boot", fresh ? (bootLabels[String(t.local_position_ned.boot_progress).toLowerCase()] || "—") : "—");
     renderAutopilotStatus(fresh, now);
     renderEvents("all-events", current.events, current.events.length);
-    text("events-context", fresh ? "Les 60 derniers événements de réception, caméra et MAVLink." : "Historique conservé de la dernière observation reçue. Les réceptions ne sont plus actualisées.");
+    text("events-context", fresh ? "The latest 60 reception, camera and MAVLink events." : "Retained history of the last received observation. Incoming data is no longer refreshed.");
   }
 
-  const textReasons = { assembling: "Fragments attendus", timeout: "Délai entre fragments dépassé", missing_chunk: "Fragment manquant", conflicting_chunk: "Fragments contradictoires", severity_changed: "Sévérité modifiée pendant l’assemblage", restarted: "Identifiant réutilisé", limit: "Limite d’assemblage atteinte", reconnect: "Liaison rouverte avant la fin" };
+  const textReasons = { assembling: "Waiting for chunks", timeout: "Chunk timeout", missing_chunk: "Missing chunk", conflicting_chunk: "Conflicting chunks", severity_changed: "Severity changed during assembly", restarted: "ID reused", limit: "Assembly limit reached", reconnect: "Link reopened before completion" };
   let autopilotTextSignature = "";
 
   function renderAutopilotStatus(fresh, now) {
@@ -543,12 +543,12 @@
     const declaration = status?.declaration;
     const age = finite(declaration?.rx_age_s) ? Math.max(declaration.rx_age_s + Math.max(0, runTime(now) - current.at), finite(declaration.received_at) ? runTime(now) - declaration.received_at : 0) : null;
     const recent = fresh && !["error", "reconnecting"].includes(current.telemetry.state) && declaration?.state === "recent" && finite(age) && age <= declaration.age_limit_s;
-    text("detail-system-status", recent && typeof declaration.label === "string" ? `${declaration.label} · déclaré` : !fresh ? "Non actualisé" : declaration?.state === "stale" || finite(age) && age > declaration.age_limit_s ? "Déclaration ancienne" : "Non renseigné");
+    text("detail-system-status", recent && typeof declaration.label === "string" ? `${declaration.label} · reported` : !fresh ? "Not refreshed" : declaration?.state === "stale" || finite(age) && age > declaration.age_limit_s ? "Stale report" : "Unknown");
     element("detail-system-status").title = recent && typeof declaration.name === "string" ? declaration.name : "";
     const history = status?.texts;
     const entries = Array.isArray(history?.entries) ? history.entries.slice(0, 60).filter((entry) => entry && Number.isSafeInteger(entry.id) && typeof entry.text === "string" && typeof entry.severity_label === "string" && typeof entry.connection_id === "string" && [entry.received_at, entry.first_received_at, entry.rx_age_s].every((value) => finite(value) && value >= 0) && [entry.system, entry.component, entry.severity, entry.chunks].every(Number.isSafeInteger)) : [];
-    text("autopilot-texts-summary", `Messages de l’autopilote · ${entries.length}`);
-    text("autopilot-texts-state", !history ? "Historique non communiqué par ce service." : !fresh ? "Historique conservé · service non actualisé. Les âges actuels ne sont pas disponibles." : entries.length ? `Système ${history.system} · composant ${history.component} · du plus récent au plus ancien.` : "Aucun STATUSTEXT reçu pour ce composant dans cette observation.");
+    text("autopilot-texts-summary", `Autopilot messages · ${entries.length}`);
+    text("autopilot-texts-state", !history ? "History not provided by this service." : !fresh ? "Retained history · service not refreshed. Current ages are unavailable." : entries.length ? `System ${history.system} · component ${history.component} · newest first.` : "No STATUSTEXT received for this component in this observation.");
     if (!element("autopilot-texts").open) return;
     const signature = JSON.stringify([history?.connection_id, entries.map(({ rx_age_s, ...entry }) => entry)]);
     if (signature !== autopilotTextSignature) {
@@ -558,20 +558,20 @@
         const item = document.createElement("li");
         const heading = document.createElement("p");
         heading.className = "autopilot-text-heading";
-        heading.textContent = `${entry.severity_label} · sévérité ${entry.severity}`;
+        heading.textContent = `${entry.severity_label} · severity ${entry.severity}`;
         const body = document.createElement("p");
         body.className = "autopilot-text-body";
         body.textContent = entry.text;
         const origin = document.createElement("p");
         origin.className = "microcopy";
-        origin.textContent = `Système ${entry.system} · composant ${entry.component} · réception T + ${ageText(entry.received_at)}${entry.connection_id !== history.connection_id ? " · connexion précédente" : ""}`;
+        origin.textContent = `System ${entry.system} · component ${entry.component} · reception T + ${ageText(entry.received_at)}${entry.connection_id !== history.connection_id ? " · previous connection" : ""}`;
         origin.title = `Connexion ${entry.connection_id}`;
         const received = document.createElement("p");
         received.className = "microcopy autopilot-text-age";
         received.dataset.id = String(entry.id);
         const completeness = document.createElement("p");
         completeness.className = "microcopy";
-        completeness.textContent = `${entry.complete ? "Texte complet" : `Texte incomplet · ${textReasons[entry.reason] || "assemblage non terminé"}`}${entry.utf8_valid === false ? " · UTF-8 incomplet ou invalide" : ""}`;
+        completeness.textContent = `${entry.complete ? "Complete text" : `Incomplete text · ${textReasons[entry.reason] || "assembly incomplete"}`}${entry.utf8_valid === false ? " · Incomplete or invalid UTF-8" : ""}`;
         item.append(heading, body, origin, received, completeness);
         fragment.append(item);
       }
@@ -580,10 +580,10 @@
     for (const received of element("autopilot-text-list").querySelectorAll(".autopilot-text-age")) {
       const entry = entries.find((item) => String(item.id) === received.dataset.id);
       if (!entry) continue;
-      const value = fresh ? `Reçu il y a ${ageText(Math.max(entry.rx_age_s, runTime(now) - entry.received_at))}` : "Ancienneté non actualisée";
+      const value = fresh ? `Received ${ageText(Math.max(entry.rx_age_s, runTime(now) - entry.received_at))} ago` : "Age not refreshed";
       if (received.textContent !== value) received.textContent = value;
     }
-    text("autopilot-texts-limits", history ? `Historique borné à ${Number.isSafeInteger(history.max_entries) ? history.max_entries : 60} textes ; ${integer.format(history.evicted_entries || 0)} anciens retirés. ${integer.format(history.pending || 0)} assemblages en attente ; ${integer.format(history.rejected || 0)} fragments refusés.${history.last_rejection ? ` Dernier refus : ${history.last_rejection}` : ""}` : "");
+    text("autopilot-texts-limits", history ? `History limited to ${Number.isSafeInteger(history.max_entries) ? history.max_entries : 60} texts; ${integer.format(history.evicted_entries || 0)} older entries removed. ${integer.format(history.pending || 0)} pending assemblies; ${integer.format(history.rejected || 0)} rejected chunks.${history.last_rejection ? ` Last rejection: ${history.last_rejection}` : ""}` : "");
   }
 
   function renderReception(fresh, now) {
@@ -600,18 +600,18 @@
     const recovery = current?.reception?.last_recovery;
     const reconnecting = current?.reconnecting || (mutation?.startsWith("reconnect-") ? mutation.slice(10) : null);
     const imageAvailable = fresh && video.state === "recent" && frame !== null && currentFrameAge(now) <= video.age_limit_s;
-    const viewNames = { heartbeat: "mode", battery: "batterie", attitude: "attitude", local_position_ned: "position locale" };
+    const viewNames = { heartbeat: "mode", battery: "battery", attitude: "attitude", local_position_ned: "local position" };
     const usable = imageAvailable ? ["image"] : [];
-    badge("available-video", !fresh ? "Non actualisée" : imageAvailable ? "Récente" : states[video.state] === "Récent" ? "Affichage en attente" : states[video.state], imageAvailable ? "positive" : "neutral");
+    badge("available-video", !fresh ? "Not refreshed" : imageAvailable ? "Recent" : states[video.state] === "Recent" ? "Display pending" : states[video.state], imageAvailable ? "positive" : "neutral");
     for (const name of Object.keys(viewNames)) {
       const recent = fresh && viewRecent(t[name], now);
       if (recent) usable.push(viewNames[name]);
-      badge(`available-${name}`, !fresh ? "Non actualisé" : recent ? `Récent · ${ageText(stateAge(t[name], now))}` : t.state === "error" ? "Liaison interrompue" : t.state === "reconnecting" ? "Réouverture" : t[name].state === "absent" ? "Non reçu" : `Périmé · ${ageText(stateAge(t[name], now))}`, recent ? "positive" : fresh && t[name].state === "stale" ? "warning" : "neutral");
+      badge(`available-${name}`, !fresh ? "Not refreshed" : recent ? `Recent · ${ageText(stateAge(t[name], now))}` : t.state === "error" ? "Link interrupted" : t.state === "reconnecting" ? "Reopening" : t[name].state === "absent" ? "Not received" : `Stale · ${ageText(stateAge(t[name], now))}`, recent ? "positive" : fresh && t[name].state === "stale" ? "warning" : "neutral");
     }
-    text("reception-summary", actionPending ? "Actualisation en attente pendant l’action demandée. Les données trop anciennes restent masquées." : !fresh ? "Service inaccessible : la disponibilité des sources ne peut plus être vérifiée. Réessai automatique en cours." : usable.length ? `Réceptions récentes disponibles : ${usable.join(", ")}.` : "Aucune image ni mesure récente disponible actuellement.");
+    text("reception-summary", actionPending ? "Refresh pending during the requested action. Stale data remains hidden." : !fresh ? "Service unreachable: source availability cannot be verified. Retrying automatically." : usable.length ? `Recent data available: ${usable.join(", ")}.` : "No recent image or measurement currently available.");
     const displayFailure = fresh && video.state === "recent" && !imageAvailable && Boolean(imageFailure || (frame && currentFrameAge(now) > video.age_limit_s));
-    const shown = !fresh && serviceLostAt !== null ? [{ id: "service", source: "service", title: "Service ARGOS inaccessible", detail: "Vérifiez que le service local est lancé. Cela ne permet pas de conclure à une coupure de la caméra ou de MAVLink.", state: "active" }] : issues.slice();
-    if (displayFailure) shown.push({ id: "display", source: "display", title: "Affichage vidéo interrompu", detail: "Le service reçoit des images, mais leur affichage ne se renouvelle plus dans ce navigateur. La console réessaie automatiquement.", state: "active" });
+    const shown = !fresh && serviceLostAt !== null ? [{ id: "service", source: "service", title: "ARGOS service unreachable", detail: "Check that the local service is running. This does not establish a camera or MAVLink outage.", state: "active" }] : issues.slice();
+    if (displayFailure) shown.push({ id: "display", source: "display", title: "Video display interrupted", detail: "The service receives images, but this browser is no longer refreshing them. The console retries automatically.", state: "active" });
     const signature = JSON.stringify(shown.map(({ since, ...item }) => item));
     if (signature !== issueSignature) {
       issueSignature = signature;
@@ -619,7 +619,7 @@
         const row = document.createElement("li");
         row.dataset.incident = item.id;
         const title = document.createElement("h4");
-        title.textContent = item.state === "recovering" ? "Reprise en cours de confirmation" : item.title;
+        title.textContent = item.state === "recovering" ? "Confirming recovery" : item.title;
         const detail = document.createElement("p");
         detail.className = "section-note";
         detail.textContent = item.detail;
@@ -632,30 +632,30 @@
     }
     for (const row of element("reception-issues").children) {
       const item = shown.find((issue) => String(issue.id) === row.dataset.incident);
-      const label = item.source === "service" ? `Depuis ${ageText((now - serviceLostAt) / 1000)}` : finite(item.since) ? `Observé depuis ${ageText(elapsed - item.since)}` : "Réception caméra et affichage sont vérifiés séparément.";
+      const label = item.source === "service" ? `For ${ageText((now - serviceLostAt) / 1000)}` : finite(item.since) ? `Observed for ${ageText(elapsed - item.since)}` : "Camera reception and display are checked separately.";
       if (row.lastChild.textContent !== label) row.lastChild.textContent = label;
     }
-    const recoveryLabel = recovery ? `${recovery.source === "video" ? "Images" : "Réceptions MAVLink"} rétablies · interruption observée ${ageText(recovery.duration_s)} · T + ${number.format(recovery.at)} s.` : "";
+    const recoveryLabel = recovery ? `${recovery.source === "video" ? "Images" : "MAVLink reception"} restored · observed interruption ${ageText(recovery.duration_s)} · T + ${number.format(recovery.at)} s.` : "";
     text("reception-recovery", fresh ? recoveryLabel : "");
     let noticeTitle = "", noticeAge = "", tone = "warning";
     if (actionPending) {
-      noticeTitle = "Action en cours · actualisation en attente";
+      noticeTitle = "Action in progress · refresh pending";
       tone = "neutral";
     } else if (shown.length) {
-      noticeTitle = shown.length > 1 ? `${shown.length} réceptions à vérifier` : shown[0].state === "recovering" ? "Reprise en cours de confirmation" : shown[0].title;
-      noticeAge = shown[0].source === "service" ? `depuis ${ageText((now - serviceLostAt) / 1000)}` : finite(shown[0].since) ? `depuis ${ageText(elapsed - shown[0].since)}` : "";
+      noticeTitle = shown.length > 1 ? `${shown.length} data sources to check` : shown[0].state === "recovering" ? "Confirming recovery" : shown[0].title;
+      noticeAge = shown[0].source === "service" ? `for ${ageText((now - serviceLostAt) / 1000)}` : finite(shown[0].since) ? `for ${ageText(elapsed - shown[0].since)}` : "";
     } else if (fresh && reconnecting) {
-      noticeTitle = reconnecting === "video" ? "Réouverture de la caméra…" : "Réouverture MAVLink…";
+      noticeTitle = reconnecting === "video" ? "Reopening camera…" : "Reopening MAVLink…";
     } else if (fresh && recovery && elapsed - recovery.at <= 10) {
-      noticeTitle = recovery.source === "video" ? "Images reçues à nouveau" : "Réceptions MAVLink rétablies";
+      noticeTitle = recovery.source === "video" ? "Images receiving again" : "MAVLink reception restored";
       tone = "positive";
     } else if (fresh && serviceRecovery && now - serviceRecovery.at <= 10000) {
-      noticeTitle = "Service de nouveau accessible";
+      noticeTitle = "Service reachable again";
       noticeAge = `interruption ${ageText(serviceRecovery.duration)}`;
       tone = "positive";
     }
     const recoveryCount = shown.filter((issue) => issue.state === "recovering").length;
-    const receptionLabel = actionPending ? "Actualisation en attente" : !fresh ? current ? "Non actualisé" : "En attente" : shown.length ? recoveryCount === shown.length ? "Reprise en cours" : `${shown.length} incident${shown.length > 1 ? "s" : ""} en cours` : reconnecting ? "Réouverture en cours" : recovery && elapsed - recovery.at <= 10 ? "Réception rétablie" : "Aucun incident de réception";
+    const receptionLabel = actionPending ? "Refresh pending" : !fresh ? current ? "Not refreshed" : "Waiting" : shown.length ? recoveryCount === shown.length ? "Recovering" : `${shown.length} incident${shown.length > 1 ? "s" : ""} active` : reconnecting ? "Reopening" : recovery && elapsed - recovery.at <= 10 ? "Reception restored" : "No reception incidents";
     badge("reception-state", receptionLabel, fresh && shown.length ? "warning" : "neutral");
     element("reception-notice").hidden = !noticeTitle;
     badge("reception-notice-title", noticeTitle, tone);
@@ -666,9 +666,9 @@
       const journal = source === "mavlink" && current?.recording.state === "recording";
       for (const button of document.querySelectorAll(`[data-reconnect="${source}"]`)) {
         button.disabled = !fresh || Boolean(mutation || reconnecting) || !configured || journal;
-        button.textContent = reconnecting === source ? "Réouverture en cours…" : source === "video" ? "Réouvrir la caméra" : "Réouvrir MAVLink";
+        button.textContent = reconnecting === source ? "Reopening…" : source === "video" ? "Reopen camera" : "Reopen MAVLink";
       }
-      const hint = !fresh ? "Réouverture disponible lorsque le service est accessible." : !configured ? `${source === "video" ? "Caméra" : "MAVLink"} : source à configurer.` : journal ? "Arrêtez le journal avant de réouvrir MAVLink. La capture ne redémarre pas automatiquement." : source === "video" ? "Réouvre la caméra avec les réglages actifs ; MAVLink reste en réception." : "Réouvre le récepteur MAVLink ; la caméra reste en réception. Les compteurs MAVLink repartent de zéro.";
+      const hint = !fresh ? "Reopening is available when the service is reachable." : !configured ? `${source === "video" ? "Camera" : "MAVLink"} : configure this source.` : journal ? "Stop recording before reopening MAVLink. Capture does not restart automatically." : source === "video" ? "Reopens the camera with the active settings; MAVLink reception continues." : "Reopens the MAVLink receiver; camera reception continues. MAVLink counters restart from zero.";
       for (const node of document.querySelectorAll(`[data-reconnect-hint="${source}"]`)) if (node.textContent !== hint) node.textContent = hint;
     }
   }
@@ -685,27 +685,27 @@
     renderControls(fresh, now);
     renderPanel();
     renderReception(fresh, now);
-    text("service-status", fresh ? "Service connecté" : actionPending ? "Action en cours…" : connecting ? "Connexion au service…" : "Service inaccessible");
+    text("service-status", fresh ? "Service connected" : actionPending ? "Action in progress…" : connecting ? "Connecting to service…" : "Service unreachable");
     element("service-dot").dataset.tone = fresh ? "positive" : connecting || actionPending ? "neutral" : "error";
-    text("environment", current ? ({ simulation: "SIMULATION", real: "RÉEL DÉCLARÉ", unconfigured: "SOURCES À CONFIGURER" }[current.environment] || "ENVIRONNEMENT INCONNU") : "Aucune session reçue");
+    text("environment", current ? ({ simulation: "SIMULATION", real: "REPORTED AS REAL", unconfigured: "CONFIGURE SOURCES" }[current.environment] || "UNKNOWN ENVIRONMENT") : "No session received");
     if (!fresh) {
       element("camera-image").hidden = true;
       element("camera-image-caption").hidden = true;
       element("camera-empty").hidden = false;
-      badge("video-status", connecting ? "En attente" : "Non actualisée", connecting ? "neutral" : "warning");
-      text("camera-empty-title", actionPending ? "Actualisation en attente" : connecting ? "Connexion au service…" : "La console ne reçoit plus d’état");
-      text("camera-empty-detail", actionPending ? "L’action demandée est en cours. L’image et les valeurs trop anciennes sont masquées jusqu’au prochain état reçu." : connecting ? "La console attend l’état de ses sources." : "Vérifiez que le service ARGOS est lancé et accessible. L’image et les valeurs sont masquées jusqu’au rétablissement de la réception.");
-      text("camera-source", current?.video.label || "Non disponible");
+      badge("video-status", connecting ? "Waiting" : "Not refreshed", connecting ? "neutral" : "warning");
+      text("camera-empty-title", actionPending ? "Refresh pending" : connecting ? "Connecting to service…" : "The console is no longer receiving status");
+      text("camera-empty-detail", actionPending ? "The requested action is in progress. Stale images and values stay hidden until new status arrives." : connecting ? "Waiting for source status." : "Check that the ARGOS service is running and reachable. Images and values stay hidden until reception recovers.");
+      text("camera-source", current?.video.label || "Unavailable");
       text("camera-age", "—");
       text("camera-size", "");
-      badge("telemetry-status", connecting ? "En attente" : "Non actualisée", connecting ? "neutral" : "warning");
-      text("telemetry-hint", connecting ? "L’état de la réception apparaîtra ici." : actionPending ? "Action en cours. Les valeurs attendent un nouvel état du service." : "Service inaccessible. Les dernières valeurs ne sont pas présentées comme actuelles.");
+      badge("telemetry-status", connecting ? "Waiting" : "Not refreshed", connecting ? "neutral" : "warning");
+      text("telemetry-hint", connecting ? "Reception status will appear here." : actionPending ? "Action in progress. Values are waiting for new service status." : "Service unreachable. Last received values are not shown as current.");
       for (const id of ["roll", "pitch", "yaw", "flight-mode", "armed-preview", "battery-remaining", "position-north", "position-east", "position-down"]) text(id, "—");
-      text("attitude-age", "Non actualisée");
-      text("battery-age", "Non actualisée");
-      text("position-age", "Non actualisée");
-      text("heartbeat-status", "Non actualisé");
-      text("session-status", current ? "Observation interrompue · réception non actualisée" : "Aucune observation reçue");
+      text("attitude-age", "Not refreshed");
+      text("battery-age", "Not refreshed");
+      text("position-age", "Not refreshed");
+      text("heartbeat-status", "Not refreshed");
+      text("session-status", current ? "Observation interrupted · reception not refreshed" : "No observation received");
       renderSources(false);
       renderDetails(false, now);
       return;
@@ -718,48 +718,48 @@
     element("camera-image-caption").hidden = !visible;
     element("camera-empty").hidden = visible;
     const frameExpired = frame !== null && age > video.age_limit_s;
-    let videoLabel = states[video.state] || "État inconnu";
-    let emptyTitle = "En attente d’une image";
-    let emptyDetail = video.detail || "La source est configurée. Vérifiez que la caméra du drone transmet vers le point de réception indiqué dans Sources.";
+    let videoLabel = states[video.state] || "Unknown state";
+    let emptyTitle = "Waiting for an image";
+    let emptyDetail = video.detail || "The source is configured. Check that the drone camera is sending to the endpoint shown in Sources.";
     if (video.state === "unconfigured") {
-      emptyTitle = "Aucune caméra configurée";
-      emptyDetail = "Configurez la caméra Gazebo ou la caméra du drone dans Sources. Son image apparaîtra ici dès réception.";
+      emptyTitle = "No camera configured";
+      emptyDetail = "Configure the Gazebo or drone camera in Sources. Its image will appear here when received.";
     } else if (video.state === "reconnecting") {
-      emptyTitle = "Réouverture de la caméra…";
+      emptyTitle = "Reopening camera…";
     } else if (video.state === "error") {
-      emptyTitle = "La caméra signale une erreur";
+      emptyTitle = "The camera reports an error";
     } else if (video.state === "stale" || frameExpired) {
-      videoLabel = "Image périmée";
-      emptyTitle = "L’image ne se renouvelle plus";
-      emptyDetail = "La dernière image dépasse la limite d’ancienneté. Vérifiez le flux de la caméra ; l’affichage reprendra à réception d’une image récente.";
+      videoLabel = "Stale image";
+      emptyTitle = "The image is no longer updating";
+      emptyDetail = "The last image exceeds the age limit. Check the camera stream; display will resume when a recent image arrives.";
     } else if (video.state === "recent" && !frame) {
-      videoLabel = "Image en attente";
-      emptyDetail = imageFailure || "Le service reçoit des images. La console attend une image décodable.";
+      videoLabel = "Waiting for image";
+      emptyDetail = imageFailure || "The service receives images. The console is waiting for a decodable image.";
     }
-    badge("video-status", visible ? "Image récente" : videoLabel, visible ? "positive" : video.state === "error" ? "error" : video.state === "stale" || frameExpired ? "warning" : "neutral");
+    badge("video-status", visible ? "Recent image" : videoLabel, visible ? "positive" : video.state === "error" ? "error" : video.state === "stale" || frameExpired ? "warning" : "neutral");
     text("camera-empty-title", emptyTitle);
     text("camera-empty-detail", emptyDetail);
-    text("camera-source", video.source === "none" ? "Non configurée" : video.label);
+    text("camera-source", video.source === "none" ? "Not configured" : video.label);
     text("camera-age", frame ? ageText(age) : "—");
     text("camera-size", visible && finite(video.width) && finite(video.height) ? `${video.width} × ${video.height}` : "");
     text("image-sequence", frame ? `n° ${integer.format(frame.sequence)}` : "");
     const attitude = telemetry.attitude;
     const effectiveTelemetryState = telemetryState(now);
-    badge("telemetry-status", effectiveTelemetryState === "error" ? "Liaison interrompue" : states[effectiveTelemetryState] || "État inconnu", effectiveTelemetryState === "receiving" ? "positive" : effectiveTelemetryState === "error" ? "error" : effectiveTelemetryState === "stale" ? "warning" : "neutral");
-    text("telemetry-hint", telemetry.detail || "Les réceptions sont filtrées sur le système et le composant sélectionnés.");
-    text("attitude-age", telemetry.state === "error" ? "Liaison interrompue" : attitude.state === "absent" ? "Aucune donnée" : `${states[viewState(attitude, now)] || attitude.state} · ${ageText(stateAge(attitude, now))}`);
+    badge("telemetry-status", effectiveTelemetryState === "error" ? "Link interrupted" : states[effectiveTelemetryState] || "Unknown state", effectiveTelemetryState === "receiving" ? "positive" : effectiveTelemetryState === "error" ? "error" : effectiveTelemetryState === "stale" ? "warning" : "neutral");
+    text("telemetry-hint", telemetry.detail || "Incoming data is filtered by the selected system and component.");
+    text("attitude-age", telemetry.state === "error" ? "Link interrupted" : attitude.state === "absent" ? "No data" : `${states[viewState(attitude, now)] || attitude.state} · ${ageText(stateAge(attitude, now))}`);
     for (const name of ["roll", "pitch", "yaw"]) text(name, viewRecent(attitude, now) && finite(attitude.fields?.[name]) ? numeric(attitude.fields[name] * 180 / Math.PI, "°") : "—");
-    text("heartbeat-status", telemetry.state === "error" ? "Liaison interrompue" : telemetry.heartbeat.state === "absent" ? "Absent" : `${states[viewState(telemetry.heartbeat, now)] || telemetry.heartbeat.state} · ${ageText(stateAge(telemetry.heartbeat, now))}`);
+    text("heartbeat-status", telemetry.state === "error" ? "Link interrupted" : telemetry.heartbeat.state === "absent" ? "Missing" : `${states[viewState(telemetry.heartbeat, now)] || telemetry.heartbeat.state} · ${ageText(stateAge(telemetry.heartbeat, now))}`);
     const heartbeat = viewRecent(telemetry.heartbeat, now) ? telemetry.heartbeat.fields : null;
-    text("armed-preview", Number.isSafeInteger(heartbeat?.base_mode) ? `${heartbeat.base_mode & 128 ? "Armé" : "Désarmé"} déclaré` : "Armement non actualisé");
+    text("armed-preview", Number.isSafeInteger(heartbeat?.base_mode) ? `${heartbeat.base_mode & 128 ? "Armed" : "Disarmed"} reported` : "Arming status not refreshed");
     const mode = viewRecent(telemetry.mode, now) ? telemetry.mode : null;
-    text("flight-mode", mode ? (mode.known ? (mode.label || "—") : finite(mode.custom_mode) ? `Inconnu · brut ${integer.format(mode.custom_mode)}` : "Inconnu") : "—");
+    text("flight-mode", mode ? (mode.known ? (mode.label || "—") : finite(mode.custom_mode) ? `Unknown · raw ${integer.format(mode.custom_mode)}` : "Unknown") : "—");
     text("battery-remaining", viewRecent(telemetry.battery, now) ? numeric(telemetry.battery.remaining_percent, " %") : "—");
-    text("battery-age", telemetry.state === "error" ? "Liaison interrompue" : telemetry.battery.state === "absent" ? "Aucune donnée" : `${states[viewState(telemetry.battery, now)] || telemetry.battery.state} · ${ageText(stateAge(telemetry.battery, now))}`);
+    text("battery-age", telemetry.state === "error" ? "Link interrupted" : telemetry.battery.state === "absent" ? "No data" : `${states[viewState(telemetry.battery, now)] || telemetry.battery.state} · ${ageText(stateAge(telemetry.battery, now))}`);
     const position = telemetry.local_position_ned;
     const positionFields = viewRecent(position, now) ? position.fields : null;
     for (const [id, axis] of [["position-north", "x"], ["position-east", "y"], ["position-down", "z"]]) text(id, numeric(positionFields?.[axis], " m"));
-    text("position-age", telemetry.state === "error" ? "Liaison interrompue" : position.state === "absent" ? "Aucune donnée" : `${states[viewState(position, now)] || position.state} · ${ageText(stateAge(position, now))}`);
+    text("position-age", telemetry.state === "error" ? "Link interrupted" : position.state === "absent" ? "No data" : `${states[viewState(position, now)] || position.state} · ${ageText(stateAge(position, now))}`);
     text("session-status", `Observation ${current.run_id.slice(0, 8)} · T + ${integer.format(runTime(now))} s`);
     renderSources(true);
     renderDetails(true, now);
@@ -780,12 +780,12 @@
     render();
     try {
       const body = await postJson(`/api/sources/${source}/reconnect`, {});
-      if (!validState(body)) throw new Error("Réponse du service invalide.");
+      if (!validState(body)) throw new Error("Invalid service response.");
       // Keep polling throughout the reopen. A newer GET may already exist;
       // never overwrite it with the state carried by this slower action.
       const state = source === "video" ? body.video.state : body.telemetry.state;
       const detail = source === "video" ? body.video.detail : body.telemetry.detail;
-      const message = state === "error" ? `Réouverture impossible : ${detail}` : "Récepteur réouvert. La réception de nouvelles données reste à vérifier.";
+      const message = state === "error" ? `Unable to reopen: ${detail}` : "Receiver reopened. New data reception still needs confirmation.";
       text("reconnect-feedback", message);
       text("action-status", message);
       element("reconnect-feedback").dataset.tone = state === "error" ? "error" : "neutral";
@@ -821,7 +821,7 @@
   element("sources-reset").addEventListener("click", () => {
     if (!serviceFresh() || mutation) return;
     fillSourcesForm();
-    text("sources-action-status", "Configuration active reprise. Aucun changement envoyé au service.");
+    text("sources-action-status", "Active configuration restored. No changes sent to the service.");
     element("sources-action-status").dataset.tone = "neutral";
     render();
   });
@@ -838,7 +838,7 @@
       const body = await postJson("/api/sources", payload);
       acceptState(body, started);
       fillSourcesForm();
-      text("sources-action-status", "Sources appliquées. Une nouvelle observation a commencé.");
+      text("sources-action-status", "Sources applied. A new observation has started.");
       element("sources-action-status").dataset.tone = "neutral";
       text("recording-action-status", "");
     } catch (error) {
@@ -862,12 +862,12 @@
     render();
     try {
       const body = await postJson(`/api/recordings/${action}`, {});
-      if (!validRecording(body)) throw new Error("Réponse du service invalide.");
+      if (!validRecording(body)) throw new Error("Invalid service response.");
       if (current.run_id === requestedRun) current.recording = body;
-      text("recording-action-status", body.state === "error" ? `Capture : ${body.error || "journal incomplet."}` : "");
-      text("action-status", body.state === "error" ? "" : action === "start" ? "Journal démarré." : "Journal terminé.");
+      text("recording-action-status", body.state === "error" ? `Capture : ${body.error || "incomplete recording."}` : "");
+      text("action-status", body.state === "error" ? "" : action === "start" ? "Recording started." : "Recording complete.");
     } catch (error) {
-      text("recording-action-status", `Journal MAVLink : ${error.message}`);
+      text("recording-action-status", `MAVLink recording : ${error.message}`);
     } finally {
       mutation = null;
       pollResumeAt = performance.now();
@@ -887,14 +887,14 @@
       if (document.fullscreenElement) await document.exitFullscreen();
       else await document.documentElement.requestFullscreen();
     } catch (_error) {
-      text("action-status", "Le navigateur n’a pas autorisé le plein écran. La console reste utilisable dans cette fenêtre.");
+      text("action-status", "The browser did not allow full screen. The console remains usable in this window.");
     }
   });
   document.addEventListener("fullscreenchange", () => {
     const full = Boolean(document.fullscreenElement);
     element("fullscreen-button").setAttribute("aria-pressed", String(full));
-    element("fullscreen-button").setAttribute("aria-label", full ? "Quitter le plein écran" : "Afficher la console en plein écran");
-    element("fullscreen-button").title = full ? "Quitter le plein écran" : "Plein écran";
+    element("fullscreen-button").setAttribute("aria-label", full ? "Exit full screen" : "Show console in full screen");
+    element("fullscreen-button").title = full ? "Exit full screen" : "Full screen";
   });
   window.addEventListener("pagehide", () => { stopped = true; clearFrame(); });
   window.addEventListener("pageshow", (event) => { if (event.persisted) window.location.reload(); });

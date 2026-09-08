@@ -29,17 +29,17 @@ from argos.backends.mavlink.telemetry import _uint
 
 
 _STATES = (
-    ("UNINIT", "Non initialisé"), ("BOOT", "Démarrage"),
-    ("CALIBRATING", "Calibration"), ("STANDBY", "En attente"),
-    ("ACTIVE", "Actif"), ("CRITICAL", "Critique"),
-    ("EMERGENCY", "Urgence"), ("POWEROFF", "Arrêt en cours"),
-    ("FLIGHT_TERMINATION", "Terminaison de vol"),
+    ("UNINIT", "Uninitialized"), ("BOOT", "Booting"),
+    ("CALIBRATING", "Calibration"), ("STANDBY", "Waiting"),
+    ("ACTIVE", "Active"), ("CRITICAL", "Critical"),
+    ("EMERGENCY", "Emergency"), ("POWEROFF", "Powering off"),
+    ("FLIGHT_TERMINATION", "Flight termination"),
 )
 _SEVERITIES = (
-    ("EMERGENCY", "Urgence"), ("ALERT", "Alerte"),
-    ("CRITICAL", "Critique"), ("ERROR", "Erreur"),
-    ("WARNING", "Avertissement"), ("NOTICE", "Notification"),
-    ("INFO", "Information"), ("DEBUG", "Débogage"),
+    ("EMERGENCY", "Emergency"), ("ALERT", "Alert"),
+    ("CRITICAL", "Critical"), ("ERROR", "Error"),
+    ("WARNING", "Warning"), ("NOTICE", "Notification"),
+    ("INFO", "Information"), ("DEBUG", "Debug"),
 )
 
 
@@ -52,7 +52,7 @@ def system_status_view(heartbeat: Mapping) -> dict:
         "state": "unknown" if fields is None else heartbeat["state"],
         "system_status": code,
         "name": "MAV_STATE_" + _STATES[code][0] if known else None,
-        "label": _STATES[code][1] if known else "Non reçu" if code is None else f"Inconnu ({code})",
+        "label": _STATES[code][1] if known else "Not received" if code is None else f"Unknown ({code})",
         "known": known,
         "received_at": heartbeat["received_at"],
         "rx_age_s": heartbeat["rx_age_s"], "age_limit_s": heartbeat["age_limit_s"],
@@ -289,7 +289,7 @@ class StatusTexts:
                 "connection_id": item.connection_id, "status_id": item.status_id,
                 "severity": item.severity,
                 "severity_name": "MAV_SEVERITY_" + _SEVERITIES[item.severity][0] if known else None,
-                "severity_label": _SEVERITIES[item.severity][1] if known else f"Inconnu ({item.severity})",
+                "severity_label": _SEVERITIES[item.severity][1] if known else f"Unknown ({item.severity})",
                 "text": text, "complete": item.complete, "reason": item.reason,
                 "utf8_valid": utf8_valid, "first_received_at": item.first_received_at,
                 "received_at": item.received_at, "rx_age_s": now - item.received_at,

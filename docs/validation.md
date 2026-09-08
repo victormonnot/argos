@@ -78,7 +78,7 @@ The opt-in simulation milestone was checked on the same Ubuntu 24.04/Python
   Both GPS receivers and compass yaw use were disabled; no flow, marker,
   rangefinder or visual-position source supplied navigation.
 - The real browser then exercised the complete path without mocked endpoints:
-  touchscreen input generated via Chromium's device protocol held **Monter**,
+  touchscreen input generated via Chromium's device protocol held **Climb**,
   produced a climb in reported barometric local altitude, released
   to neutral, requested Land and reached confirmed disarming. The Gazebo camera
   remained visible. This is not a physical-tablet test.
@@ -139,6 +139,22 @@ simulation, not an independent position-accuracy measurement. They do not valida
 in-flight mode transitions, physical flight, visual following or a metric range
 estimate. No GPS, downward flow, marker or external visual-position input was used
 for flight control.
+
+## English interface — September 8, 2026
+
+The interface now uses English throughout Observation, Flight controls, Live
+MAVLink, Sessions, source settings, accessible names and service-generated
+status/error messages. Numbers and dates use the explicit `en-US` locale.
+Autopilot payloads and existing recordings retain their original content.
+
+The complete **1,226 Python tests and 46 Chromium browser tests passed** with
+English expectations. Existing control, touch, lifecycle, source-recovery and
+recording checks were retained. Desktop, tablet and phone layouts were inspected;
+a freshly built installed wheel passed its resource and passive-state smoke
+checks. HTML structure and identifiers were preserved, and Python syntax-tree
+comparison confirmed that changes outside documentation were string values.
+No flight-control algorithm, protocol field or recording format changed, and
+this language update did not repeat the earlier flight trials.
 
 ## Remaining limitations
 

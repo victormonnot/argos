@@ -60,11 +60,11 @@ service, with no account management or intended public HTTP exposure.
 
 ## Stopping and restarting
 
-When using Pilotage, land and wait for confirmed disarming before the following
+When using Flight controls, land and wait for confirmed disarming before the following
 shutdown sequence. With the all-in-one web-control launcher, Ctrl-C stops its
 three children and retains its printed run directory.
 
-1. Stop any active capture from **Journal MAVLink** (MAVLink recording) and verify that it has been finalized.
+1. Stop any active capture from **MAVLink recording** and verify that it has been finalized.
 2. Press **Ctrl-C** in the console terminal and wait for it to exit.
 3. Stop SITL, then Gazebo, with **Ctrl-C** in their terminals.
 4. Close the tmux windows that have returned to a shell with `exit`.

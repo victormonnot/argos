@@ -58,7 +58,7 @@ The arrows show the main data paths. Browser POST requests configure or reopen
 receivers and start or stop recording. These actions send no MAVLink messages.
 With `--sim-control`, a separate control path calls the transport's `send()`
 method for pilot input, GCS heartbeat, parameter/status requests and explicit
-mode/arming actions. Disabled or unclaimed control is passive. Journal capture
+mode/arming actions. Disabled or unclaimed control is passive. Recording capture
 receives decoded inbound events; outgoing control messages are not recorded.
 
 ## Ownership and scheduling
@@ -74,12 +74,12 @@ assembles the application and ties resource startup and cleanup to its lifespan.
 | Optional manual control | `FlightControl` receives selected vehicle reports; the same session tick checks lease expiry and transmits current pilot inputs. HTTP mutations run on that event loop. |
 | Gazebo images | Subscription callbacks publish into the thread-safe `VideoStore`. |
 | V4L2 images | One worker thread owns the device reader and publishes into `VideoStore`. |
-| Journal verification, indexing, replay and analysis | Archive calls run through `asyncio.to_thread`; a lock protects the shared archive cache. |
+| Recording verification, indexing, replay and analysis | Archive calls run through `asyncio.to_thread`; a lock protects the shared archive cache. |
 | Receiver reopening | Blocking replacement work runs in a thread; the session retains ownership until replacement or cleanup finishes. |
 | Display state, selected panels, filters and replay cursor | JavaScript in the browser; these do not own the receivers. |
 
 The receive task waits 50 ms between ticks. Each link poll limits its read work;
-this is not a guaranteed 20 Hz schedule. Journal writes are synchronous in the
+this is not a guaranteed 20 Hz schedule. Recording writes are synchronous in the
 tick, so slow storage or CPU work can delay reception. The current process layout
 does not provide hard real-time scheduling or guarantee lossless capture.
 
@@ -192,9 +192,9 @@ server or CDN. The JavaScript is split by workflow:
 State, images and inspection data use separate HTTP requests. Freezing a view or
 leaving a tab changes browser behavior; the server continues receiving and an
 active recording continues until it is stopped or reaches a closure condition.
-Manual control has a different lifecycle: leaving Pilotage, losing focus or
+Manual control has a different lifecycle: leaving Flight controls, losing focus or
 hiding the page releases its lease rather than continuing to pilot in the
-background. Pilotage reuses Observation's camera instead of opening a second
+background. Flight controls reuses Observation's camera instead of opening a second
 video subscription.
 
 Independent requests can complete after their context has changed. The frontend

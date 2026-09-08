@@ -62,7 +62,7 @@
   }
 
   function adopt(next) {
-    if (!next || typeof next !== "object" || !Number.isFinite(next.at)) throw new Error("État du pilotage invalide.");
+    if (!next || typeof next !== "object" || !Number.isFinite(next.at)) throw new Error("Invalid flight-control state.");
     if (control && next.at < control.at) return false;
     control = next;
     if (next.vehicle?.armed !== true || selectedMode() !== 0 || ["landing", "released", "expired", "error"].includes(next.phase)) resetThrottle();
@@ -76,10 +76,10 @@
       const response = await fetch(`/api/control/${path}`, { method: "POST", credentials: "same-origin", cache: "no-store",
         headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal: abort.signal, keepalive });
       const body = await response.json();
-      if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : "La commande a été refusée.");
+      if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : "The command was rejected.");
       return body;
     } catch (error) {
-      if (error.name === "AbortError") throw new Error("Le service de pilotage ne répond pas à temps.");
+      if (error.name === "AbortError") throw new Error("The flight-control service did not respond in time.");
       throw error;
     } finally { window.clearTimeout(timer); }
   }
@@ -117,9 +117,9 @@
       const body = await post("input", { token: currentToken, seq: ++seq, axes: axes(), throttle: movingAllowed() && selectedMode() === 0 ? throttle : 0 }, { timeout: 500 });
       if (token !== currentToken || epoch !== currentEpoch) return;
       adopt(body.control);
-      if (!control.owned || !control.available) release("Commandes expirées ou indisponibles. Reprenez-les explicitement.", { send: false });
+      if (!control.owned || !control.available) release("Control expired or unavailable. Take control again explicitly.", { send: false });
     } catch (error) {
-      if (token === currentToken && epoch === currentEpoch) release(`${error.message} Commandes libérées.`);
+      if (token === currentToken && epoch === currentEpoch) release(`${error.message} Control released.`);
     } finally {
       inputPending = false;
       render();
@@ -131,26 +131,26 @@
   function render() {
     const hasControl = owned(), vehicle = fresh ? control?.vehicle : null;
     const supported = fresh && control?.available && environment === "simulation";
-    text("control-environment", environment === "real" ? "Pilotage réel indisponible" : "Simulation uniquement");
-    text("control-authority", hasControl ? "Vous avez les commandes" : !fresh ? "État non actualisé" : control?.owned ? "Autre pilote connecté" : supported ? "Commandes libres" : "Pilotage indisponible");
+    text("control-environment", environment === "real" ? "Physical flight control unavailable" : "Simulation only");
+    text("control-authority", hasControl ? "You have control" : !fresh ? "Status not refreshed" : control?.owned ? "Another pilot connected" : supported ? "Control available" : "Flight controls unavailable");
     node("control-claim").disabled = !active() || !supported || Boolean(control?.owned) || Boolean(token) || claiming || vehicle?.armed !== false;
     node("control-claim").hidden = hasControl;
-    text("control-claim", claiming ? "Connexion…" : "Prendre les commandes");
+    text("control-claim", claiming ? "Connexion…" : "Take control");
     text("control-mode", `Mode ${vehicle?.mode === 2 ? "AltHold" : vehicle?.mode === 9 ? "Land" : vehicle?.mode === 0 ? "Stabilize" : vehicle?.mode == null ? "—" : vehicle.mode}`);
-    text("control-armed", vehicle?.armed === true ? "Armé" : vehicle?.armed === false ? "Désarmé" : "Armement —");
+    text("control-armed", vehicle?.armed === true ? "Armed" : vehicle?.armed === false ? "Disarmed" : "Arming —");
     const mode = flyingMode(), isStabilize = mode === 0;
     node("control-panel").dataset.mode = String(mode);
     node("control-mode-select").value = String(vehicle?.armed ? selectedMode() : draftMode);
     node("control-mode-select").disabled = !active() || !hasControl || vehicle?.armed !== false || vehicle?.landed !== true || actionPending || commandPending();
     node("control-height-pad").hidden = isStabilize;
     node("control-throttle-group").hidden = !isStabilize;
-    text("control-height-title", isStabilize ? "Gaz et rotation" : "Hauteur et rotation");
+    text("control-height-title", isStabilize ? "Throttle and yaw" : "Height and yaw");
     text("control-throttle-value", `${Math.round(throttle * 100)} %`);
     node("control-throttle").value = String(Math.round(throttle * 100));
     node("control-throttle").disabled = !isStabilize || !movingAllowed();
     for (const button of throttleButtons) button.disabled = !isStabilize || !movingAllowed() || (Number(button.dataset.throttleStep) < 0 ? throttle <= 0 : throttle >= 1);
-    text("control-mode-note", isStabilize ? "Stabilize : retour à plat, gaz manuels. Le mode se prépare au sol." : "AltHold : retour à plat, altitude assistée. Le mode se prépare au sol.");
-    text("control-neutral-note", isStabilize ? "Relâcher une direction remet l’inclinaison au neutre. Les gaz restent à la valeur choisie : ajustez-les pour tenir l’altitude. Le drone peut dériver, sans GPS." : "Relâcher remet les commandes au neutre : le drone peut continuer à dériver, sans GPS. Pour décoller, maintenez Monter après l’armement.");
+    text("control-mode-note", isStabilize ? "Stabilize: self-leveling, manual throttle. Prepare the mode on the ground." : "AltHold: self-leveling, assisted altitude. Prepare the mode on the ground.");
+    text("control-neutral-note", isStabilize ? "Releasing a direction neutralizes tilt. Throttle stays at the chosen value: adjust it to maintain height. The drone may drift without GPS." : "Release to neutralize inputs: the drone may keep drifting without GPS. To take off, hold Climb after arming.");
     const motion = axes();
     for (const button of directions) {
       button.disabled = !movingAllowed() || (isStabilize && button.dataset.controlAxis === "up");
@@ -166,11 +166,11 @@
         || (action === "disarm" && (vehicle?.armed !== true || vehicle?.landed !== true));
     }
     const command = control?.command;
-    const commandText = command ? `${({ prepare: `Préparation ${modeName(command.mode ?? selectedMode())}`, arm: "Armement", land: "Atterrissage", disarm: "Désarmement", release: "Libération" })[command.action] || "Commande"} · ${command.observed && command.state === "observed" ? "confirmé par le drone" : ({ sent: "envoyé, confirmation en attente", accepted: "accepté, confirmation en attente", denied: "refusé par le drone", timeout: "confirmation non reçue", send_failed: "échec de l’envoi" })[command.state] || "confirmation en attente"}.` : "";
-    const unavailable = !fresh ? "Connexion au service interrompue. Reprenez les commandes après rétablissement." : !control ? "Le pilotage n’est pas activé sur ce service." : !control.available ? control.reason || "Simulation indisponible." : "";
-    const profileIssue = hasControl && !control?.profile?.ready ? control?.profile?.mismatched?.length ? "Configuration de simulation incompatible : vérifiez le profil sans GPS du lancement." : "Vérification de la configuration sans GPS en cours…" : "";
-    const draftIssue = hasControl && vehicle?.armed === false && (!prepared() || draftMode !== selectedMode()) ? `Préparez ${modeName(draftMode)}, puis armez pour décoller manuellement.` : "";
-    const hint = hasControl ? vehicle?.armed ? isStabilize ? "Réglez les gaz ; maintenez les directions pour piloter." : "Maintenez les boutons pour piloter." : control?.profile?.ready ? isStabilize ? "Armez à 0 % de gaz, puis augmentez progressivement pour décoller." : "Armez, puis maintenez Monter pour décoller." : "La configuration sans GPS attend sa confirmation." : vehicle?.armed !== false ? "La prise de commandes nécessite un drone désarmé." : "Prenez les commandes pour préparer le vol.";
+    const commandText = command ? `${({ prepare: `Preparation ${modeName(command.mode ?? selectedMode())}`, arm: "Arming", land: "Landing", disarm: "Disarming", release: "Release" })[command.action] || "Command"} · ${command.observed && command.state === "observed" ? "confirmed by the drone" : ({ sent: "sent, awaiting confirmation", accepted: "accepted, awaiting confirmation", denied: "rejected by the drone", timeout: "confirmation not received", send_failed: "send failed" })[command.state] || "awaiting confirmation"}.` : "";
+    const unavailable = !fresh ? "Service connection interrupted. Take control again after recovery." : !control ? "Flight controls are not enabled on this service." : !control.available ? control.reason || "Simulation unavailable." : "";
+    const profileIssue = hasControl && !control?.profile?.ready ? control?.profile?.mismatched?.length ? "Incompatible simulation settings: check the GPS-free startup profile." : "Checking GPS-free configuration…" : "";
+    const draftIssue = hasControl && vehicle?.armed === false && (!prepared() || draftMode !== selectedMode()) ? `Prepare ${modeName(draftMode)}, then arm for manual takeoff.` : "";
+    const hint = hasControl ? vehicle?.armed ? isStabilize ? "Adjust throttle; hold directions to fly." : "Hold the buttons to fly." : control?.profile?.ready ? isStabilize ? "Arm at 0% throttle, then increase gradually to take off." : "Arm, then hold Climb to take off." : "Waiting for GPS-free configuration confirmation." : vehicle?.armed !== false ? "Taking control requires a disarmed drone." : "Take control to prepare for flight.";
     text("control-feedback", unavailable || feedback || (["denied", "timeout", "send_failed"].includes(command?.state) ? commandText : profileIssue) || draftIssue || commandText || control?.last_error || hint);
     node("control-feedback").dataset.tone = unavailable || profileIssue ? "warning" : feedback ? feedbackTone : ["denied", "timeout", "send_failed"].includes(command?.state) ? "error" : "neutral";
   }
@@ -186,7 +186,7 @@
     render();
     try {
       const body = await post("claim", {});
-      if (typeof body.token !== "string" || !body.token.length) throw new Error("Réponse de prise de commandes invalide.");
+      if (typeof body.token !== "string" || !body.token.length) throw new Error("Invalid take-control response.");
       mintedToken = body.token;
       if (epoch !== currentEpoch || !active()) {
         void post("action", { token: body.token, action: "release" }, { keepalive: true }).catch(() => {});
@@ -206,7 +206,7 @@
   for (const button of actionButtons) button.addEventListener("click", async () => {
     if (button.disabled) return;
     const action = button.dataset.controlAction;
-    if (action === "release") { release("Commandes libérées. Atterrissage demandé si le drone est armé."); return; }
+    if (action === "release") { release("Control released. Landing requested if the drone is armed."); return; }
     actionPending = true;
     clearInputs();
     if (action === "prepare" || action === "arm") resetThrottle();
@@ -281,18 +281,18 @@
   document.addEventListener("focusin", (event) => {
     if (event.target.id !== "control-throttle" && event.target.closest("input,textarea,select,[contenteditable]") && (pressedKeys.size || pointers.size)) { clearInputs(); void sendInput(); }
   });
-  window.addEventListener("blur", () => { focused = false; release("Fenêtre quittée : commandes libérées. Reprenez-les explicitement."); });
+  window.addEventListener("blur", () => { focused = false; release("Window left: control released. Take control again explicitly."); });
   window.addEventListener("focus", () => { focused = true; render(); });
-  document.addEventListener("visibilitychange", () => { if (document.hidden) release("Onglet masqué : commandes libérées. Reprenez-les explicitement."); render(); });
-  window.addEventListener("pagehide", () => release("Page quittée : commandes libérées."));
+  document.addEventListener("visibilitychange", () => { if (document.hidden) release("Tab hidden: control released. Take control again explicitly."); render(); });
+  window.addEventListener("pagehide", () => release("Page left: control released."));
   document.addEventListener("argos:workspace-changed", (event) => {
-    if (event.detail?.view !== "control") release("Pilotage quitté : commandes libérées.");
+    if (event.detail?.view !== "control") release("Flight controls left: control released.");
     render();
   });
   document.addEventListener("argos:control-state", (event) => {
     const detail = event.detail || {};
     if (runId !== null && runId !== detail.run_id) {
-      release("La source a changé. Reprenez les commandes explicitement.");
+      release("The source changed. Take control again explicitly.");
       control = null;
       draftMode = 2;
     }
@@ -301,7 +301,7 @@
     environment = detail.environment;
     try { if (detail.control) adopt(detail.control); else control = null; } catch { fresh = false; }
     if ((token && (!fresh || !control?.available || !control?.owned || environment !== "simulation"))
-      || (claiming && (!fresh || !control?.available || environment !== "simulation"))) release("Le pilotage a été interrompu. Reprenez les commandes explicitement.");
+      || (claiming && (!fresh || !control?.available || environment !== "simulation"))) release("Flight control was interrupted. Take control again explicitly.");
     if (!movingAllowed() && (pointers.size || pressedKeys.size)) { clearInputs(); void sendInput(); }
     render();
   });

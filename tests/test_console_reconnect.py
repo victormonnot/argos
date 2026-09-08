@@ -178,7 +178,7 @@ def test_active_recording_blocks_only_mavlink_reopen_without_side_effects(tmp_pa
         post(client, "/api/recordings/start")
         before = session.state()
         response = post(client, "/api/sources/mavlink/reconnect")
-        assert response.status_code == 409 and "journal" in response.json()["detail"]
+        assert response.status_code == 409 and "recording" in response.json()["detail"]
         assert len(inputs) == 1 and not inputs[0].closed
         assert session.state()["telemetry"]["connection_id"] == before["telemetry"]["connection_id"]
         assert session.recorder.active
@@ -352,7 +352,7 @@ def test_cancelled_request_cannot_abandon_opened_link_or_unlock_early(tmp_path, 
             if close_session:
                 session.close()
             else:
-                with pytest.raises(RuntimeError, match="déjà en cours"):
+                with pytest.raises(RuntimeError, match="already reopening"):
                     await session.reconnect("mavlink")
         finally:
             release.set()
@@ -388,7 +388,7 @@ def test_blocked_physical_reader_cannot_accumulate_on_retries_or_settings_change
         original = session.camera
         for _ in range(3):
             state = post(client, "/api/sources/video/reconnect").json()
-            assert state["video"]["state"] == "error" and "libéré" in state["video"]["detail"]
+            assert state["video"]["state"] == "error" and "released" in state["video"]["detail"]
             assert len(created) == 1 and session.camera is original
         assert post(client, "/api/sources", session.config.public()).status_code == 409
         assert len(created) == 1

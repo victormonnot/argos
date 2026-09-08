@@ -13,7 +13,7 @@ test('navigation preserves a source draft and only requests live inspection whil
   model.field = 'new value';
   await page.waitForTimeout(650);
   expect(model.calls.filter(call => call.path === '/api/mavlink/messages')).toHaveLength(calls);
-  await expect(page.locator('.live-status')).toContainText('Instantané figé');
+  await expect(page.locator('.live-status')).toContainText('Snapshot frozen');
   await expect(page.locator('.live-fields')).not.toContainText('new value');
   await page.keyboard.press('Escape');
   await expect(page.locator('#view-messages')).toBeFocused();
@@ -26,34 +26,34 @@ test('navigation preserves a source draft and only requests live inspection whil
 
 test('a frozen service response cannot keep declarations or capture state current', async ({ page, model }) => {
   await open(page);
-  await expect(page.locator('#armed-preview')).toHaveText('Armé déclaré');
-  await expect(page.locator('#detail-system-status')).toHaveText('Actif · déclaré');
-  await expect(page.locator('#reception-state')).toHaveText('Aucun incident de réception');
+  await expect(page.locator('#armed-preview')).toHaveText('Armed reported');
+  await expect(page.locator('#detail-system-status')).toHaveText('Active · reported');
+  await expect(page.locator('#reception-state')).toHaveText('No reception incidents');
   model.frozen = true;
-  await expect(page.locator('#service-status')).toHaveText('Service inaccessible', {timeout: 5000});
+  await expect(page.locator('#service-status')).toHaveText('Service unreachable', {timeout: 5000});
   await expect(page.locator('#flight-mode')).toHaveText('—');
   await expect(page.locator('#armed-preview')).toHaveText('—');
-  await expect(page.locator('#detail-system-status')).toHaveText('Non actualisé');
-  await expect(page.locator('#global-recording-state')).toHaveText('Capture · non actualisée');
+  await expect(page.locator('#detail-system-status')).toHaveText('Not refreshed');
+  await expect(page.locator('#global-recording-state')).toHaveText('Capture · not refreshed');
   model.frozen = false;
-  await expect(page.locator('#service-status')).toHaveText('Service connecté');
-  await expect(page.locator('#armed-preview')).toHaveText('Armé déclaré');
+  await expect(page.locator('#service-status')).toHaveText('Service connected');
+  await expect(page.locator('#armed-preview')).toHaveText('Armed reported');
 });
 
 test('capture start, global background error, and recovery are visible in every workspace', async ({ page, model }) => {
   await open(page);
   await page.locator('#global-recording').click();
   await page.locator('#recording-start').click();
-  await expect(page.locator('#global-recording-state')).toHaveText('Capture en cours');
+  await expect(page.locator('#global-recording-state')).toHaveText('Capture in progress');
   await expect(page.locator('#recording-stop')).toBeFocused();
   for (const view of ['messages', 'sessions', 'observation']) {
     await page.locator(`#view-${view}`).click();
     await expect(page.locator('#global-recording')).toBeVisible();
-    await expect(page.locator('#global-recording-state')).toHaveText('Capture en cours');
+    await expect(page.locator('#global-recording-state')).toHaveText('Capture in progress');
   }
   await page.locator('#view-messages').click();
   model.recording = recording({state: 'error', id: ID, events: 3, started_at: 100, ended_at: model.clock(), error: 'Disque plein'});
-  await expect(page.locator('#global-recording-state')).toHaveText('Capture en erreur');
+  await expect(page.locator('#global-recording-state')).toHaveText('Capture error');
   await expect(page.locator('#global-recording')).toHaveAttribute('data-tone', 'error');
   await page.locator('#global-recording').click();
   await expect(page.locator('body')).toHaveAttribute('data-view', 'observation');
@@ -61,11 +61,11 @@ test('capture start, global background error, and recovery are visible in every 
   await expect(page.locator('#recording-download')).toBeHidden();
   await page.locator('#recording-start').click();
   await page.locator('#recording-stop').click();
-  await expect(page.locator('#global-recording-state')).toHaveText('Capture terminée');
+  await expect(page.locator('#global-recording-state')).toHaveText('Capture complete');
   await expect(page.locator('#recording-download')).toHaveAttribute('href', `/api/recordings/${ID}/download`);
 });
 
-for (const [reason, label] of [['transport_error', 'Interrompu'], ['event_limit', 'Limite atteinte'], ['size_limit', 'Limite atteinte'], ['shutdown', 'Interrompu']]) {
+for (const [reason, label] of [['transport_error', 'Interrupted'], ['event_limit', 'Limit reached'], ['size_limit', 'Limit reached'], ['shutdown', 'Interrupted']]) {
   test(`valid capture closure remains downloadable: ${reason}`, async ({ page, model }) => {
     model.recording = recording({state: 'complete', id: ID, events: 3, started_at: 100, ended_at: 103,
       end_reason: reason, end_detail: 'Fin expliquée par le service.', download_url: `/api/recordings/${ID}/download`});
@@ -97,7 +97,7 @@ test('Pause keeps the confirmed cursor when an automatic replay reply arrives la
   await page.waitForTimeout(200);
   await expect(page.locator('#replay-cursor')).toHaveValue(confirmed);
   await expect(page.locator('#history-mode')).toHaveText(mode);
-  await expect(page.locator('#replay-play')).toHaveText('Lire');
+  await expect(page.locator('#replay-play')).toHaveText('Play');
   await expect(page.locator('#replay-measures')).toHaveAttribute('aria-busy', 'false');
   await expect(page.locator('#replay-next')).toBeEnabled();
 });
@@ -127,24 +127,24 @@ test('STATUSTEXT is opt-in, escaped, historical and explicit about incomplete ch
   await page.locator('#autopilot-texts-summary').click();
   await expect(page.locator('#autopilot-text-list')).toContainText('<img src=x onerror=window.injected=true>');
   await expect(page.locator('#autopilot-text-list img')).toHaveCount(0);
-  await expect(page.locator('#autopilot-text-list')).toContainText('Fragment manquant');
-  await expect(page.locator('#autopilot-text-list')).toContainText('connexion précédente');
-  await expect(page.locator('#autopilot-text-list')).toContainText('UTF-8 incomplet ou invalide');
-  await expect(page.locator('#autopilot-texts-limits')).toContainText('60 textes');
+  await expect(page.locator('#autopilot-text-list')).toContainText('Missing chunk');
+  await expect(page.locator('#autopilot-text-list')).toContainText('previous connection');
+  await expect(page.locator('#autopilot-text-list')).toContainText('Incomplete or invalid UTF-8');
+  await expect(page.locator('#autopilot-texts-limits')).toContainText('60 texts');
   await page.screenshot({path: test.info().outputPath('observation-status.png')});
   model.offline = true;
-  await expect(page.locator('#autopilot-text-list')).toContainText('Ancienneté non actualisée');
-  await expect(page.locator('#autopilot-texts-state')).toContainText('Historique conservé');
+  await expect(page.locator('#autopilot-text-list')).toContainText('Age not refreshed');
+  await expect(page.locator('#autopilot-texts-state')).toContainText('Retained history');
 });
 
 test('source configuration explains persistence, numbering and declared environment', async ({ page, model }) => {
   model.modifyState = value => { value.environment = value.configuration.environment = 'real'; };
   await open(page);
-  await expect(page.locator('#environment')).toHaveText('RÉEL DÉCLARÉ');
+  await expect(page.locator('#environment')).toHaveText('REPORTED AS REAL');
   await page.locator('#sources-button').click();
-  await expect(page.locator('.source-persistence-note')).toContainText('redémarrage du service');
+  await expect(page.locator('.source-persistence-note')).toContainText('the service restarts');
   await expect(page.locator('#config-scope')).toHaveAttribute('aria-describedby', 'config-scope-help');
-  await expect(page.locator('#config-scope-help')).toContainText('ne prouve pas une perte radio');
+  await expect(page.locator('#config-scope-help')).toContainText('does not prove radio loss');
 });
 
 test('archive analysis uses one-second buckets and keeps archive tabs separate', async ({ page, model }) => {
@@ -187,7 +187,7 @@ for (const [width, height] of [[1366, 650], [1280, 600], [900, 500], [360, 640],
       await page.locator('.live-type').first().click();
       await expect(page.locator('.live-detail-pane')).toBeVisible();
       await page.locator('.live-detail-pane').evaluate(element => { element.scrollTop = 200; });
-      await page.getByRole('button', {name: 'Types reçus', exact: true}).click();
+      await page.getByRole('button', {name: 'Received types', exact: true}).click();
       await page.locator('.live-type').first().click();
       expect(await page.locator('.live-detail-pane').evaluate(element => element.scrollTop)).toBe(0);
     }

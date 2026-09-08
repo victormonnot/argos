@@ -31,7 +31,7 @@ def battery_view(view, limit):
 
 def mode_view(heartbeat):
     mode = (interpret_mode(heartbeat["fields"]) if heartbeat["fields"] is not None else
-            {"label": "Non reçu", "custom_mode": None, "known": False,
+            {"label": "Not received", "custom_mode": None, "known": False,
              "base_mode": None, "autopilot": None, "vehicle_type": None, "mapping": None})
     mode.update({key: heartbeat[key] for key in ("state", "rx_age_s", "age_limit_s")})
     return mode

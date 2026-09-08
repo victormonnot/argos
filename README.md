@@ -3,10 +3,10 @@
 **A local console for drone observation, MAVLink diagnostics, recorded-session analysis and manual simulation flight.**
 
 ARGOS brings camera images, received measurements and reception incidents into
-one operator interface. **MAVLink en direct** (live MAVLink) exposes protocol
+one operator interface. **Live MAVLink** exposes protocol
 details; **Sessions** lets you replay a recording, inspect its frames and
 examine reception rates and gaps.
-**Pilotage** adds mouse, touch and optional keyboard controls for a dedicated
+**Flight controls** adds mouse, touch and optional keyboard controls for a dedicated
 GPS-free Gazebo/ArduPilot SITL session.
 
 ![ARGOS console showing the Gazebo camera and ArduPilot SITL telemetry](docs/images/observation.png)
@@ -20,7 +20,7 @@ modules, tested separately; they are not connected to the console's live
 receivers. Onboard autonomy and swarm coordination are research directions,
 not capabilities delivered by this interface.
 
-The current UI is in French. This documentation uses its on-screen labels
+The interface is in English. This documentation uses its on-screen labels
 when describing navigation.
 
 ## Try the console
@@ -56,8 +56,8 @@ python -m argos.console --recordings-dir examples/demo --port 8081
 ```
 
 Open **http://127.0.0.1:8081**, then **Sessions** and the single provided recording.
-Explore **Mesures** (measurements), **Messages MAVLink** (MAVLink messages) and
-**Analyse** (analysis). This is a replay demonstration; the Observation view
+Explore **Measurements**, **MAVLink messages** and
+**Analysis**. This is a replay demonstration; the Observation view
 has no live image or telemetry.
 
 ### Receive the SITL camera and telemetry
@@ -78,7 +78,7 @@ the separate web-control session from the ARGOS repository root:
   --gazebo-dir ../ardupilot_gazebo
 ```
 
-Open **http://127.0.0.1:8081** and choose **Pilotage**. Take control, select
+Open **http://127.0.0.1:8081** and choose **Flight controls**. Take control, select
 AltHold or Stabilize on the ground, prepare and arm. AltHold uses held
 climb/descent buttons; Stabilize uses a slider and +/− buttons for manual
 throttle. Direction buttons work while held; touch supports simultaneous axes.
@@ -94,9 +94,9 @@ models or an existing observation session.
 | View | Purpose |
 | --- | --- |
 | Observation | Camera image, reported mode, battery, attitude and NED position; each reception has its own freshness limit. |
-| Pilotage | Opt-in manual Gazebo/SITL flight, held mouse/touch controls and optional keyboard, with the live camera visible. |
-| Incidents et reprise (incidents and recovery) | Available data, observed interruptions, receiver reopening and reception recovery. |
-| MAVLink en direct (live MAVLink) | Received message types and components, counters, approximate rates, fields and bytes; the display can be frozen. |
+| Flight controls | Opt-in manual Gazebo/SITL flight, held mouse/touch controls and optional keyboard, with the live camera visible. |
+| Incidents and recovery (incidents and recovery) | Available data, observed interruptions, receiver reopening and reception recovery. |
+| Live MAVLink (live MAVLink) | Received message types and components, counters, approximate rates, fields and bytes; the display can be frozen. |
 | Sessions | Verified recordings, replay at a selected time, raw messages, reception rates, age and gaps. |
 
 MAVLink transports include UDP, TCP and serial. The `ardupilotmega` dialect is

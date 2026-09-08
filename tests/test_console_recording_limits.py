@@ -88,7 +88,7 @@ def test_interrupted_closure_metadata_survives_console_restart(tmp_path):
     recorder = ConsoleRecorder(tmp_path)
     state = recorder.start(0.)
     recorder.append(reception(1.))
-    detail = "Erreur transport : " + "🛰é" * 200
+    detail = "Error transport : " + "🛰é" * 200
     closed = recorder.stop(2., reason="transport_error", detail=detail)
     assert closed["state"] == "complete" and closed["end_detail"].endswith("…")
     with TestClient(create_app(ConsoleConfig(recordings_dir=tmp_path))) as client:

@@ -166,26 +166,26 @@ class VideoStore:
     def _status(self, now: float) -> tuple[str, str, float | None]:
         age = None if self._sample is None else now - self._sample.received_at
         if self.source == "none":
-            return "unconfigured", "Aucune caméra configurée", age
+            return "unconfigured", "No camera configured", age
         if self._error is not None:
             return "error", self._error, age
         if self._stopped:
-            return "error", "Source caméra arrêtée", age
+            return "error", "Camera source stopped", age
         if age is None:
-            return "waiting", "En attente d’une image caméra valide", age
+            return "waiting", "Waiting for a valid camera image", age
         if age < 0:
-            return "waiting", "Nouvelle réception en cours de lecture", None
+            return "waiting", "Reading new incoming data", None
         if age > self.age_limit:
-            return "stale", "Aucune image récente reçue", age
-        return "recent", "Images reçues de la caméra", age
+            return "stale", "No recent image received", age
+        return "recent", "Images received from the camera", age
 
     def snapshot(self, now: float) -> dict:
         now = _time(now)
         with self._lock:
             state, detail, age = self._status(now)
             return {"source": self.source,
-                    "label": {"none": "Aucune caméra", "gazebo": "Caméra Gazebo",
-                              "device": "Caméra réelle"}[self.source],
+                    "label": {"none": "No camera", "gazebo": "Gazebo camera",
+                              "device": "Physical camera"}[self.source],
                     "endpoint": self.endpoint, "state": state, "detail": detail,
                     "sequence": 0 if self._sample is None else self._sample.sequence,
                     "received_at": None if self._sample is None else self._sample.received_at,

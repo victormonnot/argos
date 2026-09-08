@@ -354,14 +354,14 @@ def test_system_status_reports_exact_heartbeat_declaration_and_reception_age(cod
     assert "healthy" not in result and "armed" not in result
     if code == 6:
         assert result["name"] == "MAV_STATE_EMERGENCY"
-        assert result["label"] == "Urgence"
+        assert result["label"] == "Emergency"
 
 
 def test_unknown_wire_status_still_has_a_recent_local_reception():
     result = system_status_view({"fields": {"system_status": 255}, "state": "recent",
                                  "received_at": 0., "rx_age_s": .1, "age_limit_s": 1.})
     assert result["state"] == "recent" and not result["known"]
-    assert result["label"] == "Inconnu (255)"
+    assert result["label"] == "Unknown (255)"
 
 
 def test_http_session_contract_source_filter_and_reconnect_use_only_memory_receivers(tmp_path):
@@ -425,7 +425,7 @@ def test_http_session_contract_source_filter_and_reconnect_use_only_memory_recei
         assert set(current) == {"declaration", "texts"}
         assert current["declaration"] == {
             "state": "recent", "system_status": 6, "name": "MAV_STATE_EMERGENCY",
-            "label": "Urgence", "known": True, "received_at": 0.,
+            "label": "Emergency", "known": True, "received_at": 0.,
             "rx_age_s": 0., "age_limit_s": config.limits.heartbeat,
         }
         item, = current["texts"]["entries"]

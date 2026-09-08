@@ -27,7 +27,7 @@ async function installControl(page, model) {
       value = { token: mock.token, control: snapshot() };
       if (mock.holdClaim) { mock.holdClaim.requested = true; await new Promise(resolve => { mock.holdClaim.release = resolve; }); }
     } else if (payload.token !== mock.token || !control.owned) {
-      return route.fulfill({ status: 409, json: { detail: 'Les commandes ont expiré.' } });
+      return route.fulfill({ status: 409, json: { detail: 'Les commandes ont expired.' } });
     } else if (path.endsWith('/input')) {
       expect(payload.seq).toBeGreaterThan(mock.seq);
       mock.seq = payload.seq;
@@ -83,7 +83,7 @@ test('pilotage is explicit and mouse hold releases outside the button without la
   expect(mock.calls).toHaveLength(0);
   await page.locator('#view-control').click();
   await expect(page.locator('#camera-stage')).toBeVisible();
-  const forward = page.getByRole('button', { name: 'Avancer, maintenir', exact: true });
+  const forward = page.getByRole('button', { name: 'Forward, hold', exact: true });
   await expect(forward).toBeDisabled();
   await page.locator('#control-claim').click();
   await expect(forward).toBeDisabled();
@@ -105,8 +105,8 @@ test('pilotage is explicit and mouse hold releases outside the button without la
 test('two real touch pointers combine axes; pointer cancellation clears every held button', async ({ page, model, context }) => {
   const mock = await ready(page, model);
   const cdp = await context.newCDPSession(page);
-  const up = await center(page.getByRole('button', { name: 'Monter, maintenir', exact: true }));
-  const right = await center(page.getByRole('button', { name: 'Droite, maintenir', exact: true }));
+  const up = await center(page.getByRole('button', { name: 'Climb, hold', exact: true }));
+  const right = await center(page.getByRole('button', { name: 'Right, hold', exact: true }));
   const first = { ...up, id: 1 }, second = { ...right, id: 2 };
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [first] });
   await expect.poll(() => lastAxes(mock)?.up).toBe(1);
@@ -117,13 +117,13 @@ test('two real touch pointers combine axes; pointer cancellation clears every he
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
   await expect.poll(() => lastAxes(mock)).toEqual(neutral);
   await expect(page.locator('.control-direction[aria-pressed=true]')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Monter, maintenir', exact: true })).toHaveCSS('touch-action', 'none');
+  await expect(page.getByRole('button', { name: 'Climb, hold', exact: true })).toHaveCSS('touch-action', 'none');
   await expect(page.locator('#camera-stage')).not.toHaveCSS('touch-action', 'none');
 });
 
 test('lost pointer capture neutralizes its axis', async ({ page, model }) => {
   const mock = await ready(page, model);
-  const forward = page.getByRole('button', { name: 'Avancer, maintenir', exact: true });
+  const forward = page.getByRole('button', { name: 'Forward, hold', exact: true });
   await forward.evaluate(button => button.addEventListener('pointerdown', event => { button.dataset.testPointer = event.pointerId; }, { once: true }));
   await forward.hover(); await page.mouse.down();
   await expect.poll(() => lastAxes(mock)?.forward).toBe(1);
@@ -171,7 +171,7 @@ test('window blur releases the lease and focus return never reclaims it', async 
   await page.waitForTimeout(180);
   expect(mock.claims).toBe(1);
   await expect(page.locator('#control-claim')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Avancer, maintenir', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Forward, hold', exact: true })).toBeDisabled();
 });
 
 test('late claim after focus loss is released without enabling motion', async ({ page, model }) => {
@@ -191,12 +191,12 @@ test('expired lease and source change require a new explicit claim', async ({ pa
   const mock = await ready(page, model);
   mock.control.owned = false; mock.control.phase = 'expired';
   await expect(page.locator('#control-claim')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Avancer, maintenir', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Forward, hold', exact: true })).toBeDisabled();
   await page.waitForTimeout(150);
   expect(mock.claims).toBe(1);
   mock.control.vehicle.armed = false;
   await page.locator('#control-claim').click();
-  await expect(page.locator('#control-authority')).toHaveText('Vous avez les commandes');
+  await expect(page.locator('#control-authority')).toHaveText('You have control');
   model.run = 'run-2';
   await expect.poll(() => mock.control.owned).toBe(false);
   expect(mock.claims).toBe(2);
@@ -207,14 +207,14 @@ test('service loss clears held axes and recovery leaves control unclaimed', asyn
   await page.keyboard.down('r');
   await expect.poll(() => lastAxes(mock)?.up).toBe(1);
   model.offline = true;
-  await expect(page.locator('#service-status')).toHaveText('Service inaccessible');
+  await expect(page.locator('#service-status')).toHaveText('Service unreachable');
   await expect.poll(() => mock.control.owned).toBe(false);
   await expect(page.locator('.control-direction[aria-pressed=true]')).toHaveCount(0);
   model.offline = false;
-  await expect(page.locator('#service-status')).toHaveText('Service connecté');
+  await expect(page.locator('#service-status')).toHaveText('Service connected');
   await page.keyboard.up('r');
   await expect(page.locator('#control-claim')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Monter, maintenir', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Climb, hold', exact: true })).toBeDisabled();
   expect(mock.claims).toBe(1);
 });
 
@@ -228,7 +228,7 @@ test('masked document releases control and visibility return never reclaims it',
   await page.evaluate(() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); });
   await page.keyboard.up('ArrowUp');
   await expect(page.locator('#control-claim')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Avancer, maintenir', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Forward, hold', exact: true })).toBeDisabled();
   expect(mock.claims).toBe(1);
 });
 
@@ -256,7 +256,7 @@ test('mode selection requires a ground preparation and is locked after arming', 
   await expect(arm).toBeEnabled();
   await select.selectOption('0');
   await expect(arm).toBeDisabled();
-  await expect(page.locator('#control-feedback')).toContainText('Préparez Stabilize');
+  await expect(page.locator('#control-feedback')).toContainText('Prepare Stabilize');
   await expect(page.locator('#control-throttle')).toBeDisabled();
   expect(mock.calls.filter(call => call.payload.action === 'prepare')).toHaveLength(1);
   mock.control.vehicle.landed = null;
@@ -265,11 +265,11 @@ test('mode selection requires a ground preparation and is locked after arming', 
   mock.control.vehicle.landed = true;
   await page.locator('[data-control-action=prepare]').click();
   expect(mock.calls.filter(call => call.payload.action === 'prepare').at(-1).payload.mode).toBe(0);
-  await expect(page.locator('#control-feedback')).toContainText('Préparation Stabilize');
+  await expect(page.locator('#control-feedback')).toContainText('Preparation Stabilize');
   await arm.click();
   await expect(select).toBeDisabled();
   await expect(page.locator('[data-control-action=prepare]')).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Monter, maintenir', exact: true })).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Climb, hold', exact: true })).toBeHidden();
   await expect(page.locator('#control-throttle')).toBeEnabled();
 });
 
@@ -277,11 +277,11 @@ test('Stabilize mouse throttle persists at neutral and LAND never pre-sends zero
   const mock = await ready(page, model, 0);
   await page.locator('#control-throttle').fill('47');
   await expect.poll(() => lastThrottle(mock)).toBe(.47);
-  await page.getByRole('button', { name: 'Augmenter les gaz de 2 pour cent', exact: true }).click();
+  await page.getByRole('button', { name: 'Increase throttle by 2 percentage points', exact: true }).click();
   await expect.poll(() => lastThrottle(mock)).toBe(.49);
-  await page.getByRole('button', { name: 'Réduire les gaz de 2 pour cent', exact: true }).click();
+  await page.getByRole('button', { name: 'Decrease throttle by 2 percentage points', exact: true }).click();
   await expect.poll(() => lastThrottle(mock)).toBe(.47);
-  const forward = page.getByRole('button', { name: 'Avancer, maintenir', exact: true });
+  const forward = page.getByRole('button', { name: 'Forward, hold', exact: true });
   await forward.hover(); await page.mouse.down();
   await expect.poll(() => lastAxes(mock)?.forward).toBe(1);
   await page.mouse.move(100, 200); await page.mouse.up();
@@ -298,7 +298,7 @@ test('Stabilize mouse throttle persists at neutral and LAND never pre-sends zero
 test('real touch combines Stabilize throttle with direction and cancelling touch retains gas', async ({ page, model, context }) => {
   const mock = await ready(page, model, 0);
   const cdp = await context.newCDPSession(page);
-  const right = { ...await center(page.getByRole('button', { name: 'Droite, maintenir', exact: true })), id: 1 };
+  const right = { ...await center(page.getByRole('button', { name: 'Right, hold', exact: true })), id: 1 };
   const gas = { ...await center(page.locator('#control-throttle')), id: 2 };
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [right] });
   await expect.poll(() => lastAxes(mock)?.right).toBe(1);
@@ -309,7 +309,7 @@ test('real touch combines Stabilize throttle with direction and cancelling touch
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
   await expect.poll(() => lastAxes(mock)).toEqual(neutral);
   expect(lastThrottle(mock)).toBe(heldGas);
-  await page.getByRole('button', { name: 'Augmenter les gaz de 2 pour cent', exact: true }).tap();
+  await page.getByRole('button', { name: 'Increase throttle by 2 percentage points', exact: true }).tap();
   await expect.poll(() => lastThrottle(mock)).toBeCloseTo(heldGas + .02);
   await expect(page.locator('#control-throttle')).toHaveCSS('touch-action', 'none');
 });

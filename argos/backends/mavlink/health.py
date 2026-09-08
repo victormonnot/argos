@@ -174,7 +174,7 @@ def interpret_mode(heartbeat_fields: Mapping[str, object]) -> dict[str, object]:
         values[name] = _uint(heartbeat_fields[name], bits, name)
     custom = values["custom_mode"]
     result: dict[str, object] = {
-        "label": f"Inconnu ({custom})", "custom_mode": custom,
+        "label": f"Unknown ({custom})", "custom_mode": custom,
         "base_mode": values["base_mode"], "autopilot": values["autopilot"],
         "vehicle_type": values["type"], "known": False, "mapping": None,
     }

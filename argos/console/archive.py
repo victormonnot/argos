@@ -89,7 +89,7 @@ class ReplayIndex:
     def snapshot(self, offset):
         start, end = self.recording.started_at, self.recording.ended_at
         if not math.isfinite(offset) or not 0 <= offset <= end - start:
-            raise ArchiveError("Le curseur doit être compris entre le début et la fin du journal")
+            raise ArchiveError("The cursor must be between the start and end of the recording")
         now = min(end, start + offset)
         views, accepted = {}, 0
         for name, (times, values) in self.samples.items():
@@ -147,7 +147,7 @@ class RecordingArchive:
             except FileNotFoundError:
                 return
             except OSError as exc:
-                raise ArchiveError("Le dossier des journaux est inaccessible", 503) from exc
+                raise ArchiveError("The recording directory is inaccessible", 503) from exc
 
         total = 0
 
@@ -163,16 +163,16 @@ class RecordingArchive:
 
     def _load(self, identifier):
         if not IDENTIFIER.fullmatch(identifier):
-            raise ArchiveError("Journal introuvable", 404)
+            raise ArchiveError("Recording not found", 404)
         try:
             # No symlinks, directories, devices or blocking FIFO opens.
             fd = os.open(self.directory / f"{identifier}.jsonl", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             with os.fdopen(fd, "rb") as stream:
                 before = os.fstat(stream.fileno())
                 if not stat.S_ISREG(before.st_mode):
-                    raise ArchiveError("Journal introuvable", 404)
+                    raise ArchiveError("Recording not found", 404)
                 if before.st_size > MAX_BYTES:
-                    raise ArchiveError("Journal trop volumineux pour cette relecture (32 Mio maximum)", 413)
+                    raise ArchiveError("Recording too large for replay (32 MiB maximum)", 413)
                 key = (identifier, signature(before))
                 if key == self._key:
                     # Filesystems can give successive same-size writes identical
@@ -187,17 +187,17 @@ class RecordingArchive:
                 self._key = self._recording = self._data = self._index = self._context = None
                 data = stream.read(MAX_BYTES + 1)
                 if len(data) > MAX_BYTES or signature(before) != signature(os.fstat(stream.fileno())):
-                    raise ArchiveError("Le journal a changé pendant sa lecture ; réessayez")
+                    raise ArchiveError("The recording changed while being read; retry")
             try:
                 recording = read_recording(io.BytesIO(data), max_events=MAX_EVENTS)
                 context = parse_capture_context(recording.context) if recording.context is not None else None
             except (RecordingError, ValueError) as exc:
-                raise ArchiveError(f"Journal incomplet, invalide ou hors limite : {exc}") from exc
+                raise ArchiveError(f"Recording incomplete, invalid or over limit: {exc}") from exc
             self._key, self._data, self._recording = key, data, recording
             self._context = context
             self._revision = hashlib.sha256(data).hexdigest()
         except OSError as exc:
-            raise ArchiveError("Journal introuvable ou inaccessible", 404) from exc
+            raise ArchiveError("Recording not found or inaccessible", 404) from exc
 
     def metadata(self, identifier):
         with self._lock:
@@ -224,12 +224,12 @@ class RecordingArchive:
         with self._lock:
             self._load(identifier)
             if revision != self._revision:
-                raise ArchiveError("Le fichier a changé ; ouvrez à nouveau le journal", 409)
+                raise ArchiveError("The file changed; reopen the recording", 409)
             if not (1 <= system <= 255 and 1 <= component <= 255):
-                raise ArchiveError("Choisissez un système et un composant entre 1 et 255")
+                raise ArchiveError("Select a system and component between 1 and 255")
             if self._index is None or self._index.source != (system, component):
                 if not any((event.system, event.component) == (system, component) for event in self._recording.events):
-                    raise ArchiveError("Ce composant n’apparaît pas dans le journal")
+                    raise ArchiveError("This component does not appear in the recording")
                 self._index = ReplayIndex(self._recording, system, component, self._context)
             return {"id": identifier, **self._index.snapshot(offset)}
 
@@ -238,7 +238,7 @@ class RecordingArchive:
         with self._lock:
             self._load(identifier)
             if revision != self._revision:
-                raise ArchiveError("Le fichier a changé ; ouvrez à nouveau le journal", 409)
+                raise ArchiveError("The file changed; reopen the recording", 409)
             try:
                 result = analyze_recording(self._recording, system=system, component=component,
                                            message_id=message_id, bins=bins, gap_threshold_s=gap_threshold_s)
@@ -248,17 +248,17 @@ class RecordingArchive:
 
     def messages(self, identifier, revision, offset=0, limit=50, system=None, component=None, message_id=None):
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 100:
-            raise ArchiveError("La page attend un décalage positif ou nul et une limite de 1 à 100 messages")
+            raise ArchiveError("The page requires a nonnegative offset and a limit of 1 to 100 messages")
         if ((system is None) != (component is None)
                 or any(value is not None and (type(value) is not int or not 0 <= value <= 255)
                        for value in (system, component))):
-            raise ArchiveError("Choisissez ensemble un système et un composant entre 0 et 255")
+            raise ArchiveError("Select both a system and component between 0 and 255")
         if message_id is not None and (type(message_id) is not int or not 0 <= message_id <= 16777215):
-            raise ArchiveError("L’identifiant de message doit être compris entre 0 et 16777215")
+            raise ArchiveError("Message ID must be between 0 and 16777215")
         with self._lock:
             self._load(identifier)
             if revision != self._revision:
-                raise ArchiveError("Le fichier a changé ; ouvrez à nouveau le journal", 409)
+                raise ArchiveError("The file changed; reopen the recording", 409)
             counts, items, total = Counter(), [], 0
             for index, event in enumerate(self._recording.events, start=1):
                 counts[event.message_id, event.type_name] += 1
@@ -286,6 +286,6 @@ class RecordingArchive:
         with self._lock:
             self._load(identifier)
             if revision is not None and revision != self._revision:
-                raise ArchiveError("Le fichier a changé ; ouvrez à nouveau le journal", 409)
+                raise ArchiveError("The file changed; reopen the recording", 409)
             # Send exactly the validated bytes, never reopen a mutable path.
             return self._data

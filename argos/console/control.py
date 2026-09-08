@@ -163,7 +163,7 @@ class FlightControl:
             command["ack"], command["ack_at"] = result, at
             if result not in (0, 5):
                 command["state"] = "denied"
-                command["detail"] = f"Commande MAVLink refusée (résultat {result})"
+                command["detail"] = f"MAVLink command rejected (result {result})"
                 self._error = command["detail"]
                 if command["action"] == "arm":
                     self._arm_uncertain = False
@@ -171,7 +171,7 @@ class FlightControl:
                     self._prepared_mode = None
             elif not command["observed"]:
                 command["state"] = "accepted"
-                command["detail"] = "Accusé MAVLink reçu ; état du véhicule à confirmer"
+                command["detail"] = "MAVLink acknowledgement received; vehicle state awaits confirmation"
         if (self._recovery_at is not None and self._identity_valid and self._armed is False
                 and self._heartbeat_at is not None and self._heartbeat_at >= self._recovery_at
                 and now - self._heartbeat_at <= HEARTBEAT_MAX_AGE
@@ -201,7 +201,7 @@ class FlightControl:
             command["observed_at"] = at
             if command["state"] != "denied":
                 command["state"] = "observed"
-                command["detail"] = "État confirmé par le HEARTBEAT du véhicule"
+                command["detail"] = "State confirmed by vehicle HEARTBEAT"
                 if action == "prepare" and first_observation:
                     self._prepared_mode = command["mode"]
             if action == "disarm":
@@ -214,14 +214,14 @@ class FlightControl:
 
     def _unavailable(self, now):
         if not self.enabled:
-            return "Pilotage désactivé ; observation uniquement"
+            return "Flight controls disabled; observation only"
         if self._closed or not self._link_available:
-            return "Liaison de pilotage indisponible"
+            return "Control link unavailable"
         if (self._heartbeat_at is None or now - self._heartbeat_at > HEARTBEAT_MAX_AGE
                 or not self._identity_valid):
-            return "HEARTBEAT ArduCopter récent attendu de la source sélectionnée"
+            return "Waiting for a recent ArduCopter HEARTBEAT from the selected source"
         if self._simstate_at is None or now - self._simstate_at > SIMSTATE_MAX_AGE:
-            return "Simulation non confirmée : SIMSTATE récent attendu"
+            return "Simulation unconfirmed: waiting for a recent SIMSTATE"
         return ""
 
     def _profile(self):
@@ -252,7 +252,7 @@ class FlightControl:
 
     def _send(self, link, message, now):
         if link is None:
-            return "closed", "Liaison MAVLink absente"
+            return "closed", "No MAVLink link"
         try:
             result = link.send(message, now)
             return result.status.value, result.detail
@@ -277,13 +277,13 @@ class FlightControl:
 
     def claim(self, link, now):
         if self._token is not None:
-            raise RuntimeError("Le pilotage est déjà détenu par un navigateur")
+            raise RuntimeError("A browser already owns control")
         self._link_available = link is not None
         reason = self._unavailable(now)
         if reason:
             raise RuntimeError(reason)
         if self._armed is not False or self._arm_uncertain:
-            raise RuntimeError("Attendez le désarmement confirmé avant de prendre le pilotage")
+            raise RuntimeError("Wait for confirmed disarming before taking control")
         self._token = secrets.token_urlsafe(24)
         self._claimed_at = self._input_at = now
         self._seq = -1
@@ -303,7 +303,7 @@ class FlightControl:
             if status != "accepted":
                 self._token = None
                 self._phase = "error"
-                self._error = detail or "Lecture des paramètres non transmise"
+                self._error = detail or "Parameter read request not sent"
                 raise RuntimeError(self._error)
         # Ask for HEARTBEAT and EXTENDED_SYS_STATE at 5 Hz. Sim time may run below
         # wall time; this keeps the same strict receipt-age bounds. A stream ACK
@@ -315,7 +315,7 @@ class FlightControl:
             if status != "accepted":
                 self._token = None
                 self._phase = "error"
-                self._error = detail or "Demande d’état du véhicule non transmise"
+                self._error = detail or "Vehicle state request not sent"
                 raise RuntimeError(self._error)
         self.tick(link, now)
         return {"token": self._token, "control": self.state(now)}
@@ -325,30 +325,30 @@ class FlightControl:
         # not resurrect input that already exceeded the deadman deadline.
         self._maintain(link, now)
         if not isinstance(token, str) or self._token is None or not secrets.compare_digest(token, self._token):
-            raise RuntimeError("Pilotage absent, expiré ou détenu par un autre navigateur")
+            raise RuntimeError("Control absent, expired or owned by another browser")
 
     def input(self, token, seq, axes, *, link, now, throttle=_MISSING):
         self._owner(token, link, now)
         if not _integer(seq, maximum=2**53 - 1) or seq <= self._seq:
-            raise ValueError("La séquence des commandes doit être strictement croissante")
+            raise ValueError("Command sequence must be strictly increasing")
         if (not isinstance(axes, dict) or set(axes) != set(AXES)
                 or any(not _number(value) or not -1. <= value <= 1.
                        for value in axes.values())):
-            raise ValueError("Quatre axes finis compris entre -1 et 1 sont requis")
+            raise ValueError("Four finite axes between -1 and 1 are required")
         if throttle is not _MISSING and (not _number(throttle) or not 0. <= throttle <= 1.):
-            raise ValueError("Les gaz doivent être un nombre fini compris entre 0 et 1")
+            raise ValueError("Throttle must be a finite number between 0 and 1")
         if self._selected_mode == ALT_HOLD:
             if throttle is not _MISSING and throttle != 0:
-                raise ValueError("AltHold utilise l’axe vertical ; les gaz explicites doivent rester à zéro")
+                raise ValueError("AltHold uses the vertical axis; explicit throttle must remain zero")
             accepted_throttle = 0.
         else:
             if axes["up"] != 0:
-                raise ValueError("Stabilize utilise les gaz explicites ; l’axe vertical doit rester à zéro")
+                raise ValueError("Stabilize uses explicit throttle; the vertical axis must remain zero")
             if self._armed is True and throttle is _MISSING:
-                raise ValueError("Stabilize armé exige une valeur de gaz explicite")
+                raise ValueError("Armed Stabilize requires an explicit throttle value")
             accepted_throttle = 0. if throttle is _MISSING else float(throttle)
             if self._armed is not True and accepted_throttle != 0:
-                raise RuntimeError("Gaz à zéro requis tant que l’armement n’est pas confirmé")
+                raise RuntimeError("Zero throttle required until arming is confirmed")
         self._seq = seq
         self._input_at = now
         self._axes = {key: float(axes[key]) for key in AXES}
@@ -370,8 +370,8 @@ class FlightControl:
                          "ack": None, "ack_at": None, "observed": False,
                          "observed_at": None,
                          "state": "sent" if status == "accepted" else "send_failed",
-                         "detail": "Transmise localement ; confirmation attendue"
-                         if status == "accepted" else detail or "Commande non transmise"}
+                         "detail": "Sent locally; awaiting confirmation"
+                         if status == "accepted" else detail or "Command not sent"}
         if action == "prepare":
             self._command["mode"] = self._selected_mode
         if action == "arm" and status in ("accepted", "partial", "error"):
@@ -383,19 +383,19 @@ class FlightControl:
     def action(self, token, action, *, link, now, mode=_MISSING):
         self._owner(token, link, now)
         if action not in ("prepare", "arm", "land", "disarm", "release"):
-            raise ValueError("Action de pilotage inconnue")
+            raise ValueError("Unknown flight-control action")
         if mode is not _MISSING and (action != "prepare" or not _integer(mode)
                                       or mode not in MANUAL_MODES):
-            raise ValueError("Le mode de préparation doit être Stabilize (0) ou AltHold (2)")
+            raise ValueError("Preparation mode must be Stabilize (0) or AltHold (2)")
         if action == "release":
-            self._revoke(link, now, reason="Pilotage libéré", phase="released")
+            self._revoke(link, now, reason="Control released", phase="released")
             return self.state(now)
         reason = self._unavailable(now)
         if reason:
             raise RuntimeError(reason)
         if action == "land":
             if self._phase == "landing":
-                raise RuntimeError("L’atterrissage a déjà été demandé")
+                raise RuntimeError("Landing has already been requested")
             self._axes = dict.fromkeys(AXES, 0.)
             self._manual(link, now, neutral=True)
             self._throttle = 0.
@@ -405,36 +405,36 @@ class FlightControl:
                 self._error = ""
             return self.state(now)
         if self._pending():
-            raise RuntimeError("Attendez la confirmation de la commande précédente")
+            raise RuntimeError("Wait for confirmation of the previous command")
         if action in ("prepare", "arm"):
             if any(self._axes.values()) or self._throttle != 0:
-                raise RuntimeError("Relâchez toutes les commandes avant de préparer ou armer")
+                raise RuntimeError("Release all inputs before preparing or arming")
             if self._armed is not False or self._arm_uncertain:
-                raise RuntimeError("Désarmement confirmé requis")
+                raise RuntimeError("Confirmed disarming required")
             if action == "prepare":
                 if (self._landed is not True or self._landed_at is None
                         or now - self._landed_at > LANDED_MAX_AGE):
-                    raise RuntimeError("Préparation refusée : état posé récent requis")
+                    raise RuntimeError("Preparation rejected: recent landed state required")
                 self._selected_mode = ALT_HOLD if mode is _MISSING else mode
                 self._prepared_mode = None
                 self._throttle = 0.
             if action == "arm":
                 if not self._profile()["ready"]:
-                    raise RuntimeError("Profil SITL sans GPS / repli non confirmé ; armement refusé")
+                    raise RuntimeError("GPS-free SITL / fallback profile unconfirmed; arming rejected")
                 if (self._mode != self._selected_mode
                         or self._prepared_mode != self._selected_mode):
-                    raise RuntimeError("Préparez puis confirmez le mode choisi (AltHold ou Stabilize) avant d’armer")
+                    raise RuntimeError("Prepare and confirm the selected mode (AltHold or Stabilize) before arming")
             status, detail = self._manual(link, now, neutral=True)
             if status != "accepted":
-                self._error = detail or "Entrée neutre non transmise"
+                self._error = detail or "Neutral input not sent"
                 raise RuntimeError(self._error)
             self._phase = "prepared" if self._prepared_mode == self._selected_mode else "claimed"
         elif action == "disarm":
             if self._armed is False:
-                raise RuntimeError("Le véhicule est déjà désarmé")
+                raise RuntimeError("The vehicle is already disarmed")
             if (self._landed is not True or self._landed_at is None
                     or now - self._landed_at > LANDED_MAX_AGE):
-                raise RuntimeError("Désarmement refusé : état posé récent requis")
+                raise RuntimeError("Disarming rejected: recent landed state required")
         if self._issue(action, link, now):
             self._error = ""
         return self.state(now)
@@ -461,18 +461,18 @@ class FlightControl:
         command = self._command
         if command and command["state"] in ("sent", "accepted") and now - command["sent_at"] > COMMAND_TIMEOUT:
             command["state"] = "timeout"
-            command["detail"] = "État du véhicule non confirmé avant expiration ; aucune répétition automatique"
+            command["detail"] = "Vehicle state unconfirmed before timeout; no automatic retry"
             self._error = command["detail"]
         if self._token is not None:
             reason = self._unavailable(now)
             if reason:
                 self._revoke(link, now, reason=reason, phase="error")
             elif now - self._input_at >= INPUT_TIMEOUT:
-                self._revoke(link, now, reason="Commandes navigateur expirées ; pilotage libéré", phase="expired")
+                self._revoke(link, now, reason="Browser inputs expired; control released", phase="expired")
             elif self._armed is True and self._mode != self._selected_mode and self._phase != "landing":
-                self._revoke(link, now, reason="Mode changé hors du pilotage web", phase="released")
+                self._revoke(link, now, reason="Mode changed outside web flight controls", phase="released")
             elif self._armed is True and not self._profile()["ready"]:
-                self._revoke(link, now, reason="Profil de simulation modifié pendant le pilotage", phase="error")
+                self._revoke(link, now, reason="Simulation profile changed during flight control", phase="error")
 
     def tick(self, link, now):
         if not self.enabled or self._closed:
@@ -490,20 +490,20 @@ class FlightControl:
             status, detail = self._send(link, message, now)
             self._last_gcs = now
             if status != "accepted":
-                self._revoke(link, now, reason=detail or "HEARTBEAT GCS non transmis", phase="error")
+                self._revoke(link, now, reason=detail or "GCS HEARTBEAT not sent", phase="error")
                 return
         if self._last_manual is None or now - self._last_manual >= MANUAL_INTERVAL:
             status, detail = self._manual(link, now)
             if status != "accepted":
-                self._revoke(link, now, reason=detail or "Commande manuelle non transmise", phase="error")
+                self._revoke(link, now, reason=detail or "Manual input not sent", phase="error")
 
     def check_reconfigure(self):
         if self.enabled and (self._token is not None or self._armed is True or self._arm_uncertain):
-            raise RuntimeError("Libérez le pilotage et attendez le désarmement avant de modifier les sources")
+            raise RuntimeError("Release control and wait for disarming before changing sources")
 
     def check_reconnect(self):
         if self._token is not None:
-            raise RuntimeError("Libérez le pilotage avant de rouvrir la réception MAVLink")
+            raise RuntimeError("Release control before reopening MAVLink reception")
 
     def begin_reconnect(self, now):
         """Resume only same-source reception; retain evidence of unresolved flight."""
@@ -517,5 +517,5 @@ class FlightControl:
         self._params = {}
 
     def close(self, link, now):
-        self._revoke(link, now, reason="Session de pilotage arrêtée", phase="released")
+        self._revoke(link, now, reason="Flight-control session stopped", phase="released")
         self._closed = True

@@ -15,11 +15,11 @@ def test_v3_wire_contract_and_interruption_survive_reading():
     stream = io.BytesIO()
     writer = RecordingWriter(stream, context={"origin": "test"}, with_completion=True)
     writer.append(event)
-    writer.finish(3., reason="transport_error", detail="Liaison interrompue : déconnexion")
+    writer.finish(3., reason="transport_error", detail="Link interrupted : déconnexion")
     expected = finish_lines([
         header(3), {"kind": "context", "data": {"origin": "test"}}, rx(event),
         {"kind": "end", "ended_at": 3., "events": 1, "reason": "transport_error",
-         "detail": "Liaison interrompue : déconnexion"},
+         "detail": "Link interrupted : déconnexion"},
     ])
     assert stream.getvalue() == expected and writer.bytes_written == len(expected)
     result = read_recording(io.BytesIO(expected))
