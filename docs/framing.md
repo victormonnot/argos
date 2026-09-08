@@ -75,6 +75,12 @@ fallback path. Browser input loss still has its independent **0.65-second**
 lease timeout; process/link failure retains the pinned autopilot GCS failsafe.
 These are landing requests, not a guarantee of horizontal braking or clearance.
 
+After a control interruption, both control panels retain the server's cause until
+the next successful control claim or session change. A target-loss landing shows
+the target failure followed by the expired manual-takeover deadline, including
+when a late input request first returns an expired-owner error. This avoids
+mistaking the consequence of a revoked lease for another browser taking control.
+
 Framing requests carry an increasing operator-intent number. An urgent Manual
 request can overtake an old Engage request and invalidate it. Engagement also
 checks the selected-target revision and the last acknowledged manual input
@@ -133,7 +139,22 @@ strictly increasing integer within the current lease.
 
 `control.framing` exposes phase, revision, selected target, eligibility/reason,
 normalized errors, current/reference height, pause status, derived axes, frame receipt age and
-remaining takeover time. Manual `control.axes` remains the browser's input;
+remaining takeover time. `control.framing.last_loss` retains the first takeover's
+cause, selected ID and bounded detection metadata through landing and disarming.
+Its `at` is the takeover time; `evidence_at` identifies when the saved image
+metadata was sampled. For an expired detection pause, the evidence is the first
+unusable frame, even if another frame is available at expiry. A successful new
+selection, engagement or lease clears this diagnostic. These are session receipt
+times, not camera exposure times.
+
+`control.interruption` retains the revoked lease's time, full reason and optional
+framing loss until a new claim. Its `lease_started_at` matches the claim's public
+`control.lease_started_at`; the browser uses this association to reject another
+lease's diagnosis even when responses arrive out of order. It is a session time,
+not the secret capability token. It survives later command errors and disarming;
+`control.command` continues to report the landing command's separate outcome.
+These bounded snapshots are available from state reads, not an event archive.
+Manual `control.axes` remains the browser's input;
 neutral browser updates do not overwrite active derived commands. A valid newer
 intent is consumed even if its requested transition is refused, preventing an
 older request from taking precedence later.

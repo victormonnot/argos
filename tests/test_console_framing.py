@@ -524,3 +524,107 @@ def test_real_law_lifecycle_keeps_reference_until_explicit_manual_stop():
     helper.stop()
     assert helper.phase == "selected" and helper.axes(10.25) == zero()
     assert helper.state(10.25)["reference_height"] is None
+
+
+@pytest.mark.parametrize("first,second,reason", [
+    ({"detections": []}, {"confidence": .4}, "No person detection"),
+    ({"confidence": .4}, {"detections": []}, "confidence is too low"),
+])
+def test_pause_expiry_retains_original_failure_image_not_late_recovery(control, first, second, reason):
+    moving(control)
+    bad_frame = observation(10.25, 3, **first)
+    control.observe(bad_frame)
+    control.tick(10.3)
+    assert control.last_loss is None  # a pause alone is not an actual takeover
+    control.observe(observation(10.4, 4, **second))
+    control.tick(10.4)
+    deadline = 10.3 + DETECTION_PAUSE
+    control.observe(observation(deadline - .001, 5))
+    control.tick(deadline - .001)
+    assert control.phase == "active" and control.last_loss is None
+    # Start a second pause and expire it with a good frame arriving exactly at
+    # its deadline. Only this actual takeover creates retained loss evidence.
+    bad_frame = observation(10.7, 6, **first)
+    control.observe(bad_frame)
+    control.tick(10.75)
+    control.observe(observation(10.8, 7, **second))
+    control.tick(10.8)
+    deadline = 10.75 + DETECTION_PAUSE
+    control.observe(observation(deadline, 8))
+    control.tick(deadline)
+    loss = control.state(deadline)["last_loss"]
+    assert loss["at"] == deadline and loss["evidence_at"] == 10.75
+    assert loss["sequence"] == 6 and loss["target_id"] == 7
+    assert loss["frame_age_s"] == pytest.approx(.05)
+    assert loss["detections"] == bad_frame["detections"]
+    assert reason in loss["reason"] and "framing pause" in loss["reason"]
+    assert not control.takeover_due(deadline + 1.999)
+    assert control.takeover_due(deadline + 2.)
+
+
+@pytest.mark.parametrize("frame,now,reason", [
+    (observation(10.3, 3, identity=8), 10.3, "different person IDs"),
+    (observation(10.3, 3), 10.751, "stale"),
+    (None, 10.3, "No recent analyzed image"),
+])
+def test_immediate_loss_retains_actual_takeover_metadata(control, frame, now, reason):
+    moving(control)
+    control.observe(frame)
+    control.tick(now)
+    loss = control.last_loss
+    assert loss["at"] == loss["evidence_at"] == now
+    assert reason in loss["reason"]
+    assert loss["target_id"] == 7
+    assert loss["sequence"] == (None if frame is None else frame["sequence"])
+    assert loss["detections"] == ([] if frame is None else frame["detections"])
+    assert loss["frame_age_s"] == (None if frame is None else pytest.approx(now - frame["received_at"]))
+
+
+def test_retained_loss_survives_clear_and_later_observations_with_defensive_copies(control):
+    moving(control)
+    control.observe(observation(10.3, 3, identity=8))
+    control.tick(10.3)
+    original = control.last_loss
+    returned = control.state(10.3)["last_loss"]
+    returned["reason"] = "changed by a consumer"
+    returned["detections"][0]["confidence"] = 0.
+    returned["detections"][0]["box"][0] = .99
+    control.last_loss["detections"].clear()
+    control.observe(observation(11., 4))
+    control.tick(11.)
+    control.clear("Drone disarmed; framing stopped")
+    control.stop()
+    assert control.state(50.)["last_loss"] == original
+    assert control.state(50.)["target_id"] is None
+    with pytest.raises(RuntimeError):
+        control.select(7, CONTEXT, 50.)
+    assert control.last_loss == original  # rejected intent cannot erase evidence
+
+
+@pytest.mark.parametrize("operation", ["select", "engage", "new_lease"])
+def test_successful_new_operator_intent_resets_retained_loss(control, operation):
+    moving(control)
+    control.tick(10.3, vehicle_reason="Vehicle state unavailable")
+    control.stop()
+    assert control.last_loss is not None
+    if operation == "select":
+        control.select(7, CONTEXT, 10.3)
+    elif operation == "engage":
+        control.engage(10.3)
+    else:
+        control.clear("New control lease", reset_loss=True)
+    assert control.last_loss is None
+
+
+def test_retained_loss_has_bounded_metadata_without_raw_image_fields(control):
+    moving(control)
+    detections = [{"track_id": i, "confidence": .9, "box": [.4, .3, .1, .2]}
+                  for i in range(1, 17)]
+    frame = observation(10.3, 3, detections=detections)
+    frame["raw_pixels"] = b"not diagnostic data"
+    control.observe(frame)
+    control.tick(10.3, vehicle_reason="x" * 5000)
+    loss = control.last_loss
+    assert len(loss["detections"]) == 16
+    assert len(loss["reason"]) == 1024
+    assert "raw_pixels" not in loss

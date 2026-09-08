@@ -425,3 +425,46 @@ def test_dropout_deadline_wins_over_late_good_frame_and_keepalives(flight):
         c.input(f['token'], seq, ZERO, link=f['link'], now=at)
     c.tick(f['link'], 2.57)
     assert c._token is None and c._command['action'] == 'land'
+
+
+def test_late_expired_input_does_not_erase_target_loss_from_http_state(flight):
+    f = flight
+    c = f['control']
+    assert f['select']().status_code == 200
+    assert f['engage']().status_code == 200
+    f['now'][0] = .2
+    bad_sequence = f['observe'](detections=[])
+    c.tick(f['link'], .2)
+    c.input(f['token'], 2, ZERO, link=f['link'], now=.3)
+    f['now'][0] = .56
+    f['observe']()  # a late good frame must not replace the failed image evidence
+    c.tick(f['link'], .56)
+    for seq in range(3, 22):
+        at = .56 + (seq - 2) * .1
+        heartbeat(c, at, armed=True)
+        simstate(c, at)
+        landed(c, at, 2)
+        c.input(f['token'], seq, ZERO, link=f['link'], now=at)
+    f['now'][0] = 2.57
+    response = f['client'].post('/api/control/input', json={
+        'token': f['token'], 'seq': 22, 'axes': ZERO, 'throttle': 0,
+    }, headers=ORIGIN)
+    assert response.status_code == 409
+    before = f['client'].get('/api/state').json()['control']
+    interruption = before['interruption']
+    assert not before['owned'] and before['command']['action'] == 'land'
+    assert interruption['at'] == pytest.approx(2.57)
+    assert interruption['lease_started_at'] == before['lease_started_at'] == 0.
+    assert 'manual takeover' in interruption['reason']
+    loss = interruption['framing_loss']
+    assert loss['at'] == pytest.approx(.56)
+    assert loss['evidence_at'] == pytest.approx(.2)
+    assert loss['sequence'] == bad_sequence and loss['detections'] == []
+    assert loss['target_id'] == 1
+    f['now'][0] = 3.
+    heartbeat(c, 3., armed=False, mode=9)
+    landed(c, 3.)
+    after = f['client'].get('/api/state').json()['control']
+    assert after['framing']['reason'] == 'Drone disarmed; framing stopped'
+    assert after['interruption'] == interruption
+    assert after['framing']['last_loss'] == loss

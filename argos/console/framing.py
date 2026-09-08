@@ -7,6 +7,7 @@ session's local monotonic clock; they are not camera exposure timestamps.
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 
 from argos.guidance.image_framing import FramingLaw
 
@@ -22,6 +23,7 @@ AXES = ("forward", "right", "up", "yaw")
 # Independent acceptance bounds at the lifecycle/flight-command boundary.
 # A broken guidance producer must not expand its own control authority.
 OUTPUT_LIMITS = {"forward": .35, "right": 0., "up": .3, "yaw": .5}
+DIAGNOSTIC_REASON_LIMIT = 1024
 
 
 def _zero():
@@ -64,9 +66,28 @@ class FramingControl:
         self._last_sequence = self._last_received_at = None
         self._deadline = None
         self._pause_deadline = None
+        self._pause_issue = ""
+        self._pause_evidence = None
+        self._last_loss = None
         self._reason = "Select a person in a recent analyzed image"
         self._output = _zero()
         self._law = FramingLaw()
+
+    @property
+    def last_loss(self):
+        """Frozen first-takeover evidence, copied for each consumer."""
+        return deepcopy(self._last_loss)
+
+    def _evidence(self, now):
+        observation = self._observation
+        return {"evidence_at": now,
+                "sequence": None if observation is None else observation["sequence"],
+                "frame_age_s": None if observation is None else
+                max(0., now - observation["received_at"]),
+                # observe() already bounds this to 16 identities and four
+                # normalized coordinates per box; never retain image pixels.
+                "detections": [] if observation is None else
+                deepcopy(observation["detections"])}
 
     def observe(self, observation: dict | None):
         """Replace the current observation without sending or renewing anything.
@@ -138,7 +159,8 @@ class FramingControl:
         detections = observation["detections"]
         target = next((item for item in detections if item["track_id"] == self._target_id), None)
         if target is None:
-            return None, "Selected target was lost"
+            return None, ("Selected target was lost; only different person IDs are detected"
+                          if detections else "No person detection in the analyzed image")
         if limits is not None:
             if len(detections) != 1:
                 return None, "Framing requires exactly one visible person"
@@ -156,10 +178,10 @@ class FramingControl:
         # _target already rejects source/order/staleness/geometry problems.
         # A different ID is never a substitute for the explicitly selected one.
         return (issue == "Selected target confidence is too low"
-                or (issue == "Selected target was lost" and self._observation is not None
+                or (issue == "No person detection in the analyzed image" and self._observation is not None
                     and not self._observation["detections"]))
 
-    def _pause(self, now):
+    def _pause(self, now, issue):
         self._output = _zero()
         if self._pause_deadline is None:
             try:
@@ -168,7 +190,9 @@ class FramingControl:
                 self._takeover(now, "Image framing pause failed; take manual control")
                 return
             self._pause_deadline = now + DETECTION_PAUSE
-            self._reason = "Image framing paused; neutral input while waiting briefly for the selected person"
+            self._pause_issue = issue
+            self._pause_evidence = self._evidence(now)
+            self._reason = f"Image framing paused; {issue}; neutral input while waiting briefly for the selected person"
             self.revision += 1
         # Retain the latest bad image's identity too: an older good image must
         # never recover a pause or restore the command from before the gap.
@@ -193,6 +217,7 @@ class FramingControl:
         self._target_id, self._context = track_id, context
         self._last_now = now
         self._reset_output()
+        self._last_loss = None
         self.phase = "selected"
         self._reason = "Person selected"
         self.revision += 1
@@ -212,6 +237,9 @@ class FramingControl:
         self._last_now = now
         self._deadline = None
         self._pause_deadline = None
+        self._pause_issue = ""
+        self._pause_evidence = None
+        self._last_loss = None
         self.phase = "active"
         self._reason = "Image framing active"
         self.revision += 1
@@ -222,8 +250,17 @@ class FramingControl:
         self._last_sequence = self._last_received_at = None
         self._deadline = None
         self._pause_deadline = None
+        self._pause_issue = ""
+        self._pause_evidence = None
 
-    def _takeover(self, now, reason):
+    def _takeover(self, now, reason, *, evidence=None):
+        if self._last_loss is None:
+            # For pause expiry, evidence belongs to the first bad image, while
+            # at remains the actual takeover time. A late good image therefore
+            # cannot be misrepresented as the image which caused the failure.
+            self._last_loss = {"at": now, "reason": str(reason)[:DIAGNOSTIC_REASON_LIMIT],
+                               "target_id": self._target_id,
+                               **deepcopy(evidence if evidence is not None else self._evidence(now))}
         self._reset_output()
         self.phase = "takeover"
         self._deadline = now + TAKEOVER_TIMEOUT
@@ -238,12 +275,13 @@ class FramingControl:
         # Expiry wins even if a good image arrives on this exact tick. Once
         # latched, the normal explicit-takeover path cannot resume itself.
         if self._pause_deadline is not None and now >= self._pause_deadline:
-            self._takeover(now, "Selected target did not recover during the framing pause; take manual control")
+            self._takeover(now, f"{self._pause_issue}; selected target did not recover during the framing pause; take manual control",
+                           evidence=self._pause_evidence)
             return
         target, issue = self._target(now, limits=ACTIVE_HEIGHT)
         if vehicle_reason or issue:
             if not vehicle_reason and self._pause_allowed(issue):
-                self._pause(now)
+                self._pause(now, issue)
             else:
                 self._takeover(now, str(vehicle_reason or issue))
             return
@@ -267,6 +305,8 @@ class FramingControl:
         self._last_sequence, self._last_received_at = sequence, received_at
         if self._pause_deadline is not None:
             self._pause_deadline = None
+            self._pause_issue = ""
+            self._pause_evidence = None
             self._reason = "Image framing active"
             self.revision += 1
 
@@ -286,8 +326,10 @@ class FramingControl:
         self._reason = str(reason)
         self.revision += 1
 
-    def clear(self, reason="Selection cleared"):
+    def clear(self, reason="Selection cleared", *, reset_loss=False):
         self._reset_output()
+        if reset_loss:
+            self._last_loss = None
         self._target_id = self._context = None
         self.phase = "idle" if self.enabled else "disabled"
         self._reason = str(reason)
@@ -349,5 +391,6 @@ class FramingControl:
                 "height": self._law.height if self._pause_deadline is None else None,
                 "reference_height": self._law.reference_height,
                 "axes": self.axes(now), "frame_age_s": age,
+                "last_loss": self.last_loss,
                 "takeover_remaining_s": max(0., self._deadline - now)
                 if self.phase == "takeover" and self._deadline is not None else None}

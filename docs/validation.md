@@ -287,3 +287,37 @@ These trials do not validate outdoor following, physical flight, radio/HITL,
 VIO, horizontal position hold, obstacle clearance or metric range. Received
 MAVLink remains the journal format; visual commands and image history are not
 replayed in Sessions. Existing user recordings were preserved.
+
+### Interruption diagnostics follow-up — September 8, 2026
+
+A reported early framing failure left a server error confirming takeover timeout
+and an automatic Land request. The browser replaced that cause with either a
+generic interrupted-control message or an expired-owner response, depending on
+whether state polling or the next input request observed the revocation first.
+The original detection failure was not retained and cannot be reconstructed for
+that attempt.
+
+Two additional real-browser flights on the unchanged controller each observed
+40 seconds of framing after manual takeoff. Neither reproduced a full takeover.
+During the higher-takeoff flight, captured images established one empty detection
+and one same-ID confidence drop to 0.46984, while the person remained visibly in
+the image. Fresh same-ID observations returned in about 0.2 seconds in each case,
+so both neutral pauses recovered. The first sampled image ages were 0.082 and
+0.073 seconds: these two gaps were not stale-image or changed-ID failures.
+
+The diagnostic correction preserves the first takeover's cause and image
+metadata, and keeps the revoked lease's cause visible after a late input error,
+Land and disarming. A separate landing outcome remains visible if sending or
+confirmation fails. Tracking thresholds, pause/takeover deadlines, guidance and
+browser authority are unchanged. These successful short flights do not establish
+that the reported intermittent loss is resolved.
+
+Focused verification passed 295 Python checks covering flight control, framing,
+API ordering, diagnostics, profiles and guidance, plus 56 browser checks covering
+manual/framing controls and both interruption-response orders. These are focused
+regressions, not a rerun of the previously reported repository-wide validation.
+
+After deployment, a real-browser ground-only claim/release displayed the server's
+retained interruption in both control panels. Camera, vision and vehicle receipts
+were recent; the vehicle remained disarmed. All eight existing user recordings
+matched their before/after byte sizes and SHA-256 hashes.

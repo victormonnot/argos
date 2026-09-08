@@ -13,10 +13,10 @@ async function installFraming(page, model) {
     reason: 'Select a person in the image.', error_x: null, error_y: null, height: null, reference_height: null,
     axes: zero(), frame_age_s: 0, takeover_remaining_s: null };
   const control = { at: 0, enabled: true, available: true, reason: '', owned: false, phase: 'idle', last_input_age: 0,
-    selected_mode: 2, prepared: false, throttle: 0, input_seq: -1, axes: zero(),
-    vehicle: { armed: false, mode: 0, landed: true, heartbeat_age: .01 }, profile: { ready: true }, command: null, last_error: '', framing };
+    selected_mode: 2, prepared: false, throttle: 0, input_seq: -1, axes: zero(), lease_started_at: null,
+    vehicle: { armed: false, mode: 0, landed: true, heartbeat_age: .01 }, profile: { ready: true }, command: null, last_error: '', interruption: null, framing };
   const mock = { control, framing, calls: [], frames: new Map(), sequence: 0, token: null, intent: 0, manualSeq: -1,
-    video: 'framing-video-1', visionState: 'recent', hold: null, stopError: false, visiblePerson: 7 };
+    video: 'framing-video-1', visionState: 'recent', hold: null, holdInput: null, stopError: false, visiblePerson: 7 };
   const snapshot = () => {
     framing.available = control.vehicle.armed && control.vehicle.landed === false && control.vehicle.mode === 2
       && framing.target_id !== null && framing.phase !== 'takeover' && mock.visionState === 'recent';
@@ -50,6 +50,10 @@ async function installFraming(page, model) {
     const reply = async (status, value) => { try { await route.fulfill({ status, json: value }); } catch { /* Delayed requests can be aborted. */ } };
     if (path.endsWith('/claim')) {
       control.owned = true; control.phase = 'claimed'; mock.token = `private-framing-${mock.calls.length}`; mock.intent = 0;
+      control.interruption = null; control.last_error = '';
+      control.lease_started_at = model.clock();
+      Object.assign(framing, { active: false, paused: false, phase: 'idle', target_id: null,
+        reason: 'New control lease; select a person', reference_height: null });
       return reply(200, { token: mock.token, control: snapshot() });
     }
     if (payload.token !== mock.token || !control.owned) return reply(409, { detail: 'Control unavailable.' });
@@ -63,7 +67,12 @@ async function installFraming(page, model) {
           framing.reason = 'Manual control.'; framing.takeover_remaining_s = null;
         }
       }
-      return reply(200, { control: snapshot() });
+      const response = { control: snapshot() };
+      if (mock.holdInput) {
+        const hold = mock.holdInput; mock.holdInput = null;
+        await holdFor(hold);
+      }
+      return reply(200, response);
     }
     if (path.endsWith('/action')) {
       const { action } = payload;
@@ -319,6 +328,117 @@ test('an unconfirmed Manual request releases authority rather than assuming take
   await expect.poll(() => mock.control.owned).toBe(false);
   await expect(page.locator('#control-feedback')).toContainText('Manual takeover was not confirmed');
 });
+
+const lossReason = 'Selected person disappeared; no manual takeover within 2 seconds. Landing requested';
+function revokeForFraming(mock, model, { reason = lossReason, interruption = true } = {}) {
+  const terminal = { at: model.clock(), lease_started_at: mock.control.lease_started_at,
+    reason, framing_loss: { reason: 'Selected person disappeared' } };
+  Object.assign(mock.control, { owned: false, phase: 'released', last_error: reason,
+    interruption: interruption ? terminal : null,
+    command: { action: 'land', state: 'observed', observed: true } });
+  Object.assign(mock.framing, { active: false, paused: false, phase: 'idle', target_id: null,
+    reason: 'Framing stopped', takeover_remaining_s: null });
+  return terminal;
+}
+
+test('a state-first revocation keeps its cause despite an older input reply and later disarming', async ({ page, model }) => {
+  const mock = await ready(page, model, { engage: true });
+  const hold = {}; mock.holdInput = hold;
+  await expect.poll(() => hold.requested).toBe(true);
+  revokeForFraming(mock, model);
+  await expect(page.locator('#control-feedback')).toHaveText(lossReason);
+  await expect(page.locator('#framing-status')).toHaveText(lossReason);
+  hold.release();
+  Object.assign(mock.control.vehicle, { armed: false, landed: true });
+  mock.control.last_error = 'A later command confirmation timed out';
+  mock.control.command.state = 'timeout';
+  await expect(page.locator('#control-armed')).toHaveText('Disarmed');
+  for (const id of ['control-feedback', 'framing-status']) {
+    await expect(page.locator(`#${id}`)).toHaveText(`${lossReason} · Landing · confirmation not received.`);
+  }
+  await expect(page.getByRole('button', { name: 'Forward, hold', exact: true })).toBeDisabled();
+  expect(mock.calls.filter(call => call.path.endsWith('/claim'))).toHaveLength(1);
+});
+
+test('a late terminal cause replaces an input-first 409 even after disarming', async ({ page, model }) => {
+  const mock = await ready(page, model, { engage: true });
+  const hold = { when: path => path === '/api/state' }; model.hold = hold;
+  await expect.poll(() => hold.requested).toBe(true);
+  const terminal = revokeForFraming(mock, model, { interruption: false });
+  await expect(page.locator('#control-feedback')).toHaveText('Control unavailable. Control released.');
+  Object.assign(mock.control.vehicle, { armed: false, landed: true });
+  mock.control.interruption = terminal;
+  mock.control.last_error = 'A later command confirmation timed out';
+  hold.release();
+  await expect(page.locator('#control-armed')).toHaveText('Disarmed');
+  await expect(page.locator('#control-feedback')).toHaveText(lossReason);
+  await expect(page.locator('#framing-status')).toHaveText(lossReason);
+  await expect(page.locator('#control-claim')).toBeEnabled();
+  expect(mock.calls.filter(call => call.path.endsWith('/claim'))).toHaveLength(1);
+});
+
+test('terminal causes reset on a successful claim or new run and cannot leak from an earlier lease', async ({ page, model }) => {
+  const mock = await ready(page, model, { engage: true });
+  const previous = revokeForFraming(mock, model);
+  Object.assign(mock.control.vehicle, { armed: false, landed: true });
+  await expect(page.locator('#control-feedback')).toHaveText(lossReason);
+  await page.locator('#control-claim').click();
+  await expect(page.locator('#control-authority')).toHaveText('You have control');
+  await expect(page.locator('#control-feedback')).not.toContainText(lossReason);
+  await expect(page.locator('#framing-status')).not.toContainText(lossReason);
+
+  // A newer state response can still contain an interruption from an old lease.
+  mock.control.owned = false; mock.control.phase = 'released'; mock.control.interruption = previous;
+  await expect(page.locator('#control-authority')).toHaveText('Control available');
+  await expect(page.locator('#control-feedback')).not.toContainText(lossReason);
+  await expect(page.locator('#framing-status')).not.toContainText(lossReason);
+
+  const currentReason = 'Vision worker stopped; landing requested';
+  revokeForFraming(mock, model, { reason: currentReason });
+  await expect(page.locator('#control-feedback')).toHaveText(currentReason);
+  model.run = 'new-run-after-interruption';
+  await expect(page.locator('#control-feedback')).toContainText('The source changed');
+  await expect(page.locator('#framing-status')).not.toContainText(currentReason);
+  expect(mock.calls.filter(call => call.path.endsWith('/claim'))).toHaveLength(2);
+});
+
+for (const knownCause of [true, false]) {
+  test(`another browser's later lease cannot ${knownCause ? 'replace' : 'supply'} our terminal cause`, async ({ page, model }) => {
+    const mock = await ready(page, model, { engage: true });
+    revokeForFraming(mock, model, { interruption: knownCause });
+    await expect(page.locator('#control-authority')).toHaveText('Control available');
+    if (knownCause) await expect(page.locator('#control-feedback')).toHaveText(lossReason);
+
+    // The other browser takes control; this UI has no token for that lease.
+    mock.control.interruption = null; mock.control.owned = true; mock.control.phase = 'armed';
+    mock.control.lease_started_at = model.clock();
+    await expect(page.locator('#control-authority')).toHaveText('Another pilot connected');
+    const otherReason = 'Another pilot stopped their vision worker';
+    revokeForFraming(mock, model, { reason: otherReason });
+    mock.control.command.state = 'denied';
+    await expect(page.locator('#control-authority')).toHaveText('Control available');
+    for (const id of ['control-feedback', 'framing-status']) {
+      await expect(page.locator(`#${id}`)).not.toContainText(otherReason);
+      if (knownCause) await expect(page.locator(`#${id}`)).toHaveText(lossReason);
+    }
+    expect(mock.calls.filter(call => call.path.endsWith('/claim'))).toHaveLength(1);
+  });
+}
+
+for (const [state, outcome] of [['sent', 'sent, awaiting confirmation'], ['accepted', 'accepted, awaiting confirmation'],
+  ['denied', 'rejected by the drone'], ['send_failed', 'send failed']]) {
+  test(`the terminal cause retains the independent ${state} LAND outcome`, async ({ page, model }) => {
+    const mock = await ready(page, model, { engage: true });
+    revokeForFraming(mock, model);
+    Object.assign(mock.control.command, { state, observed: false });
+    for (const id of ['control-feedback', 'framing-status']) {
+      await expect(page.locator(`#${id}`)).toHaveText(`${lossReason} · Landing · ${outcome}.`);
+    }
+    mock.control.command = { action: 'arm', state: 'observed', observed: true };
+    await expect(page.locator('#control-feedback')).toHaveText(lossReason);
+    await expect(page.locator('#framing-status')).toHaveText(lossReason);
+  });
+}
 
 for (const event of ['blur', 'workspace']) {
   test(`${event} releases the flight lease while a framing request is pending`, async ({ page, model }) => {

@@ -19,6 +19,7 @@
   let framingFeedback = "", acknowledgedInputSeq = -1;
   let vision = { enabled: false, recent: false };
   let feedback = "", feedbackTone = "neutral";
+  let leaseStartedAt = null, leaseInterruption = null, interruptionPending = false;
   const active = () => document.body.dataset.view === "control" && !document.hidden && focused;
   const owned = () => Boolean(token && control?.owned && fresh && control?.available);
   const selectedMode = () => control?.selected_mode === 0 ? 0 : 2;
@@ -93,8 +94,38 @@
     if (!next || typeof next !== "object" || !Number.isFinite(next.at)) throw new Error("Invalid flight-control state.");
     if (control && next.at < control.at) return false;
     control = next;
+    rememberInterruption(next);
     if (next.vehicle?.armed !== true || selectedMode() !== 0 || ["landing", "released", "expired", "error"].includes(next.phase)) resetThrottle();
     return true;
+  }
+
+  function rememberInterruption(next) {
+    const interruption = next?.interruption;
+    // A rejected input can arrive before the state explaining its revocation.
+    // Keep the exact lease identity after releasing its token, so later state
+    // can explain the loss without attributing another pilot's incident.
+    if (!interruptionPending || leaseStartedAt === null || leaseInterruption) return;
+    // A late GET may still show our revoked lease as owned. Only a different
+    // lease identity closes the association with the interruption we await.
+    if (next.lease_started_at !== leaseStartedAt) { interruptionPending = false; return; }
+    if (next.owned !== false || !interruption || typeof interruption !== "object"
+      || interruption.lease_started_at !== leaseStartedAt
+      || !Number.isFinite(interruption.at) || interruption.at < leaseStartedAt || interruption.at > next.at
+      || typeof interruption.reason !== "string" || !interruption.reason.trim() || interruption.reason.length > 4096) return;
+    leaseInterruption = { at: interruption.at, reason: interruption.reason };
+    interruptionPending = false;
+  }
+
+  function interruptionText() {
+    if (!leaseInterruption) return "";
+    const command = control?.command;
+    // Keep the cause and the outcome of its LAND independently visible. A
+    // later pilot's LAND, or an old successful Arm, does not describe this loss.
+    if (control?.interruption?.at !== leaseInterruption.at || control.interruption.lease_started_at !== leaseStartedAt || command?.action !== "land"
+      || (command.observed && command.state === "observed")) return leaseInterruption.reason;
+    const outcome = ({ sent: "sent, awaiting confirmation", accepted: "accepted, awaiting confirmation",
+      denied: "rejected by the drone", timeout: "confirmation not received", send_failed: "send failed" })[command.state] || "awaiting confirmation";
+    return `${leaseInterruption.reason} · Landing · ${outcome}.`;
   }
 
   async function post(path, payload, { keepalive = false, timeout = 1800 } = {}) {
@@ -228,11 +259,11 @@
         : !hasControl || !effectiveActive || paused || framingBusy || !vision.recent;
     }
     document.querySelector('[data-framing-operation="stop"]').setAttribute("aria-pressed", String(!effectiveActive && !takeover));
-    let status = !hasControl ? "Take control to select a person in the image." : !vision.enabled ? "Enable person detection, then select a person in the image."
+    let status = interruptionText() || (!hasControl ? "Take control to select a person in the image." : !vision.enabled ? "Enable person detection, then select a person in the image."
       : takeover ? `${framing.reason || "Tracking lost"} · Manual takeover required${Number.isFinite(framing.takeover_remaining_s) ? ` within ${Math.max(0, framing.takeover_remaining_s).toFixed(1)} s` : ""}.`
       : paused ? `Framing paused · ${framing.reason || "Detection interrupted; corrections paused"}`
-      : framingFeedback || (effectiveActive ? "Framing active · Any manual direction returns control to you." : framing.reason || "Select a person, then engage framing after manual takeoff.");
-    if (framingFeedback && !takeover && !paused && hasControl) status = framingFeedback;
+      : framingFeedback || (effectiveActive ? "Framing active · Any manual direction returns control to you." : framing.reason || "Select a person, then engage framing after manual takeoff."));
+    if (framingFeedback && !leaseInterruption && !takeover && !paused && hasControl) status = framingFeedback;
     text("framing-status", status);
     node("framing-status").dataset.phase = takeover ? "lost" : effectiveActive ? "active" : framing.phase;
     const recent = hasControl && vision.recent && !paused && !takeover && Number.isFinite(framing.frame_age_s) && framing.frame_age_s <= 1;
@@ -285,8 +316,8 @@
     const profileIssue = hasControl && !control?.profile?.ready ? control?.profile?.mismatched?.length ? "Incompatible simulation settings: check the GPS-free startup profile." : "Checking GPS-free configuration…" : "";
     const draftIssue = hasControl && vehicle?.armed === false && (!prepared() || draftMode !== selectedMode()) ? `Prepare ${modeName(draftMode)}, then arm for manual takeoff.` : "";
     const hint = hasControl ? vehicle?.armed ? isStabilize ? "Adjust throttle; hold directions to fly." : "Hold the buttons to fly." : control?.profile?.ready ? isStabilize ? "Arm at 0% throttle, then increase gradually to take off." : "Arm, then hold Climb to take off." : "Waiting for GPS-free configuration confirmation." : vehicle?.armed !== false ? "Taking control requires a disarmed drone." : "Take control to prepare for flight.";
-    text("control-feedback", unavailable || feedback || (["denied", "timeout", "send_failed"].includes(command?.state) ? commandText : profileIssue) || draftIssue || commandText || control?.last_error || hint);
-    node("control-feedback").dataset.tone = unavailable || profileIssue ? "warning" : feedback ? feedbackTone : ["denied", "timeout", "send_failed"].includes(command?.state) ? "error" : "neutral";
+    text("control-feedback", interruptionText() || unavailable || feedback || (["denied", "timeout", "send_failed"].includes(command?.state) ? commandText : profileIssue) || draftIssue || commandText || control?.last_error || hint);
+    node("control-feedback").dataset.tone = leaseInterruption || unavailable || profileIssue ? "warning" : feedback ? feedbackTone : ["denied", "timeout", "send_failed"].includes(command?.state) ? "error" : "neutral";
     renderFraming();
   }
 
@@ -308,7 +339,11 @@
         return;
       }
       adopt(body.control);
+      leaseStartedAt = Number.isFinite(body.control.lease_started_at) ? body.control.lease_started_at : null;
+      leaseInterruption = null;
+      interruptionPending = leaseStartedAt !== null;
       token = body.token;
+      rememberInterruption(control);
       framingIntent = 0;
       framingSuppressed = false;
       acknowledgedInputSeq = -1;
@@ -434,6 +469,9 @@
     if (runId !== null && runId !== detail.run_id) {
       release("The source changed. Take control again explicitly.");
       control = null;
+      leaseStartedAt = null;
+      leaseInterruption = null;
+      interruptionPending = false;
       draftMode = 2;
     }
     runId = detail.run_id;

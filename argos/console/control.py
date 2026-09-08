@@ -19,6 +19,7 @@ from __future__ import annotations
 import math
 import secrets
 from collections import deque
+from copy import deepcopy
 
 from .framing import FramingControl
 
@@ -118,6 +119,7 @@ class FlightControl:
         self._command = None
         self._phase = "idle" if enabled else "disabled"
         self._error = ""
+        self._interruption = None
         self._arm_uncertain = False
         self._recovery_at = None
         self._link_available = True
@@ -199,7 +201,7 @@ class FlightControl:
             if result not in (0, 5):
                 command["state"] = "denied"
                 command["detail"] = f"MAVLink command rejected (result {result})"
-                self._error = command["detail"]
+                self._command_error(command["detail"])
                 if command["action"] == "arm":
                     self._arm_uncertain = False
                 elif command["action"] == "prepare":
@@ -273,7 +275,8 @@ class FlightControl:
         reason = self._unavailable(now)
         return {"at": now, "enabled": self.enabled, "available": not reason,
                 "reason": reason, "owned": self._token is not None,
-                "phase": self._phase, "last_input_age": _age(now, self._input_at),
+                "phase": self._phase, "lease_started_at": self._claimed_at,
+                "last_input_age": _age(now, self._input_at),
                 "input_timeout": INPUT_TIMEOUT, "axes": dict(self._axes),
                 "selected_mode": self._selected_mode, "throttle": self._throttle,
                 "prepared": self._prepared_mode == self._selected_mode,
@@ -287,7 +290,17 @@ class FlightControl:
                             and now - self._landed_at <= LANDED_MAX_AGE else None},
                 "profile": self._profile(),
                 "command": None if self._command is None else dict(self._command),
+                "interruption": self.interruption,
                 "last_error": self._error}
+
+    @property
+    def interruption(self):
+        """Last owned lease revocation, independent of subsequent command errors."""
+        return deepcopy(self._interruption)
+
+    def _command_error(self, detail):
+        self._error = (f"{self._interruption['reason']}; {detail}"
+                       if self._interruption is not None else detail)
 
     def _send(self, link, message, now):
         if link is None:
@@ -359,11 +372,12 @@ class FlightControl:
         if self._armed is not False or self._arm_uncertain:
             raise RuntimeError("Wait for confirmed disarming before taking control")
         self._token = secrets.token_urlsafe(24)
+        self._interruption = None
         self._claimed_at = self._input_at = now
         self._seq = -1
         self._last_manual_seq = -1
         self._framing_intent = 0
-        self.framing.clear("New control lease; select a person")
+        self.framing.clear("New control lease; select a person", reset_loss=True)
         self._axes = dict.fromkeys(AXES, 0.)
         self._selected_mode = ALT_HOLD
         self._prepared_mode = None
@@ -536,7 +550,7 @@ class FlightControl:
         if action == "arm" and status in ("accepted", "partial", "error"):
             self._arm_uncertain = True
         if status != "accepted":
-            self._error = self._command["detail"]
+            self._command_error(self._command["detail"])
         return status == "accepted"
 
     def action(self, token, action, *, link, now, mode=_MISSING):
@@ -604,6 +618,10 @@ class FlightControl:
         self._clear_parameter_reads()
         if self._token is None:
             return
+        self._interruption = {"at": now, "lease_started_at": self._claimed_at,
+                              "reason": str(reason),
+                              "framing_loss": self.framing.last_loss
+                              if self.framing.phase == "takeover" else None}
         self.framing.clear(reason)
         handoff_started = self._phase == "landing"
         self._token = None
@@ -625,7 +643,7 @@ class FlightControl:
         if command and command["state"] in ("sent", "accepted") and now - command["sent_at"] > COMMAND_TIMEOUT:
             command["state"] = "timeout"
             command["detail"] = "Vehicle state unconfirmed before timeout; no automatic retry"
-            self._error = command["detail"]
+            self._command_error(command["detail"])
         if self._token is not None:
             reason = self._unavailable(now)
             if reason:
@@ -640,7 +658,8 @@ class FlightControl:
         if self._token is not None and self._phase != "landing":
             self.framing.tick(now, self._framing_vehicle_reason(now))
             if self.framing.takeover_due(now):
-                self._revoke(link, now, reason="Framing lost; no manual takeover within 2 seconds. Landing requested", phase="released")
+                failure = self.framing.state(now)["reason"]
+                self._revoke(link, now, reason=f"{failure}; no manual takeover within 2 seconds. Landing requested", phase="released")
 
     def tick(self, link, now):
         if not self.enabled or self._closed:
