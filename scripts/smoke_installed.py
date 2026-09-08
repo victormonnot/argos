@@ -25,6 +25,7 @@ def main():
         with TestClient(create_app(config)) as client:
             for path in ("/", "/app.css", "/app.js", "/sessions.css", "/sessions.js",
                          "/live.css", "/live.js", "/analysis.css", "/analysis.js",
+                         "/control.css", "/control.js",
                          "/fonts/ibm-plex-sans-400-500-latin.woff2"):
                 response = client.get(path)
                 if response.status_code != 200 or not response.content:
@@ -32,6 +33,9 @@ def main():
             state = client.get("/api/state").json()
             if state["video"]["state"] != "unconfigured" or state["telemetry"]["state"] != "unconfigured":
                 raise RuntimeError("unconfigured console invented an acquisition source")
+            if (state["control"]["enabled"] or state["control"]["available"]
+                    or state["control"]["owned"] or state["control"]["phase"] != "disabled"):
+                raise RuntimeError("default console enabled flight control without opt-in")
             if client.get("/api/frame.jpg").status_code != 503:
                 raise RuntimeError("unconfigured console returned an image")
     print(f"Installed ARGOS {metadata.version('argos')}: imports, web assets, fonts and empty state OK")

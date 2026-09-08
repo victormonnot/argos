@@ -18,6 +18,7 @@ def default_recordings_dir():
 
 @dataclass(frozen=True)
 class ConsoleConfig:
+    sim_control: bool = False
     video_source: str = "none"
     video_endpoint: str | None = None
     environment: str = "unconfigured"
@@ -36,6 +37,8 @@ class ConsoleConfig:
     limits: TelemetryLimits = field(default_factory=lambda: TelemetryLimits(1., .2, .4))
 
     def __post_init__(self):
+        if not isinstance(self.sim_control, bool):
+            raise ValueError("sim_control must be a boolean")
         if self.video_source not in ("none", "gazebo", "device"):
             raise ValueError("video source must be none, gazebo or device")
         if self.environment not in ("unconfigured", "simulation", "real"):
@@ -76,6 +79,10 @@ class ConsoleConfig:
                 raise ValueError("choose either MAVLink UDP or serial")
             if not isinstance(self.mavlink_device, str) or not self.mavlink_device:
                 raise ValueError("MAVLink serial device must be a nonempty path")
+        if self.sim_control and (self.environment != "simulation"
+                                 or self.mavlink_tcp is None
+                                 or self.mavlink_tcp[0] != "127.0.0.1"):
+            raise ValueError("web control requires an explicit simulation and loopback SITL TCP connection")
         if isinstance(self.baudrate, bool) or not isinstance(self.baudrate, int) or self.baudrate <= 0:
             raise ValueError("baudrate must be a positive integer")
         if self.has_telemetry:

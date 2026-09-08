@@ -12,11 +12,13 @@
     <link href="/sessions.css" rel="stylesheet"/>
     <link href="/analysis.css" rel="stylesheet"/>
     <link href="/live.css" rel="stylesheet"/>
+    <link href="/control.css" rel="stylesheet"/>
     <script defer="" src="/app.js">
     </script>
     <script defer="" src="/sessions.js"></script>
     <script defer="" src="/analysis.js"></script>
     <script defer="" src="/live.js"></script>
+    <script defer="" src="/control.js"></script>
   </head>
   <body data-view="observation">
     <a class="skip-link" href="#workspace">
@@ -58,6 +60,7 @@
     </header>
     <nav aria-label="Espaces de travail" class="view-navigation">
       <button aria-controls="workspace" aria-current="page" id="view-observation" type="button">Observation</button>
+      <button aria-controls="workspace" id="view-control" type="button">Pilotage</button>
       <button aria-controls="messages-workspace" id="view-messages" type="button">MAVLink en direct</button>
       <button aria-controls="sessions-workspace" id="view-sessions" type="button">Sessions</button>
       <span id="view-context">Réceptions en cours</span>
@@ -266,6 +269,53 @@
             </button>
           </div>
         </section>
+      </section>
+      <section aria-labelledby="control-title" class="control-panel" hidden="" id="control-panel">
+        <header class="control-heading">
+          <div><span class="eyebrow">PILOTAGE MANUEL</span><h2 id="control-title">Commandes de vol</h2></div>
+          <span class="control-simulation" id="control-environment">Simulation uniquement</span>
+        </header>
+        <div class="control-ownership">
+          <p id="control-authority" role="status">Pilotage indisponible</p>
+          <button class="button button-primary" disabled="" id="control-claim" type="button">Prendre les commandes</button>
+        </div>
+        <div class="control-vehicle"><span id="control-mode">Mode —</span><span id="control-armed">Armement —</span></div>
+        <div aria-label="Préparation et fin de vol" class="control-actions">
+          <button class="button button-outline" data-control-action="prepare" disabled="" type="button">Préparer <span>(AltHold)</span></button>
+          <button class="button button-outline" data-control-action="arm" disabled="" type="button">Armer</button>
+          <button class="button button-outline" data-control-action="land" disabled="" type="button">Atterrir</button>
+        </div>
+        <p class="control-feedback" id="control-feedback" role="status">Connexion à la simulation…</p>
+        <div class="control-inputs" aria-describedby="control-hold-note control-neutral-note">
+          <div class="control-pad-group">
+            <h3>Inclinaison</h3>
+            <div aria-label="Inclinaison du drone" class="control-direction-pad" role="group">
+              <button aria-label="Avancer, maintenir" aria-pressed="false" class="control-direction control-forward" data-control-axis="forward" data-control-value="1" disabled="" type="button"><span aria-hidden="true">↑</span><span>Avant</span><kbd>↑</kbd></button>
+              <button aria-label="Gauche, maintenir" aria-pressed="false" class="control-direction control-left" data-control-axis="right" data-control-value="-1" disabled="" type="button"><span aria-hidden="true">←</span><span>Gauche</span><kbd>←</kbd></button>
+              <span aria-hidden="true" class="control-pad-center">AVANT<br/>△</span>
+              <button aria-label="Droite, maintenir" aria-pressed="false" class="control-direction control-right" data-control-axis="right" data-control-value="1" disabled="" type="button"><span aria-hidden="true">→</span><span>Droite</span><kbd>→</kbd></button>
+              <button aria-label="Reculer, maintenir" aria-pressed="false" class="control-direction control-back" data-control-axis="forward" data-control-value="-1" disabled="" type="button"><span aria-hidden="true">↓</span><span>Arrière</span><kbd>↓</kbd></button>
+            </div>
+          </div>
+          <div class="control-pad-group control-other-axes">
+            <h3>Hauteur et rotation</h3>
+            <div class="control-height-pad" role="group" aria-label="Montée et descente">
+              <button aria-label="Monter, maintenir" aria-pressed="false" class="control-direction" data-control-axis="up" data-control-value="1" disabled="" type="button"><span aria-hidden="true">＋</span><span>Monter</span><kbd>R</kbd></button>
+              <button aria-label="Descendre, maintenir" aria-pressed="false" class="control-direction" data-control-axis="up" data-control-value="-1" disabled="" type="button"><span aria-hidden="true">−</span><span>Descendre</span><kbd>F</kbd></button>
+            </div>
+            <div class="control-yaw-pad" role="group" aria-label="Rotation du drone">
+              <button aria-label="Tourner à gauche, maintenir" aria-pressed="false" class="control-direction" data-control-axis="yaw" data-control-value="-1" disabled="" type="button"><span aria-hidden="true">↶</span><span>Rotation G</span><kbd>Q</kbd></button>
+              <button aria-label="Tourner à droite, maintenir" aria-pressed="false" class="control-direction" data-control-axis="yaw" data-control-value="1" disabled="" type="button"><span aria-hidden="true">↷</span><span>Rotation D</span><kbd>E</kbd></button>
+            </div>
+          </div>
+        </div>
+        <div class="control-end-actions">
+          <button class="button button-outline" data-control-action="release" disabled="" type="button">Libérer <span>· atterrissage si en vol</span></button>
+          <button class="button button-quiet" data-control-action="disarm" disabled="" type="button">Désarmer au sol</button>
+        </div>
+        <p class="control-instructions" id="control-hold-note"><strong>Maintenez</strong> un bouton au doigt ou à la souris. Combinez plusieurs boutons au toucher. Le clavier est facultatif.</p>
+        <p class="control-instructions" id="control-neutral-note">Relâcher remet les commandes au neutre : le drone peut continuer à dériver, sans GPS. Pour décoller, maintenez Monter après l’armement.</p>
+        <p class="control-instructions control-loss-note">Quitter le pilotage, masquer l’onglet ou perdre la connexion libère les commandes et demande l’atterrissage si le drone est armé.</p>
       </section>
       <aside aria-label="Inspection et réglages" class="inspector" id="inspector">
         <header class="inspector-header">

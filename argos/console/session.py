@@ -11,6 +11,7 @@ from uuid import uuid4
 from argos.backends.mavlink import MavlinkLink, SerialTransport, TcpTransport, TelemetryCache, UdpTransport
 from argos.backends.mavlink.health import HealthCache
 from .config import ConsoleConfig
+from .control import FlightControl
 from .recording import ConsoleRecorder
 from .incidents import ReceptionIncidents
 from .live import LiveMessages
@@ -51,6 +52,8 @@ class ConsoleSession:
         self._reconnect_task = None
         self.incidents = ReceptionIncidents()
         self.messages = LiveMessages()
+        self.control = FlightControl(enabled=config.sim_control, system=config.system,
+                                     component=config.component)
 
     def _open_link(self):
         config = self.config
@@ -93,6 +96,10 @@ class ConsoleSession:
     def _check_reconnect(self, source):
         if source not in {"video", "mavlink"}:
             raise ValueError("Source inconnue")
+        if source == "mavlink":
+            self.control.check_reconnect()
+        else:
+            self.control.check_reconfigure()
         if self._closed or not self._started:
             raise RuntimeError("La session n’est pas ouverte")
         if self.reconnecting or self.replacing:
@@ -135,6 +142,9 @@ class ConsoleSession:
             self._report = None
             self._rx_messages = self._last_rejected = 0
             self._error = ""
+            # Recover reception of this same source without forgetting an armed
+            # vehicle or an uncertain command, and without restoring authority.
+            self.control.begin_reconnect(self.clock())
         self._reconnect_task = asyncio.create_task(self._reopen(source, previous))
         await asyncio.shield(self._reconnect_task)
         return self.state()
@@ -191,6 +201,7 @@ class ConsoleSession:
 
     async def prepare_replacement(self):
         """Do not bypass the physical reader bound through full source edits."""
+        self.control.check_reconfigure()
         if not isinstance(self.camera, DeviceCamera):
             return
         if self.reconnecting:
@@ -225,12 +236,20 @@ class ConsoleSession:
                     self.status.append(event, now=now)
                     cache = self.health if event.message_id == 1 else self.cache
                     cache.update(event, now)
+                    self.control.append(event, now=now)
+                # Polling/recording may have stalled. Evaluate the input deadline
+                # at send time, never with the older receipt-batch timestamp.
+                now = self.clock()
+                self.control.tick(self.link, now)
                 self._report = self.link.report(now)
                 if self._report.closed:
                     self._error = f"Liaison MAVLink interrompue : {self._report.last_error}"
             except Exception as exc:
                 self._error = f"Réception MAVLink interrompue : {exc}"
                 self.link.close()
+        if self.link is None or self._error:
+            now = self.clock()
+            self.control.tick(None, now)
         if self._error and self.recorder.active:
             self.recorder.stop(now, reason="transport_error", detail=self._error)
         snapshot = self.state(now)
@@ -272,6 +291,7 @@ class ConsoleSession:
             "schema_version": 1, "run_id": self.run_id, "at": now,
             "environment": self.config.environment,
             "configuration": self.config.public(), "recording": self.recorder.snapshot(),
+            "control": self.control.state(now),
             "video": video, "reconnecting": self.reconnecting,
             "reception": self.incidents.snapshot(),
             "telemetry": {
@@ -307,8 +327,30 @@ class ConsoleSession:
                 "read_errors": report.read_errors if report else 0,
                 **self.messages.snapshot(now)}
 
+    def control_request(self, operation, values):
+        if (self._closed or not self._started or self.replacing or self.reconnecting
+                or self.link is None or self._error):
+            raise RuntimeError("Une liaison de simulation ouverte est requise")
+        if not isinstance(values, dict):
+            raise ValueError("Cette action attend un objet JSON")
+        expected = {"claim": set(), "input": {"token", "seq", "axes"},
+                    "action": {"token", "action"}}[operation]
+        if set(values) != expected:
+            raise ValueError("Champs de commande invalides")
+        now = self.clock()
+        if operation == "claim":
+            return self.control.claim(self.link, now)
+        if operation == "input":
+            result = self.control.input(values["token"], values["seq"], values["axes"],
+                                        link=self.link, now=now)
+        else:
+            result = self.control.action(values["token"], values["action"],
+                                         link=self.link, now=now)
+        return {"control": result}
+
     def close(self):
         if not self._closed:
+            self.control.close(self.link, self.clock())
             self._closed = True
             self.video.stop()
             try:

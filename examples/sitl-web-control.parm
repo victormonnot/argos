@@ -1,0 +1,44 @@
+# Gazebo/SITL manual web flight only; not a physical-aircraft configuration.
+# No GPS, downward optical flow, rangefinder, external navigation or IRLOCK.
+FRAME_CLASS 1
+FRAME_TYPE 1
+GPS1_TYPE 0
+GPS2_TYPE 0
+COMPASS_ENABLE 1
+# Keep the driver parameter group loaded, but do not use a magnetic yaw source.
+COMPASS_USE 0
+COMPASS_USE2 0
+COMPASS_USE3 0
+EK3_SRC1_POSXY 0
+EK3_SRC1_VELXY 0
+EK3_SRC1_POSZ 1
+EK3_SRC1_VELZ 0
+EK3_SRC1_YAW 0
+FLOW_TYPE 0
+RNGFND1_TYPE 0
+PLND_ENABLED 0
+VISO_TYPE 0
+BATT_MONITOR 4
+MOT_PWM_MIN 1100
+MOT_PWM_MAX 1900
+MAV_GCS_SYSID 255
+FLTMODE_CH 0
+RC_OPTIONS 0
+RC_OVERRIDE_TIME 0.5
+FS_GCS_ENABLE 5
+FS_GCS_TIMEOUT 2
+FS_OPTIONS 0
+FS_THR_ENABLE 3
+# ArduCopter 4.8 uses metres/second and degrees with these parameter names.
+PILOT_SPD_UP 1
+PILOT_SPD_DN 0.7
+LAND_SPD_MS 0.5
+ATC_ANGLE_MAX 20
+SERIAL0_PROTOCOL 2
+MAV1_EXT_STAT 2
+MAV1_EXTRA1 10
+MAV1_EXTRA2 5
+MAV1_EXTRA3 2
+MAV1_POSITION 5
+MAV1_RC_CHAN 5
+# Preserve arming checks. The JSON simulator provides its sensor calibration.

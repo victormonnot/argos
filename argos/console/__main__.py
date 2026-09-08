@@ -31,6 +31,8 @@ def main():
                         help="explicit directory containing system gz Python bindings")
     parser.add_argument("--environment", choices=("simulation", "real"),
                         help="required for telemetry-only sessions; inferred from camera otherwise")
+    parser.add_argument("--sim-control", action="store_true",
+                        help="enable manual web controls for the verified GPS-free loopback SITL profile")
     parser.add_argument("--video-age", type=positive, default=1.)
     parser.add_argument("--mavlink-bind", type=address)
     parser.add_argument("--mavlink-peer", type=address)
@@ -54,6 +56,7 @@ def main():
         if not 1 <= args.port <= 65535:
             raise ValueError("HTTP port must be in 1..65535")
         config = ConsoleConfig(
+            sim_control=args.sim_control,
             video_source=source, video_endpoint=args.gazebo_topic or args.camera_device,
             environment=environment, gazebo_python_path=args.gazebo_python_path,
             video_age=args.video_age, mavlink_bind=args.mavlink_bind,

@@ -41,24 +41,25 @@
   const expectedPause = (now = performance.now()) => !pollingAllowed() || (pollResumeAt !== null && now - pollResumeAt <= REQUEST_TIMEOUT_MS);
 
   function showWorkspace(view, { opener = null, restore = false } = {}) {
-    if (!["observation", "messages", "sessions"].includes(view)) return;
+    if (!["observation", "control", "messages", "sessions"].includes(view)) return;
     const previous = document.body.dataset.view;
     if (previous === view) return;
     if (view === "messages") workspaceOpener = opener || document.activeElement;
     document.body.dataset.view = view;
-    for (const [name, id] of [["observation", "workspace"], ["messages", "messages-workspace"], ["sessions", "sessions-workspace"]]) {
-      element(id).hidden = name !== view;
+    for (const [name, id] of [["observation", "workspace"], ["control", "workspace"], ["messages", "messages-workspace"], ["sessions", "sessions-workspace"]]) {
+      element(id).hidden = id === "workspace" ? !["observation", "control"].includes(view) : name !== view;
       const button = element(`view-${name}`);
       if (name === view) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     }
-    const title = { observation: "Observation", messages: "MAVLink en direct", sessions: "Sessions" }[view];
+    element("control-panel").hidden = view !== "control";
+    const title = { observation: "Observation", control: "Pilotage", messages: "MAVLink en direct", sessions: "Sessions" }[view];
     text("view-title", title);
     document.title = `ARGOS · ${title}`;
-    text("view-context", { observation: "Réceptions en cours", messages: "Inspection du flux actuel", sessions: "Historique · relecture" }[view]);
+    text("view-context", { observation: "Réceptions en cours", control: "Vol manuel · sans GPS", messages: "Inspection du flux actuel", sessions: "Historique · relecture" }[view]);
     const skip = document.querySelector(".skip-link");
-    skip.href = { observation: "#workspace", messages: "#messages-workspace", sessions: "#sessions-workspace" }[view];
-    skip.textContent = { observation: "Aller à l’observation", messages: "Aller aux messages en direct", sessions: "Aller aux sessions" }[view];
+    skip.href = { observation: "#workspace", control: "#control-panel", messages: "#messages-workspace", sessions: "#sessions-workspace" }[view];
+    skip.textContent = { observation: "Aller à l’observation", control: "Aller aux commandes de vol", messages: "Aller aux messages en direct", sessions: "Aller aux sessions" }[view];
     document.dispatchEvent(new CustomEvent("argos:workspace-changed", { detail: { view, previous } }));
     renderPanel();
     if (view === "messages") element("messages-workspace").focus({ preventScroll: true });
@@ -675,6 +676,10 @@
   function render() {
     const now = performance.now();
     const fresh = serviceFresh(now);
+    document.dispatchEvent(new CustomEvent("argos:control-state", { detail: {
+      control: current?.control ?? null, fresh, run_id: current?.run_id ?? null,
+      environment: current?.environment ?? null,
+    } }));
     const actionPending = !fresh && expectedPause(now);
     const connecting = !current && !requestFailure;
     renderControls(fresh, now);
@@ -760,7 +765,7 @@
     renderDetails(true, now);
   }
 
-  for (const view of ["observation", "messages", "sessions"]) element(`view-${view}`).addEventListener("click", (event) => showWorkspace(view, { opener: event.currentTarget }));
+  for (const view of ["observation", "control", "messages", "sessions"]) element(`view-${view}`).addEventListener("click", (event) => showWorkspace(view, { opener: event.currentTarget }));
   for (const button of document.querySelectorAll("[data-open-live]")) button.addEventListener("click", () => showWorkspace("messages", { opener: button }));
   document.addEventListener("argos:show-observation", () => showWorkspace("observation", { restore: true }));
   document.addEventListener("argos:show-workspace", (event) => showWorkspace(event.detail?.view));

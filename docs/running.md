@@ -6,6 +6,8 @@ From the repository, activate `.venv` and start the console with its source opti
 The [SITL guide](sitl-observation.md) covers Gazebo, the autopilot and the console.
 `--port 8081` runs a second independent console; do not give it the same UDP
 listening port or the TCP connection already reserved for the first console.
+For manual simulation flight, the [web-control launcher](web-control.md) starts
+its own Gazebo, SITL and opt-in console with separate ports and run files.
 
 Settings changed through **Sources** in the interface are kept for the lifetime
 of the process, not in a configuration file. Save the launch command to restore
@@ -47,6 +49,9 @@ Open **http://127.0.0.1:8081** on the laptop. Local port 8081 connects to port
 8080 of the remote console; camera and recording paths refer to that remote
 machine. No change to the ARGOS listening address is needed. Closing the tunnel
 only disconnects the browser; an active capture continues on the server.
+If the browser was piloting, its lease expires and the service requests landing;
+control does not resume when the tunnel returns. The manual-control guide
+describes the separate process/link-loss fallback.
 To use tmux remotely, open a separate terminal with `ssh user@host`
 and attach to the session there.
 
@@ -54,6 +59,10 @@ This setup uses existing SSH authentication. The console itself is a local
 service, with no account management or intended public HTTP exposure.
 
 ## Stopping and restarting
+
+When using Pilotage, land and wait for confirmed disarming before the following
+shutdown sequence. With the all-in-one web-control launcher, Ctrl-C stops its
+three children and retains its printed run directory.
 
 1. Stop any active capture from **Journal MAVLink** (MAVLink recording) and verify that it has been finalized.
 2. Press **Ctrl-C** in the console terminal and wait for it to exit.

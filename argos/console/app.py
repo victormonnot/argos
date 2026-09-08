@@ -80,6 +80,14 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
     async def script():
         return FileResponse(STATIC / "app.js", media_type="text/javascript")
 
+    @app.get("/control.js")
+    async def control_script():
+        return FileResponse(STATIC / "control.js", media_type="text/javascript")
+
+    @app.get("/control.css")
+    async def control_stylesheet():
+        return FileResponse(STATIC / "control.css", media_type="text/css")
+
     @app.get("/sessions.js")
     async def sessions_script():
         return FileResponse(STATIC / "sessions.js", media_type="text/javascript")
@@ -157,6 +165,10 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
         if session.recorder.active:
             raise HTTPException(409, "Arrêtez le journal avant de changer les sources")
         try:
+            session.control.check_reconfigure()
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        try:
             config = session.config.with_sources(values)
             replacement = ConsoleSession(config, recorder=session.recorder)
         except (TypeError, ValueError) as exc:
@@ -175,6 +187,18 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
         app.state.session = replacement
         session.start()
         return JSONResponse(session.state())
+
+    @app.post("/api/control/{operation}")
+    async def flight_control(operation: str, request: Request):
+        if operation not in {"claim", "input", "action"}:
+            raise HTTPException(404, "Action de pilotage inconnue")
+        values = await mutation_body(request)
+        try:
+            return JSONResponse(session.control_request(operation, values))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.post("/api/sources/{source}/reconnect")
     async def reconnect(source: str, request: Request):

@@ -1,8 +1,9 @@
-# V1 environment and validation
+# Environment and validation
 
-V1 corresponds to package version **0.1.0** and the observation console described
-in the [README](../README.md). This page distinguishes automated checks, the
-completed SITL trial and validation that remains to be done.
+The published V1 corresponds to package version **0.1.0**, with passive
+observation and recorded-session analysis. The working tree additionally contains
+the opt-in [manual web flight](web-control.md) milestone verified below; no new
+release is implied. This page separates automated, simulator and hardware evidence.
 
 ## Automated checks
 
@@ -55,6 +56,47 @@ The [example recording](../examples/demo/README.md) is a separate historical
 extract. Its frames and checksum are verified; the older format does not record
 the exact UTC date, firmware or capture configuration. The manifest does not
 infer those details from the current trial.
+
+## Manual web flight trial — September 8, 2026
+
+The opt-in simulation milestone was checked on the same Ubuntu 24.04/Python
+3.12 host and pinned ArduPilot/Gazebo installation:
+
+- **1,161 Python tests passed**, including lease deadlines, command evidence,
+  input bounds, source restrictions and passive recovery after link loss. The
+  final profile uses the pinned firmware’s renamed speed/tilt parameters in m/s
+  and degrees; their received values are required before arming.
+- **32 Chromium browser tests passed** (17 existing and 15 new), including real
+  Chromium touch pointer events, combined axes, capture loss, hidden tabs and
+  responsive layouts. Laptop, tablet and phone layouts were visually inspected.
+- A newly built wheel was installed in a separate clean virtual environment.
+  Isolated imports, CLI help, packaged assets (including the control panel),
+  passive initial state and `pip check` passed.
+- An isolated Gazebo/SITL flight used the supplied GPS-free profile with normal
+  arming checks. Through the actual HTTP service, claim, AltHold preparation,
+  arming, climb, yaw input, Land mode and automatic disarming were observed.
+  Both GPS receivers and compass yaw use were disabled; no flow, marker,
+  rangefinder or visual-position source supplied navigation.
+- The real browser then exercised the complete path without mocked endpoints:
+  touchscreen input generated via Chromium's device protocol held **Monter**,
+  produced a climb in reported barometric local altitude, released
+  to neutral, requested Land and reached confirmed disarming. The Gazebo camera
+  remained visible. This is not a physical-tablet test.
+- Stopping browser input during a simulated flight expired the lease, requested
+  Land and ended with observed landing/disarming; no browser action regranted
+  control automatically.
+- Suspending the console process during another flight stopped its transmissions.
+  A separate receive-only MAVLink connection observed Land while the console was
+  still suspended, confirming ArduPilot's GCS failsafe without a backend landing
+  request. After resuming reception, landing and disarming were confirmed.
+
+The simulator ran below real-time speed while another Gazebo instance was active.
+Wall-clock button duration is therefore not a calibrated flight-time measurement.
+The final complete profile was read back from SITL: every configured name was
+present and its value matched, including the speed/tilt settings.
+The recorded altitude is autopilot telemetry, not an independent accuracy
+measurement. These trials demonstrate simulated manual control, not reliable
+position holding, target following, or physical-aircraft readiness.
 
 ## Remaining limitations
 

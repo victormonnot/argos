@@ -1,15 +1,20 @@
 # ARGOS
 
-**A local console for drone observation, passive MAVLink diagnostics and recorded-session analysis.**
+**A local console for drone observation, MAVLink diagnostics, recorded-session analysis and manual simulation flight.**
 
 ARGOS brings camera images, received measurements and reception incidents into
 one operator interface. **MAVLink en direct** (live MAVLink) exposes protocol
 details; **Sessions** lets you replay a recording, inspect its frames and
 examine reception rates and gaps.
+**Pilotage** adds mouse, touch and optional keyboard controls for a dedicated
+GPS-free Gazebo/ArduPilot SITL session.
 
 ![ARGOS console showing the Gazebo camera and ArduPilot SITL telemetry](docs/images/observation.png)
 
-This V1 is a passive observation console and does not control the vehicle.
+The console remains passive by default. Manual flight requires the explicit
+`--sim-control` option and the [isolated simulation profile](docs/web-control.md).
+It is not enabled for physical hardware. Neutral controls do not hold horizontal
+position: the simulated drone can drift without GPS.
 The repository also contains experimental perception, guidance and simulation
 modules, tested separately; they are not connected to the console's live
 receivers. Onboard autonomy and swarm coordination are research directions,
@@ -62,18 +67,41 @@ revisions, model preparation and three processes needed to reproduce ground
 observation with Gazebo Harmonic and ArduPilot SITL. The [session guide](docs/running.md)
 covers shutdown, restart, tmux and access from another computer over SSH.
 
+### Fly the simulation with mouse or touch
+
+After installing the pinned simulator dependencies from the SITL guide, start
+the separate web-control session from the ARGOS repository root:
+
+```sh
+.venv/bin/python examples/run_web_control.py \
+  --ardupilot-dir ../ardupilot \
+  --gazebo-dir ../ardupilot_gazebo
+```
+
+Open **http://127.0.0.1:8081** and choose **Pilotage**. Take control, prepare
+AltHold, arm, then hold **Monter** (climb) to take off. All movement buttons work
+by holding them with a mouse or finger; touch supports simultaneous axes.
+Keyboard shortcuts are optional. The [web-control guide](docs/web-control.md)
+explains the flight sequence, input release, GPS-free profile and current limits.
+
+The launcher uses its own model copy, Gazebo partition, ports and SITL files;
+**Ctrl-C** stops its three child processes. It does not modify the installed
+models or an existing observation session.
+
 ## Available features
 
 | View | Purpose |
 | --- | --- |
 | Observation | Camera image, reported mode, battery, attitude and NED position; each reception has its own freshness limit. |
+| Pilotage | Opt-in manual Gazebo/SITL flight, held mouse/touch controls and optional keyboard, with the live camera visible. |
 | Incidents et reprise (incidents and recovery) | Available data, observed interruptions, receiver reopening and reception recovery. |
 | MAVLink en direct (live MAVLink) | Received message types and components, counters, approximate rates, fields and bytes; the display can be frozen. |
 | Sessions | Verified recordings, replay at a selected time, raw messages, reception rates, age and gaps. |
 
 MAVLink transports include UDP, TCP and serial. The `ardupilotmega` dialect is
 used to decode MAVLink 1 and 2. Images come from a Gazebo sensor or a local V4L2
-device. MAVLink journals do not record video. A recent reception does not measure
+device. MAVLink journals record received frames, not outgoing pilot commands or
+video. A recent reception does not measure
 radio latency or the physical age of a sensor measurement; an interruption alone
 does not identify its cause.
 
@@ -94,6 +122,7 @@ reasons are described in the [console guide](docs/console.md).
 | `tests/`, `examples/` | Automated checks and runnable examples. |
 
 Further reading: [architecture and data flow](docs/architecture.md), [console and API](docs/console.md),
+[manual web flight and control API](docs/web-control.md),
 [MAVLink transport and recording format](docs/mavlink-transport.md),
 [validation environment](docs/validation.md).
 

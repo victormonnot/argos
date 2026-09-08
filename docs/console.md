@@ -1,4 +1,4 @@
-# ARGOS observation console
+# ARGOS console
 
 A local console for receiving the drone camera feed and telemetry, configuring
 sources, and recording MAVLink. The interface is in French, works without
@@ -7,6 +7,10 @@ The **Observation** view uses the graphite Forge style: a main camera area,
 measurements grouped under their source, and a side inspector. Fonts are bundled
 with the application. The **Sessions** view lets you find local recordings,
 verify their integrity, and replay their telemetry in the browser.
+The console remains passive by default. **Pilotage** adds explicitly enabled
+manual Gazebo/SITL control with held mouse/touch buttons and optional keyboard
+shortcuts. The [web-control guide](web-control.md) documents that separate
+GPS-free workflow, its launcher and control API.
 
 ## Starting the interface
 
@@ -92,7 +96,8 @@ scope must be selected explicitly, as described in the
 [transport documentation](mavlink-transport.md).
 UDP, TCP, and serial are alternatives. For a SITL TCP output, use
 `--mavlink-tcp 127.0.0.1:5760 --sequence-scope channel`. The TCP server must already
-be listening; the console connects without sending any MAVLink message. A refused
+be listening; without `--sim-control`, the console connects without sending any
+MAVLink message. A refused
 or interrupted connection appears as an error; reconnection is explicit.
 For serial, use
 `--mavlink-device /dev/ttyUSB0 --baudrate 115200` with the scope and environment.
@@ -143,7 +148,7 @@ reception age is independent of heartbeat reception age.
   (download) are grouped at the top of this panel, followed by the identifier,
   duration, message count, and any errors. Capture state remains visible on the
   top button while another panel is open. Capture covers subsequent MAVLink
-  receptions, not video. The panel refers to this process's latest recording.
+  receptions, not outgoing pilot commands or video. The panel refers to this process's latest recording.
   In Sessions, new recordings expose their stored original configuration; older
   recordings without context explicitly indicate that this information is
   unavailable. The current configuration is never presented as their provenance.
@@ -461,8 +466,13 @@ detailed gaps to 100, and the threshold to a positive value no greater than
 1 and 160). The API accepts 1–100 messages per page and shares revision and
 integrity verification with other reads. WOFF2 fonts are served by
 `GET /fonts/{filename}` from an explicit allowlist. POST requests require a
-JSON body and the exact local console Origin; they modify receivers and the
-recording without sending MAVLink messages. HTML, CSS, and JavaScript are
+JSON body and the exact local console Origin. The source and recording routes
+above do not themselves issue pilot commands. When simulation control is enabled,
+`control.py` additionally handles the selected vehicle reports, browser lease
+and MAVLink transmissions. `POST /api/control/{claim|input|action}` and the
+`control` field in `GET /api/state` are described in the
+[control API guide](web-control.md#control-api-and-recordings).
+HTML, CSS, and JavaScript are
 separate files under `static/` and included in the Python package. No frontend
 framework, CDN, or build server is needed. OFL licenses and provenance for the
 IBM Plex Sans, IBM Plex Mono, and Marcellus fonts are retained under
@@ -470,7 +480,8 @@ IBM Plex Sans, IBM Plex Mono, and Marcellus fonts are retained under
 
 The server lifecycle follows FastAPI's [lifespan mechanism](https://fastapi.tiangolo.com/advanced/events/).
 The adapter uses [Gazebo Transport Python subscriptions](https://gazebosim.org/api/transport/13/python.html).
-These adapters publish no flight or camera commands.
+The camera adapters publish no camera commands. Opt-in simulation flight commands
+use the separate `FlightControl` path.
 
 ```sh
 python -m pip install -e '.[dev,mavlink,plot,console,console-test]'
@@ -479,13 +490,16 @@ node --check argos/console/static/app.js
 node --check argos/console/static/sessions.js
 node --check argos/console/static/live.js
 node --check argos/console/static/analysis.js
+node --check argos/console/static/control.js
 ```
 
 ## Deferred work
 
-Observation, MAVLink en direct, and Sessions are integrated. Placement, contrast,
+Observation, MAVLink en direct, Sessions and opt-in simulation Pilotage are integrated. Placement, contrast,
 and spacing will be refined through testing of this interface. Video from real
 hardware and its transport still need to be defined and validated; the ground
 SITL + Gazebo test does not validate them.
+Radio/HITL integration, autonomous target tracking and GPS-free horizontal
+position hold are not implemented by the manual-control panel.
 
 C++ and the custom MAVLink dialect remain deferred as agreed.

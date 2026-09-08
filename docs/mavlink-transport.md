@@ -320,8 +320,10 @@ transport, capture and textual inspection do not require it.
 
 ## Boundary of this delivery
 
-This is transport and passive telemetry inspection, not a `World` backend. Flight command translation,
-constructing fresh observations, vehicle readiness, acknowledgement handling and
-remote setpoint expiry are not implemented. Message signing
-and authentication are not implemented here. No hardware flight or RF performance
-is established by the local tests.
+This transport and telemetry layer is not a `World` backend. It does not construct
+fresh `World` observations or translate guidance policies into vehicle commands.
+The console's separate [`FlightControl`](web-control.md) implements a bounded
+manual simulation path, with profile checks, command acknowledgement/observation
+and browser input expiry. It does not add general autonomous setpoint execution
+to this library. Message signing and authentication are not implemented here.
+No hardware flight or RF performance is established by the local tests.
