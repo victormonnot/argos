@@ -108,6 +108,10 @@
             Onboard camera
           </h2>
           <div class="camera-actions">
+            <label class="vision-toggle" for="vision-toggle">
+              <input aria-describedby="vision-status" disabled id="vision-toggle" type="checkbox"/>
+              <span>Person detection</span>
+            </label>
             <button aria-pressed="false" class="button button-quiet" id="focus-button" type="button">
               Expanded view
             </button>
@@ -121,6 +125,7 @@
         </header>
         <div class="camera-stage" id="camera-stage">
           <img alt="Image received from the drone camera" hidden="" id="camera-image"/>
+          <div aria-label="Detected people in the displayed image" class="vision-layer" hidden id="vision-layer" role="list"></div>
           <div class="camera-empty" id="camera-empty">
             <h3 id="camera-empty-title">
               Connecting to service…
@@ -134,6 +139,7 @@
           </div>
         </div>
         <div class="camera-footer">
+          <span class="vision-status" id="vision-status">Person detection is not configured</span>
           <span id="camera-source">
             Unavailable
           </span>

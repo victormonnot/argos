@@ -156,3 +156,7 @@ does not expose fault-injection controls.
 ARGOS code is distributed under the [MIT license](LICENSE). Bundled fonts retain
 their [OFL licenses and provenance](argos/console/static/fonts/README.md).
 ArduPilot and its Gazebo plugin are external projects with their own licenses.
+
+Optional [camera-based person detection and tracking](docs/vision.md) adds a
+walking-person Gazebo scene and CPU inference during manual simulated flight.
+The pilot retains flight control; automatic framing/following is future work.

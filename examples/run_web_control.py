@@ -20,6 +20,42 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 
+if __package__:
+    from .setup_vision_scene import ASSET_NOTICE, default_assets_dir, verified_mesh
+else:
+    from setup_vision_scene import ASSET_NOTICE, default_assets_dir, verified_mesh
+
+
+def add_person_scene(world_element: ET.Element, models: Path, mesh: Path) -> None:
+    """Copy an explicitly verified asset into this run and add visual content."""
+    person = models / "argos_walking_person"
+    person.mkdir()
+    shutil.copyfile(mesh, person / "walk.dae")
+    (person / "NOTICE.txt").write_text(ASSET_NOTICE, encoding="utf-8")
+    fragment = ET.parse(Path(__file__).parent / "gazebo/person_walk.sdf")
+    for actor in fragment.findall("./world/actor"):
+        world_element.append(actor)
+
+
+def copy_fixed_camera(gazebo: Path, models: Path) -> None:
+    """Keep the person scene's declared optics fixed in this private model copy.
+
+    The pinned upstream zoom plugin starts with a 2.0-radian goal even though
+    the sensor declares 1.2 radians. Removing that optional plugin preserves
+    the declared camera and its intrinsics without changing the installed model.
+    """
+    name = "gimbal_small_3d"
+    shutil.copytree(gazebo / "models" / name, models / name)
+    model = models / name / "model.sdf"
+    tree = ET.parse(model)
+    sensor = tree.find(".//sensor[@name='camera']")
+    if sensor is None:
+        raise ValueError("pinned gimbal camera was not found")
+    for plugin in list(sensor.findall("plugin")):
+        if plugin.get("filename") == "CameraZoomPlugin":
+            sensor.remove(plugin)
+    tree.write(model, encoding="unicode", xml_declaration=True)
+
 
 def free_port(port, kind):
     with socket.socket(socket.AF_INET, kind) as probe:
@@ -39,6 +75,12 @@ def main():
     parser.add_argument("--mavlink-port", type=int, default=5860)
     parser.add_argument("--physics-port", type=int, default=9004)
     parser.add_argument("--gui", action="store_true")
+    parser.add_argument("--scene", choices=("runway", "person"), default="runway",
+                        help="optional walking person in the onboard camera's view")
+    parser.add_argument("--person-assets", type=Path, default=default_assets_dir(),
+                        help="asset root populated by examples/setup_vision_scene.py")
+    parser.add_argument("--vision-model", type=Path,
+                        help="local detector model forwarded to the ARGOS console")
     args = parser.parse_args()
     for port in (args.port, args.mavlink_port, args.physics_port):
         if not 1024 <= port <= 65535:
@@ -51,6 +93,16 @@ def main():
         parser.error("install the pinned ArduPilot and Gazebo models first (docs/sitl-observation.md)")
     if not shutil.which("gz"):
         parser.error("Gazebo Harmonic is required")
+    mesh = None
+    if args.scene == "person":
+        try:
+            mesh = verified_mesh(args.person_assets.expanduser().resolve())
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.vision_model is not None:
+        args.vision_model = args.vision_model.expanduser().resolve()
+        if not args.vision_model.is_file():
+            parser.error("--vision-model must name an existing local detector model")
     for port, kind in ((args.port, socket.SOCK_STREAM), (args.mavlink_port, socket.SOCK_STREAM),
                        (args.physics_port, socket.SOCK_DGRAM)):
         try:
@@ -75,6 +127,9 @@ def main():
     for item in list(world_element):
         if item.tag == "model" and item.get("name") == "axes":
             world_element.remove(item)
+    if mesh is not None:
+        copy_fixed_camera(gazebo, models)
+        add_person_scene(world_element, models, mesh)
     world_file = run / "manual-flight.sdf"
     world.write(world_file, encoding="unicode", xml_declaration=True)
     sitl_dir = run / "sitl"
@@ -98,6 +153,7 @@ def main():
             "launcher": os.getpid(), "children": {n: p.pid for n, p in children},
             "partition": env["GZ_PARTITION"], "http_port": args.port,
             "mavlink_port": args.mavlink_port, "physics_port": args.physics_port,
+            "scene": args.scene,
         }, indent=2))
 
     def interrupted(signum, frame):
@@ -128,12 +184,15 @@ def main():
             time.sleep(.1)
         else:
             raise RuntimeError("SITL did not open its TCP port")
-        start("console", [sys.executable, "-m", "argos.console", "--sim-control",
+        console_command = [sys.executable, "-m", "argos.console", "--sim-control",
                           "--gazebo-topic", "/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image",
                           "--gazebo-python-path", "/usr/lib/python3/dist-packages",
                           "--mavlink-tcp", f"127.0.0.1:{args.mavlink_port}",
                           "--sequence-scope", "channel", "--heartbeat-age", "2.5",
-                          "--port", str(args.port)], repo)
+                          "--port", str(args.port)]
+        if args.vision_model is not None:
+            console_command += ["--vision-model", str(args.vision_model)]
+        start("console", console_command, repo)
         print(f"ARGOS: http://127.0.0.1:{args.port} — Flight controls (initialization may take a few seconds)", flush=True)
         while True:
             for name, process in children:

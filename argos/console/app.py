@@ -1,5 +1,6 @@
 """Local observation HTTP surface, with source settings and journal controls."""
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from .config import ConsoleConfig
 from .context import capture_context
 from .archive import ArchiveError, RecordingArchive
 from .session import ConsoleSession
+from .vision import VisionService
 
 STATIC = Path(__file__).with_name("static")
 FONT_FILES = frozenset({
@@ -25,18 +27,26 @@ FONT_FILES = frozenset({
 })
 
 
-def create_app(config: ConsoleConfig | None = None, *, session=None):
+def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None):
     session = session or ConsoleSession(config or ConsoleConfig())
     archive = RecordingArchive(session.recorder.directory)
+    vision = vision or VisionService(session.config.vision_model)
+
+    def snapshot():
+        result = session.state()
+        result["vision"] = vision.state(session)
+        return result
 
     @asynccontextmanager
     async def lifespan(app):
         session.start()
+        vision.start()
         stop = asyncio.Event()
 
         async def receive():
             while not stop.is_set():
                 session.tick()
+                vision.tick(session)
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=.05)
                 except asyncio.TimeoutError:
@@ -50,10 +60,14 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
             try:
                 await receiver
             finally:
-                await session.aclose()
+                try:
+                    await session.aclose()
+                finally:
+                    await vision.aclose()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.session = session
+    app.state.vision = vision
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver"])
 
     @app.middleware("http")
@@ -120,7 +134,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
 
     @app.get("/api/state")
     async def state():
-        return JSONResponse(session.state())
+        return JSONResponse(snapshot())
 
     @app.get("/api/mavlink/messages")
     async def live_messages():
@@ -138,6 +152,19 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
             "X-Video-Id": session.video_source_id,
         })
 
+    @app.get("/api/vision/frame.jpg")
+    async def vision_frame():
+        candidate = vision.frame(session)
+        if candidate is None:
+            return JSONResponse({"detail": vision.state(session)["detail"]}, status_code=503)
+        return Response(candidate.sample.jpeg, media_type="image/jpeg", headers={
+            "X-Frame-Sequence": str(candidate.sample.sequence),
+            "X-Frame-Received-At": str(candidate.sample.received_at),
+            "X-Run-Id": candidate.context[0],
+            "X-Video-Id": candidate.context[1],
+            "X-Vision-Result": json.dumps(candidate.result, separators=(",", ":"), allow_nan=False),
+        })
+
     async def mutation_body(request):
         # Browser write requests must originate from this local console. No CORS,
         # cross-site form or optional Origin bypass for socket/file operations.
@@ -150,7 +177,6 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
             body.extend(chunk)
             if len(body) > 8192:
                 raise HTTPException(413, "Configuration too large")
-        import json
         try:
             return json.loads(body)
         except (ValueError, UnicodeDecodeError, RecursionError) as exc:
@@ -186,7 +212,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None):
         session = replacement
         app.state.session = replacement
         session.start()
-        return JSONResponse(session.state())
+        return JSONResponse(snapshot())
 
     @app.post("/api/control/{operation}")
     async def flight_control(operation: str, request: Request):

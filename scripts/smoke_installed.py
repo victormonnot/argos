@@ -31,7 +31,7 @@ def main():
                 if response.status_code != 200 or not response.content:
                     raise RuntimeError(f"unavailable packaged resource: {path}")
                 if path == "/":
-                    for element in ("control-mode-select", "control-throttle", "control-throttle-value"):
+                    for element in ("control-mode-select", "control-throttle", "control-throttle-value", "vision-toggle", "vision-layer"):
                         if f'id="{element}"' not in response.text:
                             raise RuntimeError(f"missing packaged flight control: {element}")
             state = client.get("/api/state").json()
@@ -43,6 +43,10 @@ def main():
             if (state["control"]["selected_mode"] != 2 or state["control"]["prepared"]
                     or state["control"]["throttle"] != 0):
                 raise RuntimeError("default console retained a prepared flight mode or manual throttle")
+            if state["vision"]["configured"] or state["vision"]["state"] != "disabled":
+                raise RuntimeError("default console enabled perception without a model")
+            if client.get("/api/vision/frame.jpg").status_code != 503:
+                raise RuntimeError("unconfigured vision returned an image")
             if client.get("/api/frame.jpg").status_code != 503:
                 raise RuntimeError("unconfigured console returned an image")
     print(f"Installed ARGOS {metadata.version('argos')}: imports, web assets, fonts and empty state OK")

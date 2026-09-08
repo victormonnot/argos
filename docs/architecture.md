@@ -2,7 +2,7 @@
 
 ARGOS integrates a local observation console: camera reception, MAVLink
 inspection, recording and historical analysis, plus opt-in manual simulation
-control. The default console remains passive. This document explains how those
+control and optional image-based person detection. The default console remains passive. This document explains how those
 parts fit together and the boundaries of the implementation. For setup and
 operator workflows, use the [console guide](console.md) and
 [web-control guide](web-control.md); for wire and file
@@ -13,7 +13,8 @@ contracts, use the [MAVLink transport guide](mavlink-transport.md).
 The supported entry point, `python -m argos.console`, starts one Python process
 with FastAPI/Uvicorn on `127.0.0.1`. That process serves the browser assets, owns
 the configured receivers and manages the local recording directory. It starts
-without sources unless they are explicitly configured.
+without sources unless they are explicitly configured. With `--vision-model`,
+a separate spawned inference process receives camera JPEG bytes only.
 
 In the reference simulation, Gazebo and ArduPilot SITL run as separate processes.
 ARGOS subscribes to a Gazebo camera topic and reads a MAVLink connection to SITL;
@@ -28,6 +29,7 @@ flowchart LR
     peer["Configured MAVLink peer"]
     disk[("Local JSONL journals")]
     browser["Browser"]
+    vision["Optional person detector process"]
     subgraph server["ARGOS Python process"]
         video["VideoStore: latest valid JPEG"]
         link["Transport and MavlinkLink: decoded Received events"]
@@ -44,6 +46,8 @@ flowchart LR
     recorder --> disk
     disk --> archive
     video --> api
+    video -->|"one camera JPEG at a time"| vision
+    vision -->|"boxes paired with original JPEG"| api
     state --> api
     archive --> api
     api --> browser
@@ -73,6 +77,7 @@ assembles the application and ties resource startup and cleanup to its lifespan.
 | MAVLink polling, measurement admission, live histories and capture writes | `ConsoleSession.tick()`, called by one asyncio task in the server event loop. |
 | Optional manual control | `FlightControl` receives selected vehicle reports; the same session tick checks lease expiry and transmits current pilot inputs. HTTP mutations run on that event loop. |
 | Gazebo images | Subscription callbacks publish into the thread-safe `VideoStore`. |
+| Optional person detection | App-owned `VisionService` submits bounded work to a spawned OpenCV process. Results and short-lived image-space associations are consumed without waiting on inference. |
 | V4L2 images | One worker thread owns the device reader and publishes into `VideoStore`. |
 | Recording verification, indexing, replay and analysis | Archive calls run through `asyncio.to_thread`; a lock protects the shared archive cache. |
 | Receiver reopening | Blocking replacement work runs in a thread; the session retains ownership until replacement or cleanup finishes. |
@@ -291,7 +296,7 @@ The repository also contains contracts and experiments outside the live console:
 | Package | Current role |
 | --- | --- |
 | [core](../argos/core/) | Typed observation, command, `World` and `Truth` contracts for experiments. |
-| [perception](../argos/perception/) | Frame and detector interfaces plus tracking components tested separately. The console camera is not wired into this pipeline. |
+| [perception](../argos/perception/) | Optional live `yolox.py` and `image_tracks.py` feed the console overlay. Earlier generic frame/detector/tracking experiments remain separately tested, without live guidance integration. |
 | [guidance](../argos/guidance/), [safety](../argos/safety/) | Experimental policies and contract tests, with no connection to the console's live receivers or vehicle command path. |
 | [attitude_sim.py](../argos/backends/attitude_sim.py) | Simulated backend used to exercise those contracts. |
 | [harness](../argos/harness/) | Instrumentation: link statistics reused by live MAVLink, plus offline plotting and development utilities. |
@@ -322,3 +327,7 @@ These checks establish software behavior within their fixtures. The
 SITL/Gazebo checks and the hardware scenarios still unverified. Use the
 [README](../README.md#verify-a-change) for test commands and the
 [SITL guide](sitl-observation.md) to reproduce the integrated simulation.
+
+The optional [vision guide](vision.md) specifies model provenance, bounded
+processing, source fencing and paired-image expiry. Vision has no path to
+`FlightControl` or vehicle commands. Journals still record received MAVLink only.

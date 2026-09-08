@@ -15,6 +15,7 @@ plot = ["matplotlib==3.11.1"]
 console = ["fastapi==0.141.1", "uvicorn==0.52.4", "pillow==12.3.0"]
 console-test = ["httpx==0.28.1"]
 camera = ["opencv-python-headless==5.0.0.93"]
+vision = ["opencv-python-headless==5.0.0.93"]
 
 [build-system]
 requires = ["setuptools>=77"]

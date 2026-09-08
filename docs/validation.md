@@ -2,8 +2,8 @@
 
 The published V1 corresponds to package version **0.1.0**, with passive
 observation and recorded-session analysis. The working tree additionally contains
-the opt-in [manual web flight](web-control.md) milestone verified below; no new
-release is implied. This page separates automated, simulator and hardware evidence.
+the opt-in [manual web flight](web-control.md) and [camera perception](vision.md)
+milestones verified below; no new release is implied. This page separates automated, simulator and hardware evidence.
 
 ## Automated checks
 
@@ -164,3 +164,57 @@ this language update did not repeat the earlier flight trials.
 - CI does not run flights, hardware deployments or a complete Gazebo simulation.
 - The first GitHub Actions result will only exist after the first push; having a
   workflow file does not mean it has already run on GitHub.
+
+## Camera person detection and tracking — September 8, 2026
+
+The optional [vision milestone](vision.md) was checked on the pinned Gazebo/SITL
+installation, using the actual onboard camera, an ordinary animated person and
+the unmodified official YOLOX-Tiny ONNX model. The person scene keeps the declared
+1.2-radian camera HFOV fixed: the upstream zoom plugin otherwise changes it to
+2.0 radians during startup. Only the private scene copy removes that plugin;
+actor scale, detection confidence and the GPS-free flight profile are unchanged.
+
+- **1,312 Python tests passed**, covering detector decoding, model/asset checks,
+  bounded image association, process failure isolation, source replacement,
+  matching JPEG/result provenance and expiry, alongside the existing suite.
+- **71 Chromium tests passed**, including 25 vision tests for delayed responses,
+  switching streams, invalid metadata, stale/service/decode failures, overlay
+  geometry and touch layouts. Labels and camera fitting were inspected on
+  desktop, tablet and phone viewport sizes. These are browser emulations, not
+  physical-device trials.
+- The rebuilt wheel passed isolated installation, CLI, packaged vision controls,
+  passive defaults, unavailable-image responses and dependency checks. The
+  offline MAVLink example still verified all 58 frames.
+- A final **40-second ground sample contained 196 unique analyzed frames**.
+  Every frame detected the one visible person, with one track ID throughout and
+  zero ID changes. Person height ranged from 68 to 100 pixels. Median confidence
+  was 0.865; camera receipt age was 159 ms median and 287 ms maximum. CPU network
+  inference took 47.6 ms median and 62.9 ms maximum. These are observed values on
+  one host running two Gazebo instances, not general accuracy or latency bounds.
+- An actual GPS-free AltHold flight through the HTTP service, with vision active,
+  completed arming, climbing past 1.7 m of reported local altitude, neutral
+  vertical input, a brief yaw input, Land and confirmed disarming. All 136 status
+  samples reported recent vision; 135 contained a person detection. These status
+  samples are not independent image-level accuracy measurements. No input
+  request failed; observed request latency was 1.69 ms median and 5.21 ms maximum.
+- Terminating the inference process during a separate disarmed control lease
+  produced an explicit vision error while the raw camera advanced and 39
+  neutral control input requests succeeded. The optional worker failure did not
+  stop MAVLink/control servicing. Automated tests also cover startup/inference
+  deadlines and IPC failure containment.
+
+The initial wide-angle trial missed small people in some frames. After fixing
+the camera configuration, detections were continuous in the sampled scene, but
+strict overlap-only association still changed IDs during lateral walking. A
+bounded, mutually unambiguous center/size association fallback removed those
+changes in both a replay of the measured boxes and the final live sample above.
+No scene coordinates, marker, body-height assumption or predicted detection
+filled gaps or corrected model output.
+
+This establishes a camera-based perception baseline during manual simulated
+flight. It does not establish reliable identity tracking through crossings or
+occlusion, physical outdoor accuracy, automatic centering/following, position
+hold or metric range. The animated actor does not physically react to the drone.
+Existing journals remain received-MAVLink captures; video and detections are not
+recorded or replayed. The eight existing journals were byte-identical after the
+trial and deployment.

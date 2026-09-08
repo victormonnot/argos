@@ -1,0 +1,34 @@
+<?xml version="1.0" ?>
+<!-- Scene content only. The launcher's isolated iris_runway world supplies the
+     physics, lighting, runway and vehicle. No actor pose enters ARGOS perception.
+     Skin: Mingfei / actor v1, CC BY 4.0; see README.md. -->
+<sdf version="1.9">
+  <world name="person_scene">
+    <actor name="walking_person">
+      <skin>
+        <filename>model://argos_walking_person/walk.dae</filename>
+        <scale>1.0</scale>
+      </skin>
+      <animation name="walk">
+        <filename>model://argos_walking_person/walk.dae</filename>
+        <scale>1.0</scale>
+        <interpolate_x>true</interpolate_x>
+      </animation>
+      <script>
+        <loop>true</loop>
+        <auto_start>true</auto_start>
+        <trajectory id="0" type="walk" tension="0.6">
+          <waypoint><time>0</time><pose>-2 8 1 0 0 0</pose></waypoint>
+          <waypoint><time>4</time><pose>2 8 1 0 0 0</pose></waypoint>
+          <waypoint><time>4.8</time><pose>2 8 1 0 0 1.570796327</pose></waypoint>
+          <waypoint><time>6.8</time><pose>2 10 1 0 0 1.570796327</pose></waypoint>
+          <waypoint><time>7.6</time><pose>2 10 1 0 0 3.141592654</pose></waypoint>
+          <waypoint><time>11.6</time><pose>-2 10 1 0 0 3.141592654</pose></waypoint>
+          <waypoint><time>12.4</time><pose>-2 10 1 0 0 -1.570796327</pose></waypoint>
+          <waypoint><time>14.4</time><pose>-2 8 1 0 0 -1.570796327</pose></waypoint>
+          <waypoint><time>15.2</time><pose>-2 8 1 0 0 0</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+  </world>
+</sdf>

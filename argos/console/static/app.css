@@ -284,14 +284,22 @@ body[data-view=sessions] #reception-notice { display:none; }
 }
 .camera-panel {
   display:grid;
-  grid-template-rows:42px minmax(0,1fr) auto auto;
+  grid-template-rows:auto minmax(0,1fr) auto auto;
   min-width:0;
   min-height:0;
 }
-.camera-header { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:4px 14px 4px 18px; }
+.camera-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0 10px; min-height:46px; padding:2px 14px 2px 18px; }
 .camera-actions { display:flex; align-items:center; gap:3px; }
 .camera-stage { position:relative; display:grid; place-items:center; min-width:0; min-height:0; overflow:hidden; background:var(--image); }
 .camera-stage img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
+.vision-toggle { display:flex; align-items:center; gap:7px; min-height:44px; padding:0 8px; font-size:11px; cursor:pointer; touch-action:manipulation; white-space:nowrap; }
+.vision-toggle:has(input:disabled) { color:var(--muted); cursor:default; }
+.vision-toggle input { width:16px; height:16px; margin:0; accent-color:var(--ink); }
+.vision-toggle:focus-within { outline:2px solid var(--ink); outline-offset:-3px; border-radius:4px; }
+.vision-status { flex-basis:100%; overflow-wrap:anywhere; }
+.vision-layer { position:absolute; pointer-events:none; overflow:hidden; }
+.vision-box { position:absolute; border:1.5px solid #d5e9ca; color:#edf5e8; }
+.vision-box-label { position:absolute; top:0; left:0; width:max-content; padding:3px 5px; background:#171c17f2; font:11px/1.2 var(--mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .camera-empty { max-width:460px; padding:22px; text-align:center; }
 .camera-empty h3 { font-size:18px; line-height:1.35; }
 .camera-empty p { margin:12px 0 18px; color:var(--muted); font-size:12px; line-height:1.65; }
@@ -499,7 +507,7 @@ body.focus-mode .inspector { display:none; }
   .button,.icon-button,.detail-tabs button,.diagnostic-tabs button { min-height:44px; }
   .icon-button,.camera-actions .icon-button { min-width:44px; }
   .journal-actions .button { min-height:44px; }
-  .camera-panel { grid-template-rows:52px minmax(0,1fr) auto auto; }
+  .camera-panel { grid-template-rows:auto minmax(0,1fr) auto auto; }
   .camera-header { min-height:52px; }
   input,select { min-height:44px; }
 }

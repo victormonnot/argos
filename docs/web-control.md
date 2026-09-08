@@ -56,6 +56,10 @@ and tmux. This SITL binary's MAVLink TCP listener binds all IPv4 interfaces and
 accepts one client; the ARGOS console connects through loopback. Do not attach
 QGroundControl or MAVProxy as a second client on that port.
 
+For a walking person and image-based detection during manual flight, use the
+optional [vision setup](vision.md). This adds camera observations without
+changing flight authority or the GPS-free profile.
+
 ## Fly from the interface
 
 If a MAVLink recording is wanted, start it in **MAVLink recording** before entering

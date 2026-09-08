@@ -19,6 +19,7 @@ def default_recordings_dir():
 @dataclass(frozen=True)
 class ConsoleConfig:
     sim_control: bool = False
+    vision_model: Path | None = None
     video_source: str = "none"
     video_endpoint: str | None = None
     environment: str = "unconfigured"
@@ -37,6 +38,8 @@ class ConsoleConfig:
     limits: TelemetryLimits = field(default_factory=lambda: TelemetryLimits(1., .2, .4))
 
     def __post_init__(self):
+        if self.vision_model is not None:
+            object.__setattr__(self, "vision_model", Path(self.vision_model).expanduser().resolve())
         if not isinstance(self.sim_control, bool):
             raise ValueError("sim_control must be a boolean")
         if self.video_source not in ("none", "gazebo", "device"):

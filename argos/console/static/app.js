@@ -22,6 +22,8 @@
   let requestFailure = "";
   let imageFailure = "";
   let frame = null;
+  let visionEnabled = false;
+  let frameEpoch = 0;
   let stopped = false;
   let mutation = null;
   let stateEpoch = 0;
@@ -72,7 +74,7 @@
   function renderPanel() {
     const titles = { telemetry: "MAVLink telemetry", video: "Video", recording: "MAVLink recording", reception: "Reception status", sources: "Configure sources" };
     text("inspector-kind", inspectorPanel === "sources" ? "SETTINGS" : "INSPECTION");
-    text("inspector-title", titles[inspectorPanel] || "Inspecteur");
+    text("inspector-title", titles[inspectorPanel] || "Inspector");
     element("inspector-empty").hidden = inspectorPanel !== null;
     element("inspector-close").hidden = inspectorPanel === null;
     for (const node of document.querySelectorAll("[data-panel-content]")) node.hidden = node.dataset.panelContent !== inspectorPanel;
@@ -170,6 +172,103 @@
     frame = null;
     element("camera-image").removeAttribute("src");
     element("camera-image").hidden = true;
+    element("vision-layer").replaceChildren();
+    element("vision-layer").hidden = true;
+  }
+
+  function visionView() {
+    const view = current?.vision;
+    // Optional perception cannot invalidate the independent telemetry/control
+    // snapshot. Treat malformed or absent configuration as locally unavailable.
+    if (!view || typeof view !== "object" || Array.isArray(view)) return null;
+    if (typeof view.configured !== "boolean" || !["disabled", "starting", "waiting", "recent", "stale", "error"].includes(view.state)
+        || typeof view.detail !== "string" || view.detail.length > 1000 || typeof view.model !== "string" || view.model.length > 80
+        || !finite(view.age_limit_s) || view.age_limit_s <= 0 || view.age_limit_s > 10
+        || !(view.frame_age_s === null || (finite(view.frame_age_s) && view.frame_age_s >= 0))) return null;
+    return view;
+  }
+
+  function visionRecent(now = performance.now()) {
+    const view = visionView();
+    return serviceFresh(now) && view?.configured && view.state === "recent" && finite(view.frame_age_s)
+      && view.frame_age_s + (stateTransitMs + Math.max(0, now - lastReceived)) / 1000 <= view.age_limit_s;
+  }
+
+  function frameLimit() {
+    return visionEnabled ? Math.min(current.video.age_limit_s, visionView()?.age_limit_s ?? 1) : current.video.age_limit_s;
+  }
+
+  function visionResult(header) {
+    if (typeof header !== "string" || header.length > 32768) throw new Error("Missing or oversized vision metadata");
+    const result = JSON.parse(header);
+    const dimension = value => Number.isSafeInteger(value) && value > 0 && value <= 8192;
+    if (!result || !dimension(result.width) || !dimension(result.height) || !Array.isArray(result.detections)
+        || result.detections.length > 64 || !finite(result.inference_ms) || result.inference_ms < 0 || result.inference_ms > 60000) throw new Error("Invalid vision metadata");
+    const ids = new Set();
+    for (const detection of result.detections) {
+      if (!detection || !Number.isSafeInteger(detection.track_id) || detection.track_id < 1 || ids.has(detection.track_id)
+          || !finite(detection.confidence) || detection.confidence < 0 || detection.confidence > 1
+          || !Array.isArray(detection.box) || detection.box.length !== 4
+          || !detection.box.every(value => finite(value) && value >= 0 && value <= 1)) throw new Error("Invalid person detection");
+      const [x, y, width, height] = detection.box;
+      if (width <= 0 || height <= 0 || x + width > 1.000001 || y + height > 1.000001) throw new Error("Detection outside image");
+      ids.add(detection.track_id);
+    }
+    return result;
+  }
+
+  function layoutVision() {
+    const result = frame?.vision;
+    if (!result) return;
+    const stage = element("camera-stage"), layer = element("vision-layer");
+    const scale = Math.min(stage.clientWidth / result.width, stage.clientHeight / result.height);
+    const width = result.width * scale, height = result.height * scale;
+    Object.assign(layer.style, { width: `${width}px`, height: `${height}px`, left: `${(stage.clientWidth - width) / 2}px`, top: `${(stage.clientHeight - height) / 2}px` });
+    for (const box of layer.children) {
+      const label = box.firstElementChild;
+      label.style.maxWidth = `${Math.max(0, width - 4)}px`;
+      const labelWidth = label.offsetWidth, labelHeight = label.offsetHeight;
+      const left = box.offsetLeft, top = box.offsetTop;
+      // Labels retain their own dark background even for a distant person only
+      // a few pixels wide. Place above when possible and keep inside the image.
+      label.style.left = `${Math.max(1 - left, Math.min(0, width - left - labelWidth - 3))}px`;
+      label.style.top = `${top >= labelHeight + 4 ? -labelHeight - 4 : Math.max(0, Math.min(box.offsetHeight + 3, height - top - labelHeight - 3))}px`;
+    }
+  }
+
+  function drawVision(result) {
+    const layer = element("vision-layer");
+    layer.replaceChildren();
+    if (!result) return;
+    for (const detection of result.detections) {
+      const [x, y, width, height] = detection.box;
+      const box = document.createElement("div"), label = document.createElement("span");
+      box.className = "vision-box";
+      box.setAttribute("role", "listitem");
+      box.dataset.trackId = String(detection.track_id);
+      Object.assign(box.style, { left: `${100 * x}%`, top: `${100 * y}%`, width: `${100 * width}%`, height: `${100 * height}%` });
+      label.className = "vision-box-label";
+      label.textContent = `Person #${detection.track_id} · ${Math.round(detection.confidence * 100)}%`;
+      box.append(label); layer.append(box);
+    }
+    layoutVision();
+  }
+
+  function renderVision(fresh, now) {
+    const view = visionView(), toggle = element("vision-toggle");
+    toggle.checked = visionEnabled;
+    toggle.disabled = !visionEnabled && (!fresh || !view?.configured);
+    const visible = visionEnabled && visionRecent(now) && current.video.state === "recent"
+      && frame?.vision && currentFrameAge(now) <= frameLimit();
+    element("vision-layer").hidden = !visible;
+    if (visible) layoutVision();
+    let detail = !view?.configured ? "Person detection is not configured" : "Person detection off";
+    if (visionEnabled) {
+      const state = !fresh ? "Service unavailable" : !view ? "Invalid vision status" : view.state === "recent" && !visionRecent(now) ? "Stale result" : view.state;
+      detail = visible ? `${frame.vision.detections.length} ${frame.vision.detections.length === 1 ? "person" : "people"} · ${ageText(currentFrameAge(now))} · ${numeric(frame.vision.inference_ms, " ms")}` : imageFailure || view?.detail || (state === "recent" ? "Waiting for an analyzed image" : state);
+      detail = `Visual tracking only · ${detail}`;
+    }
+    text("vision-status", detail);
   }
 
   function validState(value) {
@@ -215,6 +314,7 @@
     const received = performance.now();
     if (!current && !panelChosen && body.environment === "unconfigured") inspectorPanel = "sources";
     if (!current || body.run_id !== current.run_id) {
+      frameEpoch += 1;
       clearFrame();
       lastAdvance = started;
       imageFailure = "";
@@ -225,6 +325,7 @@
       lastAdvance = started;
     }
     if (current && body.video.source_id !== current.video.source_id) {
+      frameEpoch += 1;
       clearFrame();
       imageFailure = "";
     }
@@ -273,40 +374,53 @@
     await new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => { probe.src = ""; reject(new Error("Decoding timed out")); }, REQUEST_TIMEOUT_MS);
       probe.onload = () => { window.clearTimeout(timer); resolve(); };
-      probe.onerror = () => { window.clearTimeout(timer); reject(new Error("Image illisible")); };
+      probe.onerror = () => { window.clearTimeout(timer); reject(new Error("Unreadable image")); };
       probe.src = url;
     });
+    return probe;
   }
 
   async function pollFrames() {
     while (!stopped) {
       const started = performance.now();
-      if (serviceFresh() && current.video.state === "recent") {
+      if (serviceFresh() && current.video.state === "recent" && (!visionEnabled || visionRecent())) {
         const requestedRun = current.run_id;
         const requestedVideo = current.video.source_id;
+        const requestedVision = visionEnabled, requestedEpoch = frameEpoch;
         let candidateUrl = null;
         try {
-          const { response, body } = await getResponse("/api/frame.jpg");
+          const { response, body } = await getResponse(requestedVision ? "/api/vision/frame.jpg" : "/api/frame.jpg");
           const sequenceHeader = response.headers.get("X-Frame-Sequence");
           const receivedHeader = response.headers.get("X-Frame-Received-At");
           const sequence = sequenceHeader === null ? NaN : Number(sequenceHeader);
           const receivedAt = receivedHeader === null ? NaN : Number(receivedHeader);
           const responseRun = response.headers.get("X-Run-Id");
-          if (!serviceFresh() || current.run_id !== requestedRun || responseRun !== requestedRun || current.video.source_id !== requestedVideo || (requestedVideo && response.headers.get("X-Video-Id") !== requestedVideo)) continue;
-          if (!Number.isSafeInteger(sequence) || sequence < 0 || !finite(receivedAt) || receivedAt < 0 || !body.type.startsWith("image/jpeg")) throw new Error("Invalid image response");
+          if (requestedEpoch !== frameEpoch || !serviceFresh() || current.run_id !== requestedRun || responseRun !== requestedRun || current.video.source_id !== requestedVideo || (requestedVideo && response.headers.get("X-Video-Id") !== requestedVideo)) continue;
+          if (!Number.isSafeInteger(sequence) || sequence < 0 || !finite(receivedAt) || receivedAt < 0 || receivedAt > runTime(performance.now()) + .05 || !body.type.startsWith("image/jpeg")) throw new Error("Invalid image response");
           if (frame && sequence <= frame.sequence) continue;
+          const result = requestedVision ? visionResult(response.headers.get("X-Vision-Result")) : null;
           candidateUrl = URL.createObjectURL(body);
-          await decodeImage(candidateUrl);
-          if (!serviceFresh() || current.run_id !== requestedRun || current.video.source_id !== requestedVideo) continue;
+          const decoded = await decodeImage(candidateUrl);
+          if (result && (decoded.naturalWidth !== result.width || decoded.naturalHeight !== result.height)) throw new Error("Vision dimensions do not match image");
+          if (requestedEpoch !== frameEpoch || !serviceFresh() || current.run_id !== requestedRun || current.video.source_id !== requestedVideo || (requestedVision && !visionRecent())) continue;
           const now = performance.now();
           const previousUrl = frame?.url;
-          frame = { sequence, receivedAt, observedAt: now, initialAge: Math.max(0, runTime(now) - receivedAt), url: candidateUrl };
-          element("camera-image").src = candidateUrl;
+          frame = { sequence, receivedAt, observedAt: now, initialAge: Math.max(0, runTime(now) - receivedAt), url: candidateUrl, vision: result };
+          // The decoded image and its own result enter the DOM in one turn.
+          // Never overlay detections on a newer independently fetched raw JPEG.
+          decoded.id = "camera-image";
+          decoded.alt = "Image received from the drone camera";
+          decoded.hidden = true;
+          element("camera-image").replaceWith(decoded);
+          drawVision(result);
           candidateUrl = null;
           if (previousUrl) URL.revokeObjectURL(previousUrl);
           imageFailure = "";
         } catch (error) {
-          if (current?.run_id === requestedRun && current.video.source_id === requestedVideo) imageFailure = error.name === "AbortError" ? "The image stream did not respond in time." : "The image is unavailable or could not be decoded.";
+          if (requestedEpoch === frameEpoch && current?.run_id === requestedRun && current.video.source_id === requestedVideo) {
+            if (requestedVision) clearFrame();
+            imageFailure = error.name === "AbortError" ? "The image stream did not respond in time." : requestedVision ? "The analyzed image or its detection metadata is unavailable." : "The image is unavailable or could not be decoded.";
+          }
         } finally {
           if (candidateUrl) URL.revokeObjectURL(candidateUrl);
           render();
@@ -565,7 +679,7 @@
         const origin = document.createElement("p");
         origin.className = "microcopy";
         origin.textContent = `System ${entry.system} · component ${entry.component} · reception T + ${ageText(entry.received_at)}${entry.connection_id !== history.connection_id ? " · previous connection" : ""}`;
-        origin.title = `Connexion ${entry.connection_id}`;
+        origin.title = `Connection ${entry.connection_id}`;
         const received = document.createElement("p");
         received.className = "microcopy autopilot-text-age";
         received.dataset.id = String(entry.id);
@@ -599,7 +713,7 @@
     const elapsed = runTime(now);
     const recovery = current?.reception?.last_recovery;
     const reconnecting = current?.reconnecting || (mutation?.startsWith("reconnect-") ? mutation.slice(10) : null);
-    const imageAvailable = fresh && video.state === "recent" && frame !== null && currentFrameAge(now) <= video.age_limit_s;
+    const imageAvailable = fresh && video.state === "recent" && frame !== null && currentFrameAge(now) <= frameLimit() && (!visionEnabled || visionRecent(now));
     const viewNames = { heartbeat: "mode", battery: "battery", attitude: "attitude", local_position_ned: "local position" };
     const usable = imageAvailable ? ["image"] : [];
     badge("available-video", !fresh ? "Not refreshed" : imageAvailable ? "Recent" : states[video.state] === "Recent" ? "Display pending" : states[video.state], imageAvailable ? "positive" : "neutral");
@@ -609,7 +723,7 @@
       badge(`available-${name}`, !fresh ? "Not refreshed" : recent ? `Recent · ${ageText(stateAge(t[name], now))}` : t.state === "error" ? "Link interrupted" : t.state === "reconnecting" ? "Reopening" : t[name].state === "absent" ? "Not received" : `Stale · ${ageText(stateAge(t[name], now))}`, recent ? "positive" : fresh && t[name].state === "stale" ? "warning" : "neutral");
     }
     text("reception-summary", actionPending ? "Refresh pending during the requested action. Stale data remains hidden." : !fresh ? "Service unreachable: source availability cannot be verified. Retrying automatically." : usable.length ? `Recent data available: ${usable.join(", ")}.` : "No recent image or measurement currently available.");
-    const displayFailure = fresh && video.state === "recent" && !imageAvailable && Boolean(imageFailure || (frame && currentFrameAge(now) > video.age_limit_s));
+    const displayFailure = fresh && video.state === "recent" && !imageAvailable && Boolean(imageFailure || (frame && currentFrameAge(now) > frameLimit()));
     const shown = !fresh && serviceLostAt !== null ? [{ id: "service", source: "service", title: "ARGOS service unreachable", detail: "Check that the local service is running. This does not establish a camera or MAVLink outage.", state: "active" }] : issues.slice();
     if (displayFailure) shown.push({ id: "display", source: "display", title: "Video display interrupted", detail: "The service receives images, but this browser is no longer refreshing them. The console retries automatically.", state: "active" });
     const signature = JSON.stringify(shown.map(({ since, ...item }) => item));
@@ -676,6 +790,12 @@
   function render() {
     const now = performance.now();
     const fresh = serviceFresh(now);
+    if (visionEnabled && frame && (!fresh || current.video.state !== "recent" || !visionRecent(now) || currentFrameAge(now) > frameLimit())) {
+      imageFailure = !fresh ? "The service is unavailable." : "The analyzed image is no longer recent.";
+      frameEpoch += 1;
+      clearFrame();
+    }
+    renderVision(fresh, now);
     document.dispatchEvent(new CustomEvent("argos:control-state", { detail: {
       control: current?.control ?? null, fresh, run_id: current?.run_id ?? null,
       environment: current?.environment ?? null,
@@ -713,11 +833,11 @@
 
     const { video, telemetry } = current;
     const age = currentFrameAge(now);
-    const visible = video.state === "recent" && frame !== null && age <= video.age_limit_s;
+    const visible = video.state === "recent" && frame !== null && age <= frameLimit() && (!visionEnabled || visionRecent(now));
     element("camera-image").hidden = !visible;
     element("camera-image-caption").hidden = !visible;
     element("camera-empty").hidden = visible;
-    const frameExpired = frame !== null && age > video.age_limit_s;
+    const frameExpired = frame !== null && age > frameLimit();
     let videoLabel = states[video.state] || "Unknown state";
     let emptyTitle = "Waiting for an image";
     let emptyDetail = video.detail || "The source is configured. Check that the drone camera is sending to the endpoint shown in Sources.";
@@ -735,6 +855,11 @@
     } else if (video.state === "recent" && !frame) {
       videoLabel = "Waiting for image";
       emptyDetail = imageFailure || "The service receives images. The console is waiting for a decodable image.";
+    }
+    if (visionEnabled && !visible) {
+      videoLabel = "Detection image pending";
+      emptyTitle = "Waiting for a recent analyzed image";
+      emptyDetail = imageFailure || visionView()?.detail || "Person detection must produce a recent image before boxes can be shown. Turn detection off to return to the camera stream.";
     }
     badge("video-status", visible ? "Recent image" : videoLabel, visible ? "positive" : video.state === "error" ? "error" : video.state === "stale" || frameExpired ? "warning" : "neutral");
     text("camera-empty-title", emptyTitle);
@@ -880,6 +1005,14 @@
     }
   });
   element("focus-button").addEventListener("click", () => focusView(!document.body.classList.contains("focus-mode")));
+  element("vision-toggle").addEventListener("change", () => {
+    visionEnabled = element("vision-toggle").checked;
+    frameEpoch += 1;
+    clearFrame();
+    imageFailure = "";
+    render();
+  });
+  new ResizeObserver(layoutVision).observe(element("camera-stage"));
   if (!document.fullscreenEnabled) element("fullscreen-button").hidden = true;
   element("fullscreen-button").addEventListener("click", async () => {
     try {

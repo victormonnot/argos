@@ -135,7 +135,7 @@
     text("control-authority", hasControl ? "You have control" : !fresh ? "Status not refreshed" : control?.owned ? "Another pilot connected" : supported ? "Control available" : "Flight controls unavailable");
     node("control-claim").disabled = !active() || !supported || Boolean(control?.owned) || Boolean(token) || claiming || vehicle?.armed !== false;
     node("control-claim").hidden = hasControl;
-    text("control-claim", claiming ? "Connexion…" : "Take control");
+    text("control-claim", claiming ? "Connecting…" : "Take control");
     text("control-mode", `Mode ${vehicle?.mode === 2 ? "AltHold" : vehicle?.mode === 9 ? "Land" : vehicle?.mode === 0 ? "Stabilize" : vehicle?.mode == null ? "—" : vehicle.mode}`);
     text("control-armed", vehicle?.armed === true ? "Armed" : vehicle?.armed === false ? "Disarmed" : "Arming —");
     const mode = flyingMode(), isStabilize = mode === 0;
