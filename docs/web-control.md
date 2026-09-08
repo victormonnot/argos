@@ -2,7 +2,8 @@
 
 **Pilotage** lets an operator fly the simulated drone with held mouse or touch
 buttons and optional keyboard shortcuts. The camera and current vehicle state
-remain visible. ArduPilot runs the attitude and altitude loops; the browser
+remain visible. ArduPilot stabilizes attitude in both supported modes; AltHold
+also regulates altitude, while Stabilize uses manual throttle. The browser
 supplies pilot input. This is an opt-in simulation feature, separate from the
 default passive observation workflow.
 
@@ -65,35 +66,52 @@ Pilotage. The capture continues while flying.
 2. Select **Prendre les commandes** (take control). One browser can own the
    controls at a time. Taking control starts neutral pilot inputs and checks the
    required simulation parameters; it does not arm or take off.
-3. Select **Préparer (AltHold)** and wait for the reported mode confirmation.
-   Then select **Armer** and wait for confirmed arming. ArduPilot's arming checks
-   remain enabled; a rejected or unconfirmed request is shown explicitly.
-4. Hold **Monter** to take off manually. Hold the directional or rotation buttons
-   to maneuver. A button acts only while pressed. Multiple fingers can combine
-   axes, for example climbing while turning.
-5. Descend manually with **Descendre**, or select **Atterrir** to request
-   ArduPilot's Land mode. After landing, **Désarmer au sol** requires a recent
-   landed-state report. **Libérer** gives up the controls; it requests landing
-   when the drone is armed.
+3. Wait for a fresh landed report, choose **AltHold** or **Stabilize** while
+   disarmed, then select **Préparer** and wait for confirmation of that mode. Mode
+   selection is locked while armed; in-flight transitions are not implemented.
+4. Select **Armer** with neutral axes and zero manual throttle. A new control
+   lease always requires explicit preparation, even if the vehicle already
+   reports the chosen mode. Normal ArduPilot arming checks remain enabled.
+5. In **AltHold**, hold **Monter** to take off. In **Stabilize**, increase the
+   **Gaz maintenus** control progressively using its slider or +/− buttons. It
+   starts at **0%** on arming: arming never applies an implicit 50% throttle.
+6. Hold the direction or yaw buttons to maneuver. Multiple fingers can combine
+   inputs. In Stabilize, releasing a direction preserves the chosen throttle
+   while control remains active; it does not automatically hold altitude.
+7. Select **Atterrir** to request ArduPilot's Land mode. After landing,
+   **Désarmer au sol** requires a fresh landed report. **Libérer** gives up the
+   controls and requests landing when armed. A new lease starts with zero
+   manual throttle; old throttle values are not restored.
 
-| Held button | Optional keyboard shortcut | Input |
+| Mode | Roll/pitch | Vertical control |
+| --- | --- | --- |
+| AltHold | Self-leveling angle input | Held climb/descent input; neutral requests altitude hold. |
+| Stabilize | Self-leveling angle input, similar to Angle mode | Explicit pilot throttle; no altitude regulation. |
+
+The throttle percentage is normalized pilot input, not measured thrust, motor
+RPM or a calibrated climb rate. ArduPilot applies its throttle mapping and tilt
+compensation. AltHold's configured climb/descent speed limits do not limit
+Stabilize's climb speed. Both modes remain GPS-free and can drift horizontally.
+
+| Control | Optional keyboard shortcut | Input |
 | --- | --- | --- |
 | Avant / Arrière | Up / Down arrow | Forward / backward inclination |
 | Gauche / Droite | Left / Right arrow | Left / right inclination |
-| Monter / Descendre | R / F | Climb / descend |
+| Monter / Descendre (AltHold) | R / F | Climb / descend while held |
+| Gaz maintenus (Stabilize) | R / F | Increase / decrease the displayed pilot throttle by 2 percentage points per press |
 | Rotation G / Rotation D | Q / E | Left / right yaw |
 
-Inputs follow the vehicle's axes. The letter shortcuts use the labeled key on
-the active keyboard layout. They are ignored when editing a field, using
-Ctrl/Meta/Alt modifiers, or outside Pilotage. Pointer capture supports releasing
-outside a button; pointer cancellation and lost capture clear the affected input.
-Touch gestures are suppressed on movement buttons, while the rest of the page
-retains ordinary scrolling.
+Inputs follow the vehicle's axes. Letter shortcuts use the labeled key on the
+active keyboard layout. They are ignored when editing a field, using
+Ctrl/Meta/Alt modifiers or outside Pilotage. The range control also supports its
+native keyboard interaction. Pointer capture supports releasing direction
+buttons outside their bounds; cancellation clears the affected held direction.
+The throttle slider sets a value rather than a held climb command.
 
-**Neutral is not stop or hover.** Releasing a direction returns its input to
-neutral, but horizontal drift can continue. The flight mode does not observe or
-hold horizontal position. The climb control's neutral input requests altitude
-holding through AltHold; this is not a precise position-hold claim.
+**Neutral is not stop or position hold.** Releasing directions levels the
+attitude request but horizontal drift can continue. In Stabilize you must keep
+adjusting throttle to control height. AltHold's vertical neutral seeks to hold
+altitude; it does not observe or hold horizontal position.
 
 ## What happens when control is lost
 
@@ -102,21 +120,28 @@ the source, or losing current service state clears the held inputs and releases
 the browser's control token. Opening Sources or another workspace also leaves
 Pilotage. Returning does not resume old inputs or silently retake control.
 
-The browser sends the latest four axes every 100 ms with one input request in
+The browser sends the latest axes and manual throttle every 100 ms with one input request in
 flight. Changes are coalesced instead of queuing old movements. The service
 expires a lease after **0.65 seconds** without a valid input update, checked on
 its next tick. Ordinary state polling cannot renew that lease, and a late input
 cannot revive it.
 
-On release or expiry, the service clears its inputs, attempts a neutral input
-and Land request when armed or when arm execution is uncertain, and stops its
-periodic pilot inputs and GCS heartbeat. If the link or process itself is lost,
+On release or expiry, the service requests neutral attitude and Land when armed
+or when arm execution is uncertain, then clears its stored inputs and stops its
+periodic pilot inputs and GCS heartbeat. Its one Stabilize handoff input retains
+the last throttle value until Land takes over; it does not substitute 0% or 50%.
+If the link or process itself is lost,
 the pinned SITL profile provides the separate GCS failsafe configured for Land.
+Its 3-second RC override lifetime exceeds the 2-second GCS timeout, so the
+autopilot can enter Land before a missing override falls back to low RC throttle.
+This does not change the service's 0.65-second browser lease.
 These mechanisms request a descent; they are not horizontal braking, obstacle
 avoidance or a guarantee that any arbitrary scene permits a landing.
 
-An explicit **Atterrir** request suppresses subsequent manual flight inputs
-while the browser continues renewing its lease. Mode change, local transmission,
+An explicit **Atterrir** request suppresses subsequent manual flight inputs and
+GCS heartbeat while the browser continues renewing its lease. This leaves the
+GCS fallback available even if that Land command is refused or never confirmed.
+Only a new explicit ground preparation resumes pilot transmissions. Mode change, local transmission,
 MAVLink acknowledgement and observed vehicle state are distinct states. Commands
 are not queued for retry. Source replacement requires released controls and
 confirmed disarming. After losing the link, reopening the same MAVLink source
@@ -136,9 +161,9 @@ heading reference and can drift.
 The initial `--home` coordinates place the simulated world; they do not enable
 a GPS receiver or supply a horizontal controller with position.
 
-The browser requests AltHold rather than a GPS-dependent position mode. Pilot
+The browser prepares AltHold or Stabilize, both without a GPS position requirement. Pilot
 inclination and yaw inputs are capped at 30% of the MANUAL_CONTROL input range;
-the profile additionally sets maximum tilt (20°), pilot climb/descent (1/0.7 m/s)
+the profile additionally sets maximum tilt (20°), AltHold climb/descent (1/0.7 m/s)
 and final landing speed (0.5 m/s), using the pinned firmware’s current parameter
 names and units.
 This bounds requests, not the resulting drift or distance traveled.
@@ -173,10 +198,18 @@ The local API uses JSON and the exact console Origin for all mutations.
 
 | Endpoint | Request / result |
 | --- | --- |
-| `GET /api/state` | Includes `control`: availability, ownership, phase, vehicle state, checked profile, axes and latest command evidence. No token is exposed. |
+| `GET /api/state` | Includes `control`: availability, ownership, phase, vehicle state, checked profile, selected_mode (0/2), prepared, axes, throttle and latest command evidence. No token is exposed. |
 | `POST /api/control/claim` | `{}` → `{token, control}`. Requires a disarmed, available simulation. |
-| `POST /api/control/input` | `{token, seq, axes: {forward, right, up, yaw}}` → `{control}`. Every axis is finite and within `[-1, 1]`; `seq` must increase strictly. |
-| `POST /api/control/action` | `{token, action}` → `{control}`. Actions: `prepare`, `arm`, `land`, `disarm`, `release`. |
+| `POST /api/control/input` | `{token, seq, axes: {forward, right, up, yaw}, throttle}` → `{control}`. Axes are finite within `[-1, 1]`, throttle within `[0, 1]`, and `seq` increases strictly. |
+| `POST /api/control/action` | `{token, action}` → `{control}`. Actions: `prepare`, `arm`, `land`, `disarm`, `release`. Only `prepare` accepts optional `mode`: integer `0` (Stabilize) or `2` (AltHold; default). |
+
+Stabilize requires `up=0` and an explicit throttle in armed input updates.
+Nonzero throttle is rejected while disarmed or in AltHold. Legacy AltHold
+clients can omit throttle; new clients send it explicitly. Preparation requires
+neutral input, confirmed disarming and a fresh landed report. The requested mode
+must then be confirmed before arming. `prepared` belongs to the current lease;
+an observed mode alone does not authorize arming. Unsupported modes and mode
+changes during armed or uncertain flight are rejected.
 
 `control.owned` means some browser owns the lease; possession of the token is
 required to operate it. The browser keeps its token only in memory. The snapshot

@@ -30,12 +30,19 @@ def main():
                 response = client.get(path)
                 if response.status_code != 200 or not response.content:
                     raise RuntimeError(f"unavailable packaged resource: {path}")
+                if path == "/":
+                    for element in ("control-mode-select", "control-throttle", "control-throttle-value"):
+                        if f'id="{element}"' not in response.text:
+                            raise RuntimeError(f"missing packaged flight control: {element}")
             state = client.get("/api/state").json()
             if state["video"]["state"] != "unconfigured" or state["telemetry"]["state"] != "unconfigured":
                 raise RuntimeError("unconfigured console invented an acquisition source")
             if (state["control"]["enabled"] or state["control"]["available"]
                     or state["control"]["owned"] or state["control"]["phase"] != "disabled"):
                 raise RuntimeError("default console enabled flight control without opt-in")
+            if (state["control"]["selected_mode"] != 2 or state["control"]["prepared"]
+                    or state["control"]["throttle"] != 0):
+                raise RuntimeError("default console retained a prepared flight mode or manual throttle")
             if client.get("/api/frame.jpg").status_code != 503:
                 raise RuntimeError("unconfigured console returned an image")
     print(f"Installed ARGOS {metadata.version('argos')}: imports, web assets, fonts and empty state OK")

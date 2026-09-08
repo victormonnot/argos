@@ -335,17 +335,20 @@ class ConsoleSession:
             raise ValueError("Cette action attend un objet JSON")
         expected = {"claim": set(), "input": {"token", "seq", "axes"},
                     "action": {"token", "action"}}[operation]
-        if set(values) != expected:
+        optional = {"claim": set(), "input": {"throttle"}, "action": {"mode"}}[operation]
+        if not expected <= set(values) or not set(values) <= expected | optional:
             raise ValueError("Champs de commande invalides")
         now = self.clock()
         if operation == "claim":
             return self.control.claim(self.link, now)
         if operation == "input":
             result = self.control.input(values["token"], values["seq"], values["axes"],
-                                        link=self.link, now=now)
+                                        link=self.link, now=now,
+                                        **({"throttle": values["throttle"]} if "throttle" in values else {}))
         else:
             result = self.control.action(values["token"], values["action"],
-                                         link=self.link, now=now)
+                                         link=self.link, now=now,
+                                         **({"mode": values["mode"]} if "mode" in values else {}))
         return {"control": result}
 
     def close(self):

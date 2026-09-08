@@ -280,8 +280,15 @@
           <button class="button button-primary" disabled="" id="control-claim" type="button">Prendre les commandes</button>
         </div>
         <div class="control-vehicle"><span id="control-mode">Mode —</span><span id="control-armed">Armement —</span></div>
+        <div class="control-mode-choice">
+          <label for="control-mode-select">Mode au sol</label>
+          <select disabled="" id="control-mode-select" aria-describedby="control-mode-note">
+            <option value="2">AltHold · altitude assistée</option>
+            <option value="0">Stabilize · gaz manuels</option>
+          </select>
+        </div>
         <div aria-label="Préparation et fin de vol" class="control-actions">
-          <button class="button button-outline" data-control-action="prepare" disabled="" type="button">Préparer <span>(AltHold)</span></button>
+          <button class="button button-outline" data-control-action="prepare" disabled="" type="button">Préparer</button>
           <button class="button button-outline" data-control-action="arm" disabled="" type="button">Armer</button>
           <button class="button button-outline" data-control-action="land" disabled="" type="button">Atterrir</button>
         </div>
@@ -298,10 +305,18 @@
             </div>
           </div>
           <div class="control-pad-group control-other-axes">
-            <h3>Hauteur et rotation</h3>
-            <div class="control-height-pad" role="group" aria-label="Montée et descente">
+            <h3 id="control-height-title">Hauteur et rotation</h3>
+            <div class="control-height-pad" id="control-height-pad" role="group" aria-label="Montée et descente">
               <button aria-label="Monter, maintenir" aria-pressed="false" class="control-direction" data-control-axis="up" data-control-value="1" disabled="" type="button"><span aria-hidden="true">＋</span><span>Monter</span><kbd>R</kbd></button>
               <button aria-label="Descendre, maintenir" aria-pressed="false" class="control-direction" data-control-axis="up" data-control-value="-1" disabled="" type="button"><span aria-hidden="true">−</span><span>Descendre</span><kbd>F</kbd></button>
+            </div>
+            <div class="control-throttle" hidden="" id="control-throttle-group">
+              <label for="control-throttle">Gaz maintenus <output id="control-throttle-value" for="control-throttle">0 %</output></label>
+              <input aria-describedby="control-neutral-note" disabled="" id="control-throttle" max="100" min="0" step="1" type="range" value="0"/>
+              <div class="control-throttle-steps">
+                <button aria-label="Réduire les gaz de 2 pour cent" class="button button-outline" data-throttle-step="-2" disabled="" type="button">− <span>2 %</span></button>
+                <button aria-label="Augmenter les gaz de 2 pour cent" class="button button-outline" data-throttle-step="2" disabled="" type="button">＋ <span>2 %</span></button>
+              </div>
             </div>
             <div class="control-yaw-pad" role="group" aria-label="Rotation du drone">
               <button aria-label="Tourner à gauche, maintenir" aria-pressed="false" class="control-direction" data-control-axis="yaw" data-control-value="-1" disabled="" type="button"><span aria-hidden="true">↶</span><span>Rotation G</span><kbd>Q</kbd></button>
@@ -314,6 +329,7 @@
           <button class="button button-quiet" data-control-action="disarm" disabled="" type="button">Désarmer au sol</button>
         </div>
         <p class="control-instructions" id="control-hold-note"><strong>Maintenez</strong> un bouton au doigt ou à la souris. Combinez plusieurs boutons au toucher. Le clavier est facultatif.</p>
+        <p class="control-instructions" id="control-mode-note">AltHold : altitude assistée. Le mode se choisit et se prépare au sol.</p>
         <p class="control-instructions" id="control-neutral-note">Relâcher remet les commandes au neutre : le drone peut continuer à dériver, sans GPS. Pour décoller, maintenez Monter après l’armement.</p>
         <p class="control-instructions control-loss-note">Quitter le pilotage, masquer l’onglet ou perdre la connexion libère les commandes et demande l’atterrissage si le drone est armé.</p>
       </section>

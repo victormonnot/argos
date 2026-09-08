@@ -107,6 +107,7 @@ def test_actual_wire_profile_and_arming_receipts_flow_through_session(flight):
     while wire.incoming:
         session.tick()
     assert client.get("/api/state").json()["control"]["profile"]["ready"]
+    prepare_request(client, session, wire, now, token)
     response = client.post("/api/control/action", json={"token": token, "action": "arm"}, headers=ORIGIN)
     assert response.status_code == 200
     assert response.json()["control"]["command"]["observed"] is False
@@ -130,17 +131,30 @@ def test_invalid_control_bodies_are_rejected(flight, path, body):
     assert not wire.outgoing
 
 
-def arm_request(client, session, wire, now, *, observe=True):
+def prepare_request(client, session, wire, now, token, *, mode=2):
+    wire.receive(mav.MAVLink_extended_sys_state_message(0, 1))
+    session.tick()
+    response = client.post("/api/control/action", json={"token": token, "action": "prepare", "mode": mode},
+                           headers=ORIGIN)
+    assert response.status_code == 200
+    assert not response.json()["control"]["prepared"]
+    wire.receive(mav.MAVLink_heartbeat_message(2, 3, 1, mode, 4, 3))
+    session.tick()
+    assert session.state()["control"]["prepared"]
+
+
+def arm_request(client, session, wire, now, *, observe=True, mode=2):
     token = client.post("/api/control/claim", json={}, headers=ORIGIN).json()["token"]
     for key, value in REQUIRED_PARAMETERS.items():
         wire.receive(mav.MAVLink_param_value_message(key.encode(), value, 9, len(REQUIRED_PARAMETERS), 0))
     now[0] = .1
     while wire.incoming:
         session.tick()
+    prepare_request(client, session, wire, now, token, mode=mode)
     assert client.post("/api/control/action", json={"token": token, "action": "arm"},
                        headers=ORIGIN).status_code == 200
     if observe:
-        wire.receive(mav.MAVLink_heartbeat_message(2, 3, 129, 2, 4, 3))
+        wire.receive(mav.MAVLink_heartbeat_message(2, 3, 129, mode, 4, 3))
         now[0] = .2
         session.tick()
     return token
@@ -204,3 +218,76 @@ def test_same_source_reconnect_recovers_passively_without_erasing_flight_uncerta
     assert not replacement.outgoing
     response = client.post("/api/control/claim", json={}, headers=ORIGIN)
     assert response.status_code == 200 and response.json()["token"] != token
+
+
+def test_stabilize_http_mode_selection_and_explicit_throttle_reach_actual_mavlink_wire(flight):
+    client, session, wire, now = flight
+    token = arm_request(client, session, wire, now, mode=0)
+    state = session.state()["control"]
+    assert state["selected_mode"] == 0 and state["vehicle"]["mode"] == 0
+    assert state["throttle"] == 0 and state["prepared"]
+    axes = dict(forward=.5, right=0, up=0, yaw=-.5)
+    body = {"token": token, "seq": 1, "axes": axes, "throttle": .63}
+    now[0] = .3
+    response = client.post("/api/control/input", json=body, headers=ORIGIN)
+    assert response.status_code == 200
+    assert response.json()["control"]["throttle"] == .63
+    session.tick()
+    decoder = mav.MAVLink(None)
+    messages = [message for data in wire.outgoing
+                for message in decoder.parse_buffer(data) or []]
+    manual = [message for message in messages if message.get_type() == "MANUAL_CONTROL"]
+    assert any(message.z == 0 for message in manual)
+    assert (manual[-1].x, manual[-1].y, manual[-1].z, manual[-1].r) == (150, 0, 630, -150)
+    # Mode changes are refused in flight, including when axes return to neutral.
+    now[0] = .4
+    body.update(seq=2, axes=dict.fromkeys(axes, 0), throttle=0)
+    assert client.post("/api/control/input", json=body, headers=ORIGIN).status_code == 200
+    assert client.post("/api/control/action", json={"token": token, "action": "prepare", "mode": 2},
+                       headers=ORIGIN).status_code == 409
+    assert session.state()["control"]["selected_mode"] == 0
+
+
+@pytest.mark.parametrize("extra", [{"mode": None}, {"mode": True}, {"mode": 9}, {"mode": "0"}])
+def test_invalid_prepare_mode_is_rejected_by_http_without_sending(flight, extra):
+    client, session, wire, now = flight
+    token = client.post("/api/control/claim", json={}, headers=ORIGIN).json()["token"]
+    before = len(wire.outgoing)
+    response = client.post("/api/control/action", json={"token": token, "action": "prepare", **extra},
+                           headers=ORIGIN)
+    assert response.status_code == 422
+    assert len(wire.outgoing) == before
+
+
+@pytest.mark.parametrize("extra", [{}, {"throttle": None}, {"throttle": True},
+                                 {"throttle": -1}, {"throttle": 1.01}, {"throttle": "0.5"}])
+def test_stabilize_http_invalid_or_missing_throttle_does_not_refresh_input(flight, extra):
+    client, session, wire, now = flight
+    token = arm_request(client, session, wire, now, mode=0)
+    now[0] = .4
+    response = client.post("/api/control/input",
+                           json={"token": token, "seq": 1,
+                                 "axes": dict(forward=0, right=0, up=0, yaw=0), **extra}, headers=ORIGIN)
+    assert response.status_code == 422
+    assert session.state()["control"]["last_input_age"] == .4
+
+
+def test_alt_hold_http_legacy_and_explicit_zero_throttle_inputs_remain_compatible(flight):
+    client, session, wire, now = flight
+    token = arm_request(client, session, wire, now)
+    body = {"token": token, "seq": 1, "axes": dict(forward=0, right=0, up=.2, yaw=0)}
+    assert client.post("/api/control/input", json=body, headers=ORIGIN).status_code == 200
+    body.update(seq=2, throttle=0)
+    assert client.post("/api/control/input", json=body, headers=ORIGIN).status_code == 200
+    body.update(seq=3, throttle=.5)
+    assert client.post("/api/control/input", json=body, headers=ORIGIN).status_code == 422
+
+
+def test_prepare_mode_field_is_not_accepted_for_arm_or_unknown_input_fields(flight):
+    client, session, wire, now = flight
+    token = client.post("/api/control/claim", json={}, headers=ORIGIN).json()["token"]
+    assert client.post("/api/control/action", json={"token": token, "action": "arm", "mode": 0},
+                       headers=ORIGIN).status_code == 422
+    assert client.post("/api/control/input",
+                       json={"token": token, "seq": 1, "axes": dict(forward=0, right=0, up=0, yaw=0),
+                             "throttle": 0, "extra": True}, headers=ORIGIN).status_code == 422

@@ -83,13 +83,25 @@ this is not a guaranteed 20 Hz schedule. Journal writes are synchronous in the
 tick, so slow storage or CPU work can delay reception. The current process layout
 does not provide hard real-time scheduling or guarantee lossless capture.
 
-The browser sends current axes at 10 Hz with one input request in flight; the
+Each lease starts unprepared. The pilot selects AltHold or Stabilize and prepares
+that mode while disarmed with a fresh landed report and neutral input. Arming
+requires observed preparation, the checked profile and zero manual throttle.
+AltHold maps vertical input to climb/descent; Stabilize maps explicit throttle
+to pilot gas and retains it when a direction is released. Neither holds position.
+
+The browser sends current axes and throttle at 10 Hz with one input request in flight; the
 service sends MANUAL_CONTROL at most every 50 ms while its lease is active and
 the vehicle is not in the requested landing phase. A lease expires after 0.65 s
 without valid input, on the next tick, and cannot be revived by an old token.
-Release attempts a neutral input and Land request when armed or when arming is
-uncertain, then stops periodic input and GCS heartbeat. The pinned SITL profile's
-GCS failsafe is a separate process/link-loss mechanism. See
+Release attempts a neutral attitude input and Land request when armed or when
+arming is uncertain, then stops periodic input and GCS heartbeat. A Stabilize
+handoff retains the last throttle for that one input until Land takes over. The
+pinned SITL profile's GCS failsafe is a separate process/link-loss mechanism:
+its 2 s deadline precedes the 3 s RC override expiry, so loss of the process does
+not first restore the simulator's low underlying RC throttle. Explicit Land also
+stops GCS heartbeat immediately, so browser updates cannot inhibit that fallback
+after a refused or unconfirmed command. Only a new ground preparation resumes
+pilot transmissions. See
 [web-control.md](web-control.md) for the profile checks and their limits.
 
 Camera conversion runs outside the store's short reader lock. The store retains

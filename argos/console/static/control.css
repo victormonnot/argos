@@ -5,18 +5,22 @@ body[data-view=control] #inspector,body[data-view=control] #focus-button { displ
 .control-heading { display:flex; justify-content:space-between; gap:12px; align-items:center; }
 .control-heading h2 { margin-top:3px; font-size:16px; }
 .control-simulation { max-width:112px; padding:4px 7px; border:1px solid var(--line); color:var(--muted); font:400 10px/1.4 var(--mono); text-align:center; }
-.control-ownership { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:12px 0 8px; }
+.control-ownership { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:10px 0 6px; }
 #control-authority { color:var(--muted); font-size:12px; }
 .control-panel .button { min-height:44px; font-size:12px; }
 #control-claim { flex-shrink:0; max-width:175px; }
 .control-vehicle { display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-top:1px solid var(--soft); color:var(--muted); font:400 11px/1.5 var(--mono); }
+.control-mode-choice { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+.control-mode-choice label { flex-shrink:0; color:var(--muted); font-size:11px; }
+.control-mode-choice select { min-width:0; width:100%; min-height:44px; padding:8px; border:1px solid var(--line); border-radius:0; background:var(--page); color:var(--ink); font:400 11px var(--font); }
+.control-mode-choice select:disabled { color:var(--muted); }
 .control-actions { display:grid; grid-template-columns:1.4fr 1fr 1fr; gap:6px; }
 .control-actions .button { gap:4px; flex-wrap:wrap; }
 .control-actions .button span { font-size:10px; font-weight:400; }
 .control-feedback { min-height:35px; padding:8px 0 4px; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
 .control-feedback[data-tone=error] { color:var(--error); }
 .control-feedback[data-tone=warning] { color:var(--warning); }
-.control-inputs { display:grid; grid-template-columns:1.35fr 1fr; gap:12px; padding:4px 0 10px; }
+.control-inputs { display:grid; grid-template-columns:1.35fr 1fr; gap:12px; padding:4px 0 6px; }
 .control-pad-group h3 { margin-bottom:8px; font-size:11px; color:var(--muted); }
 .control-direction-pad { display:grid; grid-template:repeat(3,54px)/repeat(3,minmax(0,1fr)); gap:4px; }
 .control-forward { grid-area:1/2; }
@@ -33,6 +37,15 @@ body[data-view=control] #inspector,body[data-view=control] #focus-button { displ
 .control-direction:disabled>span:first-child { opacity:.5; }
 .control-height-pad { display:grid; grid-template-columns:1fr 1fr; gap:5px; }
 .control-height-pad .control-direction { min-height:82px; }
+.control-throttle { padding:0; }
+.control-throttle label { display:flex; justify-content:space-between; color:var(--muted); font-size:11px; }
+.control-throttle output { color:var(--ink); font-family:var(--mono); }
+.control-throttle input { display:block; width:100%; min-height:44px; margin:0; padding:0; accent-color:var(--ink); touch-action:none; }
+.control-throttle-steps { display:grid; grid-template-columns:1fr 1fr; gap:5px; }
+.control-throttle-steps .button { min-width:44px; padding:4px; touch-action:manipulation; }
+.control-throttle-steps span { font-size:10px; }
+.control-throttle[hidden],.control-height-pad[hidden] { display:none; }
+body[data-view=control] .control-panel[data-mode="0"] .control-yaw-pad .control-direction { min-height:54px; }
 .control-yaw-pad { display:grid; grid-template-columns:1fr 1fr; gap:5px; margin-top:6px; }
 .control-yaw-pad .control-direction { min-height:82px; }
 .control-instructions { margin-top:6px; color:var(--muted); font-size:11px; line-height:1.45; }

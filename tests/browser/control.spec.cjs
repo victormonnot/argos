@@ -4,6 +4,7 @@ test.use({ hasTouch: true });
 
 async function installControl(page, model) {
   const control = { at: 0, enabled: true, available: true, reason: '', owned: false, phase: 'idle', last_input_age: null,
+    selected_mode: 2, prepared: false, throttle: 0,
     axes: { forward: 0, right: 0, up: 0, yaw: 0 }, vehicle: { armed: false, mode: 0, landed: true, heartbeat_age: .01 },
     profile: { ready: false, values: {}, required: {} }, command: null, last_error: '' };
   const mock = { control, calls: [], seq: 0, claims: 0, inputsActive: 0, maxInputsActive: 0, holdInput: null, holdClaim: null, token: null };
@@ -22,7 +23,7 @@ async function installControl(page, model) {
     if (path.endsWith('/claim')) {
       mock.claims += 1;
       mock.token = `private-test-token-${mock.claims}`;
-      control.owned = true; control.phase = 'claimed';
+      control.owned = true; control.phase = 'claimed'; control.prepared = false; control.throttle = 0;
       value = { token: mock.token, control: snapshot() };
       if (mock.holdClaim) { mock.holdClaim.requested = true; await new Promise(resolve => { mock.holdClaim.release = resolve; }); }
     } else if (payload.token !== mock.token || !control.owned) {
@@ -31,6 +32,11 @@ async function installControl(page, model) {
       expect(payload.seq).toBeGreaterThan(mock.seq);
       mock.seq = payload.seq;
       control.axes = payload.axes;
+      expect(payload.throttle).toBeGreaterThanOrEqual(0);
+      expect(payload.throttle).toBeLessThanOrEqual(1);
+      if (control.selected_mode === 2 || !control.vehicle.armed) expect(payload.throttle).toBe(0);
+      if (control.selected_mode === 0) expect(payload.axes.up).toBe(0);
+      control.throttle = payload.throttle;
       mock.inputsActive += 1; mock.maxInputsActive = Math.max(mock.maxInputsActive, mock.inputsActive);
       value = { control: snapshot() };
       const held = mock.holdInput;
@@ -38,12 +44,12 @@ async function installControl(page, model) {
       mock.inputsActive -= 1;
     } else if (path.endsWith('/action')) {
       const action = payload.action;
-      if (action === 'prepare') { control.vehicle.mode = 2; control.profile.ready = true; control.phase = 'prepared'; }
+      if (action === 'prepare') { control.vehicle.mode = payload.mode; control.selected_mode = payload.mode; control.profile.ready = true; control.phase = 'prepared'; control.prepared = true; }
       if (action === 'arm') { control.vehicle.armed = true; control.phase = 'armed'; }
-      if (action === 'land') { control.vehicle.mode = 9; control.phase = 'landing'; }
-      if (action === 'disarm') { control.vehicle.armed = false; control.phase = 'prepared'; }
-      if (action === 'release') { control.owned = false; control.phase = 'released'; mock.token = null; }
-      control.command = { action, command_id: 1, sent_at: model.clock(), transport: 'accepted', ack: 0, observed: true, state: 'observed', detail: '' };
+      if (action === 'land') { control.vehicle.mode = 9; control.phase = 'landing'; control.throttle = 0; }
+      if (action === 'disarm') { control.vehicle.armed = false; control.phase = 'prepared'; control.throttle = 0; }
+      if (action === 'release') { control.owned = false; control.phase = 'released'; control.throttle = 0; mock.token = null; }
+      control.command = { action, ...(action === 'prepare' ? { mode: payload.mode } : {}), command_id: 1, sent_at: model.clock(), transport: 'accepted', ack: 0, observed: true, state: 'observed', detail: '' };
       value = { control: snapshot() };
     } else throw new Error(`Unexpected control fixture route ${path}`);
     try { await route.fulfill({ json: value }); } catch { /* Lifecycle release can outlive a deliberately aborted request. */ }
@@ -52,12 +58,14 @@ async function installControl(page, model) {
 }
 
 const lastAxes = mock => mock.calls.filter(call => call.path.endsWith('/input')).at(-1)?.payload.axes;
+const lastThrottle = mock => mock.calls.filter(call => call.path.endsWith('/input')).at(-1)?.payload.throttle;
 const neutral = { forward: 0, right: 0, up: 0, yaw: 0 };
-async function ready(page, model) {
+async function ready(page, model, mode = 2) {
   const mock = await installControl(page, model);
   await open(page);
   await page.locator('#view-control').click();
   await page.locator('#control-claim').click();
+  if (mode !== 2) await page.locator('#control-mode-select').selectOption(String(mode));
   await page.locator('[data-control-action=prepare]').click();
   await page.locator('[data-control-action=arm]').click();
   await expect(page.locator('[data-control-axis=forward][data-control-value="1"]')).toBeEnabled();
@@ -237,20 +245,151 @@ test('input requests are serialized and coalesce changed axes without replaying 
   await expect.poll(() => lastAxes(mock)).toEqual(neutral);
 });
 
+test('mode selection requires a ground preparation and is locked after arming', async ({ page, model }) => {
+  const mock = await installControl(page, model);
+  await open(page); await page.locator('#view-control').click();
+  const select = page.locator('#control-mode-select'), arm = page.locator('[data-control-action=arm]');
+  await expect(select).toBeDisabled();
+  await page.locator('#control-claim').click();
+  await expect(arm).toBeDisabled();
+  await page.locator('[data-control-action=prepare]').click();
+  await expect(arm).toBeEnabled();
+  await select.selectOption('0');
+  await expect(arm).toBeDisabled();
+  await expect(page.locator('#control-feedback')).toContainText('Préparez Stabilize');
+  await expect(page.locator('#control-throttle')).toBeDisabled();
+  expect(mock.calls.filter(call => call.payload.action === 'prepare')).toHaveLength(1);
+  mock.control.vehicle.landed = null;
+  await expect(select).toBeDisabled();
+  await expect(page.locator('[data-control-action=prepare]')).toBeDisabled();
+  mock.control.vehicle.landed = true;
+  await page.locator('[data-control-action=prepare]').click();
+  expect(mock.calls.filter(call => call.payload.action === 'prepare').at(-1).payload.mode).toBe(0);
+  await expect(page.locator('#control-feedback')).toContainText('Préparation Stabilize');
+  await arm.click();
+  await expect(select).toBeDisabled();
+  await expect(page.locator('[data-control-action=prepare]')).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Monter, maintenir', exact: true })).toBeHidden();
+  await expect(page.locator('#control-throttle')).toBeEnabled();
+});
+
+test('Stabilize mouse throttle persists at neutral and LAND never pre-sends zero gas', async ({ page, model }) => {
+  const mock = await ready(page, model, 0);
+  await page.locator('#control-throttle').fill('47');
+  await expect.poll(() => lastThrottle(mock)).toBe(.47);
+  await page.getByRole('button', { name: 'Augmenter les gaz de 2 pour cent', exact: true }).click();
+  await expect.poll(() => lastThrottle(mock)).toBe(.49);
+  await page.getByRole('button', { name: 'Réduire les gaz de 2 pour cent', exact: true }).click();
+  await expect.poll(() => lastThrottle(mock)).toBe(.47);
+  const forward = page.getByRole('button', { name: 'Avancer, maintenir', exact: true });
+  await forward.hover(); await page.mouse.down();
+  await expect.poll(() => lastAxes(mock)?.forward).toBe(1);
+  await page.mouse.move(100, 200); await page.mouse.up();
+  await expect.poll(() => lastAxes(mock)).toEqual(neutral);
+  expect(lastThrottle(mock)).toBe(.47);
+  await expect(page.locator('#control-throttle-value')).toHaveText('47 %');
+  await page.locator('[data-control-action=land]').click();
+  const landIndex = mock.calls.findIndex(call => call.payload.action === 'land');
+  expect(mock.calls.slice(0, landIndex).filter(call => call.path.endsWith('/input')).at(-1).payload.throttle).toBe(.47);
+  await expect(page.locator('#control-throttle-value')).toHaveText('0 %');
+  await expect(page.locator('#control-throttle')).toBeDisabled();
+});
+
+test('real touch combines Stabilize throttle with direction and cancelling touch retains gas', async ({ page, model, context }) => {
+  const mock = await ready(page, model, 0);
+  const cdp = await context.newCDPSession(page);
+  const right = { ...await center(page.getByRole('button', { name: 'Droite, maintenir', exact: true })), id: 1 };
+  const gas = { ...await center(page.locator('#control-throttle')), id: 2 };
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [right] });
+  await expect.poll(() => lastAxes(mock)?.right).toBe(1);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [right, gas] });
+  await expect.poll(() => lastThrottle(mock)).toBeGreaterThan(.4);
+  expect(lastAxes(mock)).toEqual({ ...neutral, right: 1 });
+  const heldGas = lastThrottle(mock);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
+  await expect.poll(() => lastAxes(mock)).toEqual(neutral);
+  expect(lastThrottle(mock)).toBe(heldGas);
+  await page.getByRole('button', { name: 'Augmenter les gaz de 2 pour cent', exact: true }).tap();
+  await expect.poll(() => lastThrottle(mock)).toBeCloseTo(heldGas + .02);
+  await expect(page.locator('#control-throttle')).toHaveCSS('touch-action', 'none');
+});
+
+test('Stabilize keyboard R and F adjust explicit gas without commanding vertical speed', async ({ page, model }) => {
+  const mock = await ready(page, model, 0);
+  await page.keyboard.press('r'); await page.keyboard.press('r');
+  await expect.poll(() => lastThrottle(mock)).toBe(.04);
+  await page.keyboard.down('ArrowUp');
+  await expect.poll(() => lastAxes(mock)).toEqual({ ...neutral, forward: 1 });
+  await page.keyboard.up('ArrowUp'); await page.keyboard.press('f');
+  await expect.poll(() => lastThrottle(mock)).toBe(.02);
+  await expect.poll(() => lastAxes(mock)).toEqual(neutral);
+  await page.keyboard.down('r'); await page.keyboard.down('r'); await page.keyboard.up('r');
+  await expect.poll(() => lastThrottle(mock)).toBe(.04);
+});
+
+for (const event of ['blur', 'hidden', 'source', 'service', 'disarm']) {
+  test(`Stabilize gas resets on ${event} and never resumes automatically`, async ({ page, model }) => {
+    const mock = await ready(page, model, 0);
+    await page.locator('#control-throttle').fill('37');
+    await expect.poll(() => lastThrottle(mock)).toBe(.37);
+    if (event === 'blur') await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    if (event === 'hidden') await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); });
+    if (event === 'source') model.run = 'run-2';
+    if (event === 'service') model.offline = true;
+    if (event === 'disarm') await page.locator('[data-control-action=disarm]').click();
+    await expect(page.locator('#control-throttle-value')).toHaveText('0 %');
+    if (event !== 'disarm') await expect.poll(() => mock.control.owned).toBe(false);
+    mock.control.vehicle.armed = false;
+    if (event === 'blur') await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    if (event === 'hidden') await page.evaluate(() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); });
+    if (event === 'service') model.offline = false;
+    if (event !== 'disarm') {
+      await page.locator('#control-claim').click();
+      await expect(page.locator('[data-control-action=arm]')).toBeDisabled();
+      await page.locator('[data-control-action=prepare]').click();
+    }
+    await page.locator('[data-control-action=arm]').click();
+    await expect.poll(() => lastThrottle(mock)).toBe(0);
+    await expect(page.locator('#control-throttle-value')).toHaveText('0 %');
+  });
+}
+
+for (const [width, height] of [[1366, 650], [1024, 768], [768, 1024], [360, 640], [320, 568]]) {
+  test(`Stabilize touch gas and camera fit ${width}x${height}`, async ({ page, model }) => {
+    await page.setViewportSize({ width, height });
+    await ready(page, model, 0);
+    const geometry = await page.evaluate(() => {
+      const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { bottom: r.bottom, width: r.width, height: r.height }; };
+      return { camera: rect('#camera-stage'), panel: rect('#control-panel'), throttle: rect('#control-throttle'), plus: rect('[data-throttle-step="2"]'),
+        pad: rect('.control-inputs'), release: rect('[data-control-action=release]'), scrollWidth: document.documentElement.scrollWidth, width: document.documentElement.clientWidth };
+    });
+    expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.width);
+    expect(geometry.throttle.height).toBeGreaterThanOrEqual(44);
+    expect(geometry.plus.width).toBeGreaterThanOrEqual(44);
+    expect(geometry.plus.height).toBeGreaterThanOrEqual(44);
+    if (width > 760) {
+      expect(geometry.pad.bottom).toBeLessThanOrEqual(height);
+      expect(geometry.release.bottom).toBeLessThanOrEqual(geometry.panel.bottom);
+      expect(geometry.camera.height).toBeGreaterThan(100);
+    }
+    if (width === 1366 || width === 768 || width === 360) await page.screenshot({ path: test.info().outputPath('stabilize-control.png'), fullPage: true });
+  });
+}
+
 for (const [width, height] of [[1366, 650], [1024, 768], [768, 1024], [360, 640], [320, 568]]) {
   test(`touch controls remain reachable with the live camera at ${width}x${height}`, async ({ page, model }) => {
     await page.setViewportSize({ width, height });
     await ready(page, model);
     const geometry = await page.evaluate(() => {
       const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { top: r.top, bottom: r.bottom, width: r.width, height: r.height }; };
-      return { camera: rect('#camera-stage'), buttons: Array.from(document.querySelectorAll('.control-direction'), button => ({ width: button.getBoundingClientRect().width, height: button.getBoundingClientRect().height })),
+      return { camera: rect('#camera-stage'), panel: rect('#control-panel'), buttons: Array.from(document.querySelectorAll('.control-direction'), button => ({ width: button.getBoundingClientRect().width, height: button.getBoundingClientRect().height })),
         pad: rect('.control-inputs'), release: rect('[data-control-action=release]'), scrollWidth: document.documentElement.scrollWidth, width: document.documentElement.clientWidth };
     });
     expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.width);
     for (const button of geometry.buttons) { expect(button.width).toBeGreaterThanOrEqual(44); expect(button.height).toBeGreaterThanOrEqual(44); }
     if (width > 760) {
       expect(geometry.pad.bottom).toBeLessThanOrEqual(height);
-      expect(geometry.release.bottom).toBeLessThanOrEqual(height);
+      expect(geometry.release.bottom).toBeLessThanOrEqual(geometry.panel.bottom);
       expect(geometry.camera.height).toBeGreaterThan(100);
       expect(geometry.camera.bottom).toBeLessThanOrEqual(height);
     }

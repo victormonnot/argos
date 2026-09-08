@@ -98,6 +98,48 @@ The recorded altitude is autopilot telemetry, not an independent accuracy
 measurement. These trials demonstrate simulated manual control, not reliable
 position holding, target following, or physical-aircraft readiness.
 
+## Stabilize manual-throttle trial — September 8, 2026
+
+The next manual-control milestone used the same pinned installation, with a
+fresh launch of the supplied GPS-free profile:
+
+- **1,226 Python tests passed**, including explicit preparation per lease,
+  ground-only mode selection, zero throttle before arming, input validation,
+  source recovery and the single manual-input handoff to Land. Tests also cover
+  refused, missing and failed Land commands: ongoing browser updates cannot
+  keep GCS heartbeat running and suppress the autopilot fallback.
+- **46 Chromium browser tests passed**, including retained manual gas after
+  releasing a direction, real Chromium touch events combining gas adjustment
+  with a held direction, ground mode selection and lifecycle resets. Laptop,
+  tablet and phone layouts were inspected. These are not physical-tablet tests.
+- A newly built wheel passed installation into a fresh environment, isolated
+  CLI/import checks, packaged mode/throttle assets, passive default-state checks
+  and `pip check`. The offline recording example verified its 58 frames.
+- Through the real browser and HTTP service, Stabilize preparation and arming
+  were confirmed at **0% manual gas**. A touch-set **57% pilot input** produced
+  a climb in reported local altitude; releasing a yaw control retained that gas.
+  Received RC channel telemetry also reflected the throttle input. Land and
+  automatic disarming completed, followed by a new lease and successful AltHold
+  climb/landing. No mocked control endpoint was used for these flights.
+- In another Stabilize flight, stopping browser inputs expired the lease and
+  ended in Land and confirmed disarming, with stored throttle reset to zero.
+- Suspending the console during a separate Stabilize flight stopped all of its
+  transmissions. A receive-only MAVLink connection observed Land while the
+  console was still suspended; reception after resuming confirmed landing and
+  disarming. The observer sent no GCS heartbeat or pilot commands.
+- All **39 configured profile parameters** were read back and matched. The
+  profile now sets RC override expiry to **3 s**, after the **2 s** GCS Land
+  timeout, so loss of the service does not first restore low underlying RC gas.
+  Explicit Land also stops GCS heartbeat until a new ground preparation.
+
+Throttle percentage represents normalized pilot input, not measured thrust or
+a calibrated vertical speed. Stabilize does not regulate altitude; neither mode
+holds horizontal position. These trials use autopilot telemetry and below-real-time
+simulation, not an independent position-accuracy measurement. They do not validate
+in-flight mode transitions, physical flight, visual following or a metric range
+estimate. No GPS, downward flow, marker or external visual-position input was used
+for flight control.
+
 ## Remaining limitations
 
 - The V4L2 adapter exists, but it still needs validation on the chosen hardware.

@@ -78,9 +78,10 @@ the separate web-control session from the ARGOS repository root:
   --gazebo-dir ../ardupilot_gazebo
 ```
 
-Open **http://127.0.0.1:8081** and choose **Pilotage**. Take control, prepare
-AltHold, arm, then hold **Monter** (climb) to take off. All movement buttons work
-by holding them with a mouse or finger; touch supports simultaneous axes.
+Open **http://127.0.0.1:8081** and choose **Pilotage**. Take control, select
+AltHold or Stabilize on the ground, prepare and arm. AltHold uses held
+climb/descent buttons; Stabilize uses a slider and +/− buttons for manual
+throttle. Direction buttons work while held; touch supports simultaneous axes.
 Keyboard shortcuts are optional. The [web-control guide](docs/web-control.md)
 explains the flight sequence, input release, GPS-free profile and current limits.
 
