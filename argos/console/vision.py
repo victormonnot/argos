@@ -27,15 +27,20 @@ INFERENCE_TIMEOUT = 5.
 
 def _worker(model_path, incoming, outgoing, variant="tiny", threads=2):
     try:
+        from argos.perception.appearance import AppearanceEncoder
         from argos.perception.yolox import YoloXPersonDetector
         detector = YoloXPersonDetector(model_path, variant=variant, threads=threads)
+        encoder = AppearanceEncoder()
         outgoing.put(("ready", None))
         while True:
             job = incoming.get()
             if job is None:
                 return
             identifier, jpeg = job
-            outgoing.put(("result", (identifier, detector.detect(jpeg))))
+            result = detector.detect(jpeg)
+            appearances = encoder.encode(jpeg, result["detections"],
+                                         width=result["width"], height=result["height"])
+            outgoing.put(("result", (identifier, result, appearances)))
     except Exception as exc:
         outgoing.put(("error", f"Vision unavailable: {type(exc).__name__}: {exc}"[:400]))
 
@@ -71,6 +76,7 @@ class VisionService:
         self._last_sequence = None
         self._identifier = self._processed = 0
         self._tracker = ImageTracker()
+        self._tracker_dimensions = None
         self._selection_history = deque(maxlen=4)
 
     def start(self):
@@ -90,6 +96,7 @@ class VisionService:
         self._error = str(detail)[:400]
         self._pending = self._frame = None
         self._tracker.reset()
+        self._tracker_dimensions = None
         try:
             if self._process is not None and self._process.is_alive():
                 self._process.terminate()
@@ -107,6 +114,7 @@ class VisionService:
             self._frame = None
             self._last_sequence = None
             self._tracker.reset()
+            self._tracker_dimensions = None
             self._selection_history.clear()
             self._processed = 0
             # Leave the one outstanding job alone until it returns or times out.
@@ -136,7 +144,10 @@ class VisionService:
         if kind == "ready":
             self._ready = True
         elif kind == "result" and self._pending is not None:
-            identifier, result = value
+            identifier, result, appearances = value
+            if type(identifier) is not int or identifier <= 0:
+                self._fail("Invalid vision result: invalid job identifier")
+                return
             pending_id, candidate = self._pending
             if identifier == pending_id:
                 self._pending = None
@@ -145,7 +156,15 @@ class VisionService:
                         and session.video.latest(now) is not None):
                     try:
                         result = self._validate_result(result)
-                        result["detections"] = self._tracker.update(result["detections"], candidate.sample.received_at)
+                        if not isinstance(appearances, list) or len(appearances) != len(result["detections"]):
+                            raise ValueError("appearance list must align with current detections")
+                        dimensions = result["width"], result["height"]
+                        if dimensions != self._tracker_dimensions:
+                            self._tracker.reset()
+                            self._selection_history.clear()
+                        result["detections"] = self._tracker.update(result["detections"],
+                            candidate.sample.received_at, appearances=appearances)
+                        self._tracker_dimensions = dimensions
                     except (TypeError, ValueError, KeyError) as exc:
                         self._fail(f"Invalid vision result: {exc}")
                         return

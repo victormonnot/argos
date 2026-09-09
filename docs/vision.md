@@ -8,10 +8,12 @@ model. Turning the switch off restores the normal camera stream.
 Detection alone supplies visual observations. The separately enabled
 [visual framing controller](framing.md) can use an explicitly selected detection
 for centering and apparent-size assistance in AltHold. Neither feature holds
-position or estimates distance in metres. Track IDs associate nearby overlapping detections;
-they do not identify a person or provide appearance-based re-identification.
-After occlusion, fast motion or a scene/source change, an ID may change. Similar
-people crossing may exchange IDs. Missing detections produce no predicted boxes.
+position or estimates distance in metres. Short-lived track IDs combine box
+geometry with compact appearance evidence from the analyzed image. They are not
+persistent human identities or long-term re-identification. After occlusion,
+fast motion or a scene/source change, an ID may change. Similar people crossing
+or missing detections can still cause an identity swap. Missing detections
+produce no predicted boxes.
 
 ## Prepare the optional model and scene
 
@@ -117,20 +119,59 @@ Changing model size requires the matching export; the existing Tiny file is not
 treated as a dynamic-resolution model. Person confidence
 is objectness multiplied by the person-class probability, with a 0.35 threshold
 and 0.45 nonmaximum-suppression threshold. At most 16 detections are retained.
-Image-space association first uses one-to-one overlap matching, with a 0.7-second
-memory limit. A conservative fallback associates mutually unambiguous boxes
-across at most 0.35 seconds of lateral motion, bounded by center displacement
-and body-box size changes. This reduces ID changes when a narrow person moves
-farther than the overlap gate allows between analyses. Neither method predicts
-boxes for missing detections. Association consumes image boxes and camera
-reception times only.
+Image-space association retains its 0.7-second detection-memory limit.
+Detections at or above 0.5 confidence establish tracks. Established tracks and
+current strong detections compete first, so a new weak nested box cannot displace
+the established target. New weaker measurements receive display IDs without
+entering persistent association memory. A weak continuation may retain an
+established ID only through mutually unique ordinary geometry. Neither a weak
+measurement nor a strong measurement without a descriptor replaces or refreshes
+the last valid strong appearance reference. Every measured detection remains
+visible with its original box and confidence; this ordering does not suppress
+a possible second person.
+
+Ordinary overlap or nearby-box matching requires a mutually unique geometric
+correspondence. If valid recent appearance descriptors disagree strongly,
+similarity below 0.75 vetoes that edge before assignment. Ambiguous geometric
+components are refused. An additional motion-bounded correspondence requires at
+least 0.95 appearance similarity, a 0.08 mutual-best margin and at most 0.35 seconds
+between images, together with center-displacement and body-size checks. The old
+track must have appeared in the immediately preceding accepted analyzed image;
+this additional match cannot bridge an empty observation.
+
+A strong appearance reference older than 0.35 seconds is unavailable for both the
+contradiction veto and the additional correspondence. Very small, clipped or
+uninformative crops can legitimately supply no descriptor. In those cases only
+mutually unique ordinary geometry remains available within its own gates; no
+expanded match is permitted. An absent person, an old image or a changed source
+does not justify selecting the nearest person.
+
+The 208-value descriptor summarizes weighted color, brightness and gradient
+histograms over four vertical crop bands. Background and central-crop weights
+reduce some clutter; they do not segment the person. The score is appearance
+evidence, not a calibrated probability of identity. Unique geometric matches
+can still confuse people when other detections are missing, even with the
+appearance veto. See the [recorded comparisons and remaining errors](validation.md#bounded-ambiguity-pause-and-appearance-association--september-9-2026).
+No association path predicts boxes or uses vehicle pose, known body dimensions
+or simulator identity. The current measured image remains the observation.
 
 A separate spawned process loads the model and performs at most five analyses
 per second. Only one image can be awaiting inference, so intermediate camera
 frames are skipped instead of building latency. The process receives JPEG bytes;
 it has no MAVLink transport, vehicle pose, actor pose, depth or simulator labels.
-A startup failure, crash or five-second inference timeout disables vision and
-clears its results. Restart the console to retry; flight-control servicing has
+The same worker computes appearance descriptors statelessly from that exact
+JPEG and its detections, using the existing OpenCV/NumPy runtime. Descriptors
+are returned with the matching job result. The parent validates their fixed
+size, finite bounded values and normalization, and stores them only when the
+matching image is accepted. Source, sequence and receipt-time checks reject
+outstanding stale results; worker history cannot become the parent’s accepted
+image history. A change in image dimensions clears associations and selection
+history, as a run or camera change does. Individual missing descriptors are
+explicit entries in an aligned list; a malformed or missing list is an error,
+not permission to fall back silently. Descriptors and raw crops are not added
+to public API state.
+A startup failure, worker/encoder error, malformed result or five-second inference
+timeout disables vision and clears its results. Restart the console to retry; flight-control servicing has
 its own existing lifecycle and continues independently of vision.
 
 Vision status reports the configured model label, variant, input size and

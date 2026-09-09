@@ -76,10 +76,12 @@ def ready(vision, session):
     return vision._incoming.get_nowait()
 
 
-def complete(vision, session, identifier, *, detections=None):
-    result = {"width": 640, "height": 480, "inference_ms": 45.,
+def complete(vision, session, identifier, *, detections=None, appearances=None, width=640, height=480):
+    result = {"width": width, "height": height, "inference_ms": 45.,
               "detections": detections if detections is not None else [{"box": [.2, .3, .1, .4], "confidence": .8}]}
-    vision._outgoing.put_nowait(("result", (identifier, result)))
+    if appearances is None:
+        appearances = [None] * len(result["detections"])
+    vision._outgoing.put_nowait(("result", (identifier, result, appearances)))
     vision.tick(session)
 
 
@@ -205,7 +207,7 @@ def test_http_pairs_boxes_and_jpeg_and_removes_them_on_context_change(runtime):
     from argos.console.session import ConsoleSession
     now, source, vision = runtime
     identifier, _ = ready(vision, source)
-    complete(vision, source, identifier)
+    complete(vision, source, identifier, appearances=[descriptor()])
     session = ConsoleSession(ConsoleConfig(), clock=lambda: now[0])
     session.run_id, session.video_source_id = source.run_id, source.video_source_id
     session.video = source.video
@@ -216,7 +218,10 @@ def test_http_pairs_boxes_and_jpeg_and_removes_them_on_context_change(runtime):
     assert response.headers["x-frame-sequence"] == "1"
     assert response.headers["x-frame-received-at"] == "0.0"
     import json
-    assert json.loads(response.headers["x-vision-result"])["detections"][0]["box"] == [.2, .3, .1, .4]
+    metadata = json.loads(response.headers["x-vision-result"])
+    assert set(metadata) == {"width", "height", "inference_ms", "detections"}
+    assert set(metadata["detections"][0]) == {"box", "confidence", "track_id"}
+    assert metadata["detections"][0]["box"] == [.2, .3, .1, .4]
     session.video_source_id = "replacement"
     assert client.get("/api/vision/frame.jpg").status_code == 503
     client.close()
@@ -239,7 +244,7 @@ def test_queue_failure_is_contained_at_optional_vision_boundary(runtime):
 def test_invalid_worker_result_cannot_break_state_serialization(runtime, bad):
     _, session, vision = runtime
     identifier, _ = ready(vision, session)
-    vision._outgoing.put_nowait(("result", (identifier, bad)))
+    vision._outgoing.put_nowait(("result", (identifier, bad, [])))
     vision.tick(session)
     assert vision.frame(session) is None
     assert vision.state(session)["state"] == "error"
@@ -273,16 +278,148 @@ def test_selected_model_variant_reaches_process_worker_and_status(runtime):
 
 
 def test_worker_constructs_only_the_explicit_variant(monkeypatch):
-    from argos.perception import yolox
+    from argos.perception import appearance, yolox
     from argos.console.vision import _worker
     seen = []
     monkeypatch.setattr(yolox, "YoloXPersonDetector",
                         lambda path, *, variant, threads: seen.append((path, variant, threads)))
+    monkeypatch.setattr(appearance, "AppearanceEncoder", lambda: object())
     incoming, outgoing = Queue(), Queue()
     incoming.put(None)
     _worker("chosen.onnx", incoming, outgoing, "s", 4)
     assert seen == [("chosen.onnx", "s", 4)]
     assert outgoing.get_nowait() == ("ready", None)
+
+
+def descriptor(index=0):
+    return tuple(float(i == index) for i in range(208))
+
+
+def narrow_person(x):
+    return {"box": [x, .3, .04, .2], "confidence": .8}
+
+
+def next_job(runtime, stamp):
+    now, session, vision = runtime
+    now[0] = stamp
+    session.video.sample = VideoSample(b"next", session.video.sample.sequence + 1, stamp)
+    vision.tick(session)
+    return vision._incoming.get_nowait()[0]
+
+
+def test_only_matching_accepted_job_can_supply_appearance(runtime):
+    _, session, vision = runtime
+    identifier, _ = ready(vision, session)
+    complete(vision, session, identifier, detections=[narrow_person(.3)], appearances=[descriptor()])
+    original = vision.frame(session).result["detections"][0]["track_id"]
+    identifier = next_job(runtime, .25)
+    # A mismatched job with contradictory appearance cannot poison the reference.
+    complete(vision, session, identifier + 100, detections=[narrow_person(.39)], appearances=[descriptor(1)])
+    assert vision.frame(session).sample.sequence == 1
+    assert vision._pending is not None
+    complete(vision, session, identifier, detections=[narrow_person(.39)], appearances=[descriptor()])
+    frame = vision.frame(session)
+    assert frame.result["detections"] == [{**narrow_person(.39), "track_id": original}]
+    assert set(frame.result) == {"width", "height", "inference_ms", "detections"}
+    assert set(frame.result["detections"][0]) == {"box", "confidence", "track_id"}
+
+
+def test_rejected_stale_result_cannot_refresh_appearance_or_identity(runtime):
+    now, session, vision = runtime
+    identifier, _ = ready(vision, session)
+    complete(vision, session, identifier, detections=[narrow_person(.3)], appearances=[descriptor()])
+    original = vision.frame(session).result["detections"][0]["track_id"]
+    identifier = next_job(runtime, .25)
+    now[0] = 1.3
+    session.video.sample = VideoSample(b"fresh", 3, 1.3)
+    complete(vision, session, identifier, detections=[narrow_person(.39)], appearances=[descriptor()])
+    assert vision.frame(session) is None
+    assert vision._processed == 1
+    fresh_id, _ = vision._incoming.get_nowait()
+    complete(vision, session, fresh_id, detections=[narrow_person(.39)], appearances=[descriptor()])
+    assert vision.frame(session).result["detections"][0]["track_id"] != original
+
+
+@pytest.mark.parametrize("change", ["run", "source", "dimensions"])
+def test_appearance_identity_and_selection_do_not_cross_context_change(runtime, change):
+    _, session, vision = runtime
+    identifier, _ = ready(vision, session)
+    complete(vision, session, identifier, detections=[narrow_person(.3)], appearances=[descriptor()])
+    original = vision.frame(session).result["detections"][0]["track_id"]
+    if change == "run":
+        session.run_id = "replacement"
+    elif change == "source":
+        session.video_source_id = "replacement"
+    identifier = next_job(runtime, .25)
+    complete(vision, session, identifier, detections=[narrow_person(.3)], appearances=[descriptor()],
+             width=800 if change == "dimensions" else 640)
+    frame = vision.frame(session)
+    assert frame.result["detections"][0]["track_id"] != original
+    assert len(vision._selection_history) == 1
+    assert all(original not in entry[3] for entry in vision._selection_history)
+
+
+@pytest.mark.parametrize("bad", [[], [None, None], [[0.] * 208], [[float("nan")] * 208],
+                                 [[1.] * 209], ["invalid"]])
+def test_malformed_appearance_is_contained_at_optional_vision_boundary(runtime, bad):
+    _, session, vision = runtime
+    identifier, _ = ready(vision, session)
+    complete(vision, session, identifier, appearances=bad)
+    assert vision.frame(session) is None
+    assert vision.state(session)["state"] == "error"
+    assert vision._process.terminated
+    vision.tick(session)  # no repeated exception escapes to flight servicing
+
+
+def test_worker_pairs_current_jpeg_boxes_dimensions_and_private_descriptor(monkeypatch):
+    from argos.perception import appearance, yolox
+    from argos.console.vision import _worker
+    observed = []
+    result = {"width": 640, "height": 480, "inference_ms": 1., "detections": [narrow_person(.3)]}
+    class Detector:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def detect(self, jpeg):
+            observed.append(("detect", jpeg))
+            return result
+
+    class Encoder:
+        def encode(self, jpeg, detections, *, width, height):
+            observed.append(("encode", jpeg, detections, width, height))
+            return [descriptor()]
+
+    monkeypatch.setattr(yolox, "YoloXPersonDetector", Detector)
+    monkeypatch.setattr(appearance, "AppearanceEncoder", Encoder)
+    incoming, outgoing = Queue(), Queue()
+    incoming.put((17, b"exact camera image"))
+    incoming.put(None)
+    _worker("model.onnx", incoming, outgoing)
+    assert outgoing.get_nowait() == ("ready", None)
+    assert outgoing.get_nowait() == ("result", (17, result, [descriptor()]))
+    assert observed == [("detect", b"exact camera image"),
+                        ("encode", b"exact camera image", result["detections"], 640, 480)]
+
+
+@pytest.mark.parametrize("bad_identifier", [True, 1., 0, -1, "1"])
+def test_worker_job_identifier_requires_exact_positive_integer(runtime, bad_identifier):
+    _, session, vision = runtime
+    identifier, _ = ready(vision, session)
+    assert identifier == 1
+    complete(vision, session, bad_identifier)
+    assert vision.frame(session) is None
+    assert vision._processed == 0
+    assert "invalid job identifier" in vision.state(session)["detail"]
+
+
+def test_missing_worker_appearance_list_is_not_a_valid_no_descriptor_reply(runtime):
+    _, session, vision = runtime
+    identifier, _ = ready(vision, session)
+    result = {"width": 640, "height": 480, "inference_ms": 1., "detections": [narrow_person(.3)]}
+    vision._outgoing.put_nowait(("result", (identifier, result, None)))
+    vision.tick(session)
+    assert vision.frame(session) is None
+    assert "appearance list" in vision.state(session)["detail"]
 
 
 def test_model_variant_survives_source_changes_and_reaches_app(tmp_path):

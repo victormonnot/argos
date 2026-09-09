@@ -36,8 +36,7 @@ def test_each_track_can_match_only_one_detection():
     tracker = ImageTracker()
     old_id = tracker.update([person()], 1)[0]["track_id"]
     result = tracker.update([person(.11), person(.12)], 1.1)
-    assert result[0]["track_id"] == old_id
-    assert result[1]["track_id"] != old_id
+    assert all(item["track_id"] != old_id for item in result)
     assert len({item["track_id"] for item in result}) == 2
 
 
@@ -126,3 +125,154 @@ def test_association_memory_stays_bounded_when_new_people_replace_previous_ones(
                       for index in range(16)]
         tracker.update(detections, frame / 10)
         assert len(tracker._tracks) <= 16
+
+
+def appearance(score=1., basis=0):
+    values = [0.] * 208
+    values[basis] = score
+    values[basis + 1] = (1 - score ** 2) ** .5
+    return values
+
+
+def narrow(x=.3, confidence=.8):
+    return person(x, .3, .04, .2, confidence)
+
+
+def test_appearance_can_associate_bounded_yaw_displacement_without_changing_measurement():
+    tracker = ImageTracker()
+    old = tracker.update([narrow()], 1, appearances=[appearance()])[0]
+    measured = narrow(.4, .72)
+    result = tracker.update([measured], 1.2, appearances=[appearance(.98)])
+    assert result == [{**measured, "track_id": old["track_id"]}]
+
+
+@pytest.mark.parametrize("box,stamp,descriptor", [
+    (narrow(.4), 1.2, appearance(.94)),
+    (narrow(.45), 1.2, appearance()),  # Larger than the bounded motion gate.
+    (person(.4, .4, .04, .2), 1.2, appearance()),
+    (person(.4, .3, .04, .4), 1.2, appearance()),
+    (narrow(.4), 1.36, appearance()),
+    (narrow(.4), 1.2, None),
+    (narrow(.4, .4), 1.2, appearance()),  # Weak boxes get no expanded match.
+])
+def test_expanded_association_refuses_weak_evidence_or_excess_motion(box, stamp, descriptor):
+    tracker = ImageTracker()
+    old = tracker.update([narrow()], 1, appearances=[appearance()])[0]["track_id"]
+    assert tracker.update([box], stamp, appearances=[descriptor])[0]["track_id"] != old
+
+
+def test_expanded_appearance_needs_margin_against_competing_current_boxes():
+    tracker = ImageTracker()
+    old = tracker.update([narrow()], 1, appearances=[appearance()])[0]["track_id"]
+    result = tracker.update([narrow(.39), narrow(.41)], 1.2,
+                            appearances=[appearance(.99), appearance(.94)])
+    assert all(item["track_id"] != old for item in result)
+
+
+def test_expanded_appearance_needs_margin_against_competing_old_tracks():
+    tracker = ImageTracker()
+    old = tracker.update([narrow(.2), narrow(.4)], 1,
+                         appearances=[appearance(), appearance(.99)])
+    result = tracker.update([narrow(.3)], 1.2, appearances=[appearance()])
+    assert result[0]["track_id"] not in {item["track_id"] for item in old}
+
+
+def test_unique_geometry_accepts_moderate_appearance_but_vetoes_gross_contradiction():
+    for score, retains in [(.9, True), (.7, False)]:
+        tracker = ImageTracker()
+        old = tracker.update([person()], 1, appearances=[appearance()])[0]["track_id"]
+        result = tracker.update([person(.11)], 1.2, appearances=[appearance(score)])
+        assert (result[0]["track_id"] == old) is retains
+
+
+def test_ambiguous_geometry_cannot_be_rescued_by_the_expanded_fallback():
+    tracker = ImageTracker()
+    old = tracker.update([person()], 1, appearances=[appearance()])[0]["track_id"]
+    result = tracker.update([person(.11), person(.12)], 1.2,
+                            appearances=[appearance(), appearance(.8)])
+    assert all(item["track_id"] != old for item in result)
+
+
+def test_individually_missing_appearance_allows_only_unique_geometry():
+    tracker = ImageTracker()
+    old = tracker.update([narrow()], 1, appearances=[appearance()])[0]["track_id"]
+    assert tracker.update([narrow(.31)], 1.2, appearances=[None])[0]["track_id"] == old
+    assert tracker._tracks[old].appearance_at == 1
+    assert tracker.update([narrow(.41)], 1.3, appearances=[None])[0]["track_id"] != old
+
+
+@pytest.mark.parametrize("weak,descriptor", [(True, appearance()), (False, None)])
+def test_weak_or_missing_evidence_cannot_extend_strong_appearance_lifetime(weak, descriptor):
+    tracker = ImageTracker()
+    old = tracker.update([narrow()], 1, appearances=[appearance()])[0]["track_id"]
+    observed = narrow(.31, .4 if weak else .8)
+    assert tracker.update([observed], 1.2, appearances=[descriptor])[0]["track_id"] == old
+    assert tracker._tracks[old].appearance_at == 1
+    assert tracker.update([narrow(.41)], 1.4, appearances=[appearance()])[0]["track_id"] != old
+
+
+def test_stale_appearance_is_unavailable_to_veto_ordinary_geometry():
+    tracker = ImageTracker()
+    old = tracker.update([person()], 1, appearances=[appearance()])[0]["track_id"]
+    result = tracker.update([person(.11)], 1.4, appearances=[appearance(0.)])
+    assert result[0]["track_id"] == old
+
+
+def test_expanded_matching_does_not_bridge_an_empty_accepted_frame():
+    tracker = ImageTracker()
+    old = tracker.update([narrow()], 1, appearances=[appearance()])[0]["track_id"]
+    assert tracker.update([], 1.1, appearances=[]) == []
+    assert tracker.update([narrow(.4)], 1.2, appearances=[appearance()])[0]["track_id"] != old
+
+
+def test_appearance_does_not_extend_detection_ttl_or_emit_prediction():
+    tracker = ImageTracker()
+    old = tracker.update([person()], 1, appearances=[appearance()])[0]["track_id"]
+    assert tracker.update([], 1.6, appearances=[]) == []
+    assert tracker.update([person()], 1.71, appearances=[appearance()])[0]["track_id"] != old
+
+
+def test_new_weak_nested_box_cannot_steal_a_strong_established_id():
+    tracker = ImageTracker()
+    old = tracker.update([person()], 1, appearances=[appearance()])[0]["track_id"]
+    result = tracker.update([person(.11, confidence=.4), person(.12)], 1.2,
+                            appearances=[appearance(), appearance()])
+    weak_id = result[0]["track_id"]
+    assert result[1]["track_id"] == old
+    assert weak_id != old and weak_id not in tracker._tracks
+    assert tracker.update([person(.13)], 1.3, appearances=[appearance()])[0]["track_id"] == old
+
+
+def test_new_weak_boxes_are_visible_without_establishing_persistent_memory():
+    tracker = ImageTracker()
+    first = tracker.update([person(confidence=.4)], 1, appearances=[appearance()])
+    second = tracker.update([person(confidence=.4)], 1.2, appearances=[appearance()])
+    assert len(first) == len(second) == 1
+    assert first[0]["track_id"] != second[0]["track_id"]
+    assert tracker._tracks == {}
+
+
+@pytest.mark.parametrize("bad", [None, [], [appearance(), None], [[0.] * 208],
+                                      [[float("nan")] * 208], [[True] + [0.] * 207]])
+def test_bad_appearance_metadata_is_atomic(bad):
+    tracker = ImageTracker()
+    old = tracker.update([narrow()], 1, appearances=[appearance()])[0]["track_id"]
+    with pytest.raises(ValueError):
+        tracker.update([narrow(.4)], 1.2, appearances=bad)
+    assert tracker._last_at == 1
+    assert tracker.update([narrow(.4)], 1.2, appearances=[appearance()])[0]["track_id"] == old
+
+
+def test_input_descriptor_mutation_does_not_rewrite_the_reference():
+    tracker = ImageTracker()
+    descriptor = appearance()
+    old = tracker.update([narrow()], 1, appearances=[descriptor])[0]["track_id"]
+    descriptor[0], descriptor[1] = 0., 1.
+    assert tracker.update([narrow(.4)], 1.2, appearances=[appearance()])[0]["track_id"] == old
+
+
+def test_reset_discards_appearance_history_and_metadata_opt_in():
+    tracker = ImageTracker()
+    old = tracker.update([narrow()], 99, appearances=[appearance()])[0]["track_id"]
+    tracker.reset()
+    assert tracker.update([narrow()], 0)[0]["track_id"] != old

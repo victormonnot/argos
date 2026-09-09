@@ -568,3 +568,210 @@ simulation host and **25 browser vision tests** passed on macOS Chromium. They
 cover model integrity and geometry, option forwarding, worker/source lifecycle,
 framing integration, optional status rendering and startup manifests. These
 focused checks are not a new repository-wide validation claim.
+
+
+## Bounded ambiguity pause and appearance association — September 9, 2026
+
+This later change addresses a transient weak contained measurement separately
+from image-ID continuity. The earlier trial results above remain historical
+evidence; a successful replay does not replace a new flight.
+
+### Ambiguity replay and nominal live flight
+
+The checked-in [overlap fixture](../examples/data/framing_overlap/README.md)
+contains seven original analyzed-image metadata entries around the previously
+reported nested boxes. Selected track 1 had confidence 0.834; the smaller track 2
+had confidence 0.357. Both measurements are preserved. Visual inspection of the
+separately retained image found one visible person, but containment and confidence
+cannot establish that an extra box is a duplicate: a real occluded second person
+could produce similar geometry.
+
+The implemented policy permits the existing **600 ms neutral pause** only when
+an already active selected target remains strong and one weaker measurement is
+fully contained within it. It requires **two distinct fresh sole-target images**
+with the same selected ID before resuming, inside the original deadline. It does
+not weaken the 0.5 framing confidence, 450 ms image freshness, geometry, vehicle,
+manual-authority or two-second takeover checks. An unsafe observation still
+latches takeover; a bad image during confirmation resets the count without
+renewing time. Initial engagement still requires one suitable visible person.
+
+At the recorded poll times, the baseline latched takeover on image 3069. The
+candidate paused with zero framing outputs for **402.036 ms**, then resumed after
+the two following sole-target images. This metadata replay reruns neither the
+model nor association. Its maximum poll interval was 53.304 ms. Later images
+were captured under the original flight’s actual Manual/Land commands, so their
+replay cannot establish that a different closed-loop camera path would succeed.
+
+A subsequent actual browser flight with YOLOX-S and four CPU threads completed
+**90.004 seconds of DOM-observed active framing** after an eight-second manual
+climb. Adjacent server samples bound active duration to **90.121–90.221 seconds**.
+The active capture contains 1,798 state samples and 439 analyzed images, all with
+the same sole track ID: no sampled pause, empty image, extra detection or takeover.
+Manual, Land, confirmed disarming and release completed afterward. This is a
+nominal continuity check; **no live ambiguity recovery occurred in that trial**.
+The unchanged simulation profile remained GPS-free. It does not establish
+position hold, metric distance, precise centering or physical-flight readiness.
+
+Independent review checked absolute-deadline precedence, frozen first-bad evidence,
+two fresh confirmations, neutral outputs and manual cancellation. At this stage,
+205 focused Python tests, 306 combined Python checks and 27 Chromium browser
+tests passed. These counts precede the integrated appearance tracker below and
+do not describe a new full-repository run.
+
+### Pairwise real-person association comparisons
+
+A private evaluation used original frames from the official OpenCV
+[`vtest.avi` sample](https://github.com/opencv/opencv/blob/49486f61fb25722cbcf586b7f4320921d46fb38e/samples/data/vtest.avi),
+with approximate manually drawn person boxes and anonymous temporal labels.
+Three development encounters include similarly dressed people, real crossings
+and overlap; a separate later encounter includes all seven visible people.
+Consecutive evaluation images retain their actual 0.2-second spacing. This tests
+association with supplied boxes, **not detector accuracy**. Source media and
+extracted images are not redistributed, and these private image comparisons
+are not a clone-runnable benchmark.
+
+The candidate retains mutually unique ordinary geometry, rejects strongly
+contradictory appearance below 0.75 and refuses ambiguous geometric components.
+Additional motion-bounded matches require similarity at least 0.95, a 0.08
+mutual-best margin and a gap no longer than 0.35 seconds. The integrated policy
+also requires presence in the immediately preceding accepted analyzed image and
+a strong appearance reference no older than 0.35 seconds. Expired appearance is
+unavailable for the contradiction veto as well; unique ordinary geometry may
+still operate within its own lifetime. These thresholds were fixed before the
+held-out encounter was evaluated and were not adjusted afterward.
+The OpenCV implementation reproduced the Pillow prototype’s association outcomes
+with those unchanged thresholds; individual floating-point scores differ.
+
+| Pairwise adjacent association inputs | Genuine opportunities | Baseline correct / wrong | Candidate correct / wrong | Candidate refusals |
+| --- | ---: | ---: | ---: | ---: |
+| Development encounters | 25 | 25 / 0 | 17 / 0 | 8 |
+| Held-out encounter | 21 | 19 / 2 | 21 / 0 | 0 |
+
+The stricter candidate refused eight genuine development continuations, while
+removing two actual swaps made by the baseline’s greedy geometry in the held-out
+encounter. All 126 held-out different-person crop comparisons were retained,
+including distant similarly dressed people before geometric filtering. Their
+maximum OpenCV similarity was **0.858288**. These scores do not establish an
+upper bound for other people or scenes. The holdout shares the same clip and
+camera and may contain previously seen people; it is a separate encounter, not
+independent-world validation.
+
+Counterfactual omission tests removed competing detections while preserving real
+pixels and timestamps. With all old tracks but only one current detection,
+baseline wrong assignments were 1 of 25 development cases and 2 of 21 held-out
+cases; the candidate had none. With omissions in both frames leaving only an old
+query and a wrong current candidate, **four of 40 development cases still matched
+the wrong person** (baseline: 10 of 40). All four remaining errors used inherited
+unique geometry; no error came from the added appearance correspondence in this
+bounded sample. Held-out double-omission cases had zero candidate errors versus
+six baseline errors in ten eligible cases. These manipulations model missing
+detections; they do not claim natural disappearance or measure detector recall.
+
+The same fixed OpenCV appearance branch accepted all four previously recorded
+high-confidence manual-yaw ID-break pairs, while actual absence, clipped return,
+competing duplicate candidates, an old gap and a source change remained refused.
+Those are offline pairwise checks, not an alternative successful flight.
+Together, the evidence supports a bounded experimental improvement, with known
+refusals and remaining substitution risk. It does not establish persistent human
+identity or reliable following through arbitrary crossings and occlusions.
+
+### Sequential production-tracker replay
+
+A separate replay ran the implemented `ImageTracker` with persistent history
+through each original sequence. Each sequence started with an empty tracker;
+within it, every accepted observation updated the same tracker. The original
+pixels and receipt times were preserved. Real-video boxes were manually
+annotated and supplied as strong measurements using adapter confidence 1.0;
+that value is **not a detector score**. The saved yaw sequence instead used its
+actual detector boxes and confidences. No model inference, flight commands or
+simulator identity entered this replay, and thresholds were not retuned.
+
+The six visible-person observations spanning the four known yaw breaks retained
+**one ID and all five continuations**, compared with five IDs and one continuation
+for the baseline. Subsequent offscreen observations still returned no boxes;
+the later visible return received a new ID. This demonstrates short-gap continuity
+on those recorded images, not reacquisition of a persistent human identity.
+
+| Sequential production replay | Continuation opportunities | Baseline correct / wrong historical ID | Candidate correct / wrong historical ID | Candidate ID breaks |
+| --- | ---: | ---: | ---: | ---: |
+| Development encounters | 25 | 25 / 0 | 14 / 0 | 11 |
+| Held-out encounter | 21 | 17 / 4 | 21 / 0 | 0 |
+
+Persistent ambiguous history caused three more refusals than the pairwise
+candidate, giving **11 development ID breaks instead of eight**. A refusal creates
+a new displayed ID; it can interrupt framing and must not be described as correct
+identity continuity. In the held-out baseline, the two swapped IDs persisted into
+the next frame, producing four assignments to the wrong historical identity
+rather than the pairwise table’s two wrong edges. The candidate kept all 21
+continuations in that encounter. This stricter behavior still does not remove
+the four inherited-geometry errors demonstrated by the separate omission stress
+tests, nor the shared-camera and manually annotated-data limitations.
+
+A warm encoder timing check included JPEG decoding and descriptor calculation,
+with OpenCV limited to two CPU threads and no detector inference. Six actual
+one-person images repeated five times gave **1.82 ms median / 2.52 ms p95** across
+30 calls. Ten synthetic maximum-count calls, repeating one real box 16 times,
+gave **15.07 / 18.45 ms**. The latter is a bounded-load probe, not a real
+16-person scene or flight measurement. The p95 uses sorted sample index
+`floor(0.95 × (n − 1))`. These observations exclude DNN inference, worker IPC and
+publication; they are not end-to-end latency bounds or platform guarantees.
+
+### Integrated automated checks
+
+The complete Python suite passed **1,707 tests in 17.29 seconds, with zero
+skipped tests**, on the simulation host. Earlier focused runs passed 53 vision
+service tests and 109 service/model checks; those overlap the full suite and
+are not additional independent counts. Coverage includes descriptor validation,
+strong/weak priority, ambiguity refusal, freshness and accepted-image history,
+exact current-box preservation, worker job/source/dimension fencing, optional
+failure containment and control integration.
+
+The same framing/UI version also passed **27 Chromium framing tests**. These
+browser checks use test responses and do not execute the live detector worker;
+they remain separate from the production-tracker replay and actual simulator
+trials. Automated success does not establish continuous identity tracking or
+physical-flight readiness.
+
+### Integrated browser flights
+
+The first integrated run used the shipped browser controls: an eight-second
+manual climb, a 250 ms held yaw button, release/settle, explicit person selection
+and Engage. It failed the requested 90-second observation after **36.526 seconds
+observed in the DOM** because browser inputs expired. The last accepted pilot
+input preceded lease revocation by **673.533 ms**, beyond the unchanged 650 ms
+limit. Land was requested and confirmed; disarming was subsequently observed.
+
+This failure was not attributed to target loss: all 178 analyzed images sampled
+during active framing contained sole track 1, minimum confidence 0.806, with
+maximum sampled frame age 414 ms and no sampled pause. The image immediately
+before revocation still showed the full person. The retained framing-loss field
+was null. Server observation gaps stayed below 63 ms and telemetry/analysis
+continued through the interruption. These observations distinguish the command
+input gap from a detector failure; they do not locate its origin in the browser,
+Mac–PC connection or another part of that path.
+
+A second run on the **unchanged source** added private browser request timing
+instrumentation and completed **90.005 DOM-observed seconds** after the same
+manual climb/yaw/selection sequence. Server samples bound active duration to
+90.053–90.151 seconds. Its 1,797 active state samples and 438 analyzed images
+retained sole track 1, with no sampled empty/multiple detection, latched pause or
+takeover. Manual, Land, confirmed disarming and release completed normally.
+
+Sampled image age was median 267 ms, p95 376 ms and maximum 456 ms. The one
+snapshot above 450 ms explicitly reported a stale target and **zero derived
+framing output**; the next sample, 50 ms later, had a new fresh image. Thus this
+trial must not be described as having no stale reads. State sampling is not an
+archive of every command sent on the wire.
+
+All 898 input requests started during the active interval received HTTP 200.
+The maximum observed browser request-start gap was 292 ms; request to response
+event reached 283 ms, with Chromium reporting 299 ms through response completion
+for that exchange. No browser error or failed input request was recorded. These
+repeat measurements did not reproduce or explain the initial 674 ms gap, and
+do not demonstrate a repair of that command-input fault.
+
+The earlier 90-second nominal ambiguity-policy flight preceded the appearance
+tracker and remains separate evidence. Neither nominal success nor the supplied
+box replays establish robust human identity, physical flight or reliable operation
+through a communications interruption. Lease, freshness and takeover deadlines
+were not relaxed for these trials.
