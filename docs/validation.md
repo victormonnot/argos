@@ -321,3 +321,79 @@ After deployment, a real-browser ground-only claim/release displayed the server'
 retained interruption in both control panels. Camera, vision and vehicle receipts
 were recent; the vehicle remained disarmed. All eight existing user recordings
 matched their before/after byte sizes and SHA-256 hashes.
+
+### Comparing short detection gaps — September 8, 2026
+
+Two baseline flights reproduced the reported interruption with confidence 0.5
+and a 350 ms neutral pause. The first reached about 88.5 seconds of framing;
+the higher-takeoff attempt stopped after about 3.4 seconds. Recorded image
+metadata identified recoveries on the same ID after about 0.401 and 0.449 seconds.
+Visual inspection found the selected person still present in the failure images.
+
+The offline comparison ran the actual framing lifecycle over the same recorded
+observations for nine combinations: continuation confidence 0.5/0.45/0.4 and
+pause 0.35/0.6/0.8 seconds. Engagement confidence stayed 0.5 in every case.
+
+| Continuation confidence / pause | Short-flight gap | Higher-flight gap |
+| --- | --- | --- |
+| 0.5 / 0.35 s (baseline) | Takeover | Takeover |
+| 0.45 / 0.35 s | Takeover | Takeover |
+| 0.4 / 0.35 s | Recovery | Takeover |
+| 0.5 / 0.6 s (selected) | Recovery | Recovery |
+| 0.5 / 0.8 s | Recovery | Recovery |
+
+The two lowest higher-flight scores were 0.384537 and 0.366753, explaining why
+lowering continuation confidence to 0.4 alone did not resolve that example.
+The selected change therefore keeps confidence at **0.5** and extends only the
+neutral pause to **600 ms**. Staleness remains 450 ms, tracker identity rules are
+unchanged, and the subsequent manual-takeover deadline remains two seconds.
+
+The [recorded fixtures and instructions](../examples/data/framing_dropout/README.md)
+make the comparison reproducible without starting a simulator or sending flight
+commands. These are fixed-path admission replays, not alternative simulated
+flights or detector accuracy benchmarks. Availability timestamps are collector
+observations; measured poll gaps and execution-phase uncertainty remain relevant
+near deadlines. Both fixture windows end at their first recovery before manual
+intervention, and never automatically restart a lost engagement.
+
+In the live candidate's higher-takeoff trial, framing stayed engaged for about
+**63.5 seconds**, including eight recovered neutral pauses. Recorded recovered
+pause durations were about 0.21–0.45 seconds, with approximately 50 ms sampling
+uncertainty. All 66 paused state samples had zero derived axes. A later gap still
+exceeded the 600 ms deadline; the operator script requested Manual/Land and
+confirmed disarming/release. The planned 90-second uninterrupted trial **did not
+pass**. Several empty analyzed images followed the final low-confidence result;
+a new track ID appeared afterwards. Longer pauses do not provide identity
+continuity across that kind of loss.
+
+The candidate's short-takeoff trial also failed its 90-second target: server
+timestamps place engagement at **11.71–11.76 seconds** before takeover. One pause
+recovered on the same ID after about 0.20 seconds; the final sequence contained
+three empty results and then a new ID. All 16 paused state samples had zero
+derived axes. Manual/Land, disarming and release were observed again. Across
+these two candidate trials, all **82 sampled paused states** had neutral axes;
+neither trial completed 90 seconds. Visual inspection of an empty-result image
+from each final gap found the person still present. Detection continuity and
+track identity remain limitations; extending the pause does not repair them.
+
+The live flights started from different vehicle states, so their durations are
+not a controlled speedup or reliability ratio. The paired replay establishes
+recoverable short gaps; the flight establishes actual same-ID recovery while
+commands are neutral. Reliable long-duration following remains unvalidated.
+
+Focused verification passed **319 Python tests** covering framing lifecycle,
+flight control, API ordering, interruption diagnostics, vehicle parameters,
+guidance and the offline evaluator. These checks preserve the fixed pause
+deadline, independent image freshness, manual priority and subsequent two-second
+takeover deadline. This is not a new repository-wide or browser regression run;
+the live trials above exercised the actual browser interface. All eight existing
+user recordings retained identical byte sizes and SHA-256 hashes. Both consoles
+were receiving camera and telemetry; the manual vehicle was left disarmed with
+control released and recording idle.
+
+A later idle check found both simulation feeds stale while host RAM and swap
+were exhausted; the manual Gazebo process had grown to about 8.7 GiB resident
+memory. Restarting only the idle manual simulation restored both feeds and more
+than 8 GiB of available memory. The cause of that memory growth remains
+uninvestigated; long-duration service operation is not established by the short
+flight tests above.

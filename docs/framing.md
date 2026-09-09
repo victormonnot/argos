@@ -55,11 +55,18 @@ control lease as it does during manual flight.
 The controller requires an analyzed image received within **0.45 seconds**.
 An empty detection frame or confidence below 0.5 immediately zeros corrections
 and displays **Framing paused**. Only the same valid target returning within
-**350 ms** can continue the current engagement. The pause deadline starts with
+**600 ms** can continue the current engagement. The pause deadline starts with
 the first unusable detection and cannot be extended by later misses or browser
 traffic. No previous box drives the vehicle during a pause; reference height is
 retained, while command and derivative history are reset. Size adjustments are
-unavailable during the pause.
+unavailable during the pause. The confidence requirement remains 0.5 for both
+engagement and continuation. Fresh analyzed images must keep arriving during this
+interval: the independent 0.45-second image-age check still stops a frozen feed.
+A longer pause never permits using a missing or predicted box for corrections.
+
+The pause was increased from 350 to 600 ms after recorded same-person recovery
+gaps of about 400–450 ms. See [validation](validation.md) for the comparison and
+[offline replay](../examples/replay_framing.py) for a reproducible policy check.
 
 Expiry of that pause, a changed track ID, multiple detected people, clipping,
 unsupported box size, stale image, changed camera context or provider failure

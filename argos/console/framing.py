@@ -13,7 +13,7 @@ from argos.guidance.image_framing import FramingLaw
 
 
 FRAME_MAX_AGE = .45
-DETECTION_PAUSE = .35
+DETECTION_PAUSE = .6
 TAKEOVER_TIMEOUT = 2.
 EDGE_MARGIN = .005
 MIN_CONFIDENCE = .5

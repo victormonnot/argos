@@ -104,7 +104,7 @@ detection boxes to center a person and regulate apparent height. Manual input
 stops assistance. Neutral browser keepalives preserve authority but do not
 overwrite derived axes or acknowledge target loss. An isolated missing or
 low-confidence detection zeros corrections and permits same-ID recovery within
-an absolute 350 ms pause. Expiry or other invalid observations latch a two-second
+an absolute 600 ms pause. Expiry or other invalid observations latch a two-second
 takeover deadline; no manual acknowledgement invokes the existing
 landing/revocation path. Image-provider
 failures cannot terminate manual/control servicing. The

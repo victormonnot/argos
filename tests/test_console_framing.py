@@ -222,24 +222,33 @@ def test_isolated_detection_miss_pauses_with_zero_axes_until_same_id_returns(con
     assert paused["reference_height"] == reference
     assert paused["axes"] == zero() and paused["takeover_remaining_s"] is None
     assert control._law.pauses == 1 and len(control._law.updates) == 1
-    control.observe(observation(10.5, 4, box=(.45, .3, .1, .19)))
-    assert control.axes(10.5) == zero()  # an observation cannot restore old output
+    # Fresh low/empty results may bridge the observed 400 ms detector gap,
+    # without advancing the law or reusing a command while perception is bad.
+    control.observe(observation(10.5, 4, detections=[]))
     control.tick(10.5)
-    recovered = control.state(10.5)
+    control.tick(10.699)
+    assert control.state(10.699)["paused"] and control.axes(10.699) == zero()
+    assert len(control._law.updates) == 1
+    control.observe(observation(10.7, 5, box=(.45, .3, .1, .19)))
+    assert control.axes(10.7) == zero()  # an observation cannot restore old output
+    control.tick(10.7)
+    recovered = control.state(10.7)
     assert recovered["active"] and not recovered["paused"]
     assert recovered["reference_height"] == reference
     assert recovered["height"] == .19 and recovered["target_id"] == 7
-    assert control._law.updates[-1] == ([.45, .3, .1, .19], 10.5)
+    assert control._law.updates[-1] == ([.45, .3, .1, .19], 10.7)
     assert len(control._law.updates) == 2
 
 
-def test_pause_deadline_does_not_move_and_expiry_wins_over_a_good_image(control):
+@pytest.mark.parametrize("change", [{"detections": []}, {"confidence": .49}])
+def test_six_hundred_ms_pause_does_not_extend_and_expiry_wins_over_a_good_image(control, change):
     moving(control)
-    control.observe(observation(10.25, 3, detections=[]))
+    control.observe(observation(10.25, 3, **change))
     control.tick(10.3)  # deadline starts at processing, not the image receipt
     revision = control.revision
-    for sequence, at in enumerate((10.4, 10.5, 10.6), 4):
-        control.observe(observation(at, sequence, detections=[]))
+    deadline = 10.3 + .6  # explicit chosen policy, independent of the implementation constant
+    for sequence, at in enumerate((10.4, 10.5, 10.6, 10.7, 10.8, deadline - .001), 4):
+        control.observe(observation(at, sequence, **change))
         control.tick(at)
         assert control.state(at)["paused"] and control.axes(at) == zero()
         with pytest.raises(RuntimeError, match="paused"):
@@ -247,18 +256,33 @@ def test_pause_deadline_does_not_move_and_expiry_wins_over_a_good_image(control)
         assert control.revision == revision
         assert control.state(at)["reference_height"] == .2
     assert control._law.pauses == 1
-    deadline = 10.3 + DETECTION_PAUSE
-    control.observe(observation(deadline, 7))
+    control.observe(observation(deadline, sequence + 1))
     control.tick(deadline)
     state = control.state(deadline)
     assert state["phase"] == "takeover" and not state["paused"]
     assert state["reference_height"] is None and state["axes"] == zero()
     assert state["takeover_remaining_s"] == 2.
     assert len(control._law.updates) == 1
-    control.observe(observation(deadline + .1, 8))
+    control.observe(observation(deadline + .1, sequence + 2))
     control.tick(deadline + .1)
     assert control.phase == "takeover" and len(control._law.updates) == 1
     assert control.takeover_due(deadline + 2.)
+
+
+def test_frozen_image_stales_before_the_longer_pause_can_resume(control):
+    moving(control)
+    control.observe(observation(10.3, 3, detections=[]))
+    control.tick(10.3)
+    control.tick(10.749)
+    assert control.state(10.749)["paused"]
+    control.tick(10.751)
+    assert control.phase == "takeover"
+    assert "stale" in control.state(10.751)["reason"]
+    assert control.state(10.751)["takeover_remaining_s"] == 2.
+    # Even a good frame inside the 600 ms pause budget cannot undo staleness.
+    control.observe(observation(10.8, 4))
+    control.tick(10.8)
+    assert control.phase == "takeover" and control.axes(10.8) == zero()
 
 
 @pytest.mark.parametrize("frame,reason", [
@@ -538,23 +562,26 @@ def test_pause_expiry_retains_original_failure_image_not_late_recovery(control, 
     assert control.last_loss is None  # a pause alone is not an actual takeover
     control.observe(observation(10.4, 4, **second))
     control.tick(10.4)
+    control.observe(observation(10.6, 5, **second))
+    control.tick(10.6)
     deadline = 10.3 + DETECTION_PAUSE
-    control.observe(observation(deadline - .001, 5))
+    control.observe(observation(deadline - .001, 6))
     control.tick(deadline - .001)
     assert control.phase == "active" and control.last_loss is None
     # Start a second pause and expire it with a good frame arriving exactly at
     # its deadline. Only this actual takeover creates retained loss evidence.
-    bad_frame = observation(10.7, 6, **first)
+    second_started = deadline + .1
+    bad_frame = observation(second_started - .05, 7, **first)
     control.observe(bad_frame)
-    control.tick(10.75)
-    control.observe(observation(10.8, 7, **second))
-    control.tick(10.8)
-    deadline = 10.75 + DETECTION_PAUSE
-    control.observe(observation(deadline, 8))
+    control.tick(second_started)
+    control.observe(observation(second_started + .2, 8, **second))
+    control.tick(second_started + .2)
+    deadline = second_started + DETECTION_PAUSE
+    control.observe(observation(deadline, 9))
     control.tick(deadline)
     loss = control.state(deadline)["last_loss"]
-    assert loss["at"] == deadline and loss["evidence_at"] == 10.75
-    assert loss["sequence"] == 6 and loss["target_id"] == 7
+    assert loss["at"] == deadline and loss["evidence_at"] == second_started
+    assert loss["sequence"] == 7 and loss["target_id"] == 7
     assert loss["frame_age_s"] == pytest.approx(.05)
     assert loss["detections"] == bad_frame["detections"]
     assert reason in loss["reason"] and "framing pause" in loss["reason"]

@@ -11,6 +11,7 @@ pytest.importorskip("pymavlink")
 from fastapi.testclient import TestClient
 from argos.backends.mavlink import SequenceScope
 from argos.console.control import FlightControl
+from argos.console.framing import DETECTION_PAUSE
 from argos.console.config import ConsoleConfig
 from argos.console.session import ConsoleSession
 from argos.console.app import create_app
@@ -372,7 +373,10 @@ def test_frame_provider_failure_keeps_session_control_servicing_alive(flight):
     assert c._token is not None
 
 
-def test_single_detection_dropout_neutralizes_wire_then_resumes_only_same_target(flight):
+@pytest.mark.parametrize("first_bad", [[], [
+    {"track_id": 1, "box": [0.5, 0.3, 0.1, 0.2], "confidence": .4119},
+]])
+def test_four_hundred_ms_detection_gap_neutralizes_wire_then_resumes_only_same_target(flight, first_bad):
     f = flight
     c = f['control']
     f['select']()
@@ -384,7 +388,7 @@ def test_single_detection_dropout_neutralizes_wire_then_resumes_only_same_target
     reference = c.framing.state(.2)['reference_height']
 
     f['now'][0] = .3
-    f['observe'](detections=[])
+    f['observe'](detections=first_bad)
     c.tick(f['link'], .3)
     state = c.framing.state(.3)
     assert state['active'] and state['paused']
@@ -395,12 +399,72 @@ def test_single_detection_dropout_neutralizes_wire_then_resumes_only_same_target
     c.input(f['token'], 2, ZERO, link=f['link'], now=.35)
 
     f['now'][0] = .5
-    f['observe']()
+    f['observe'](detections=[])
     c.tick(f['link'], .5)
-    state = c.framing.state(.5)
+    c.tick(f['link'], .69)
+    wire = f['link'].messages('MANUAL_CONTROL')[-1]
+    assert (wire.x, wire.y, wire.z, wire.r) == (0, 0, 500, 0)
+    assert c.framing.state(.69)['paused']
+    f['now'][0] = .7
+    f['observe'](detections=[{
+        'track_id': 1, 'box': [0.5, 0.3, 0.1, 0.2], 'confidence': .5,
+    }])
+    assert c.framing.axes(.7) == ZERO
+    c.tick(f['link'], .7)
+    state = c.framing.state(.7)
     assert state['active'] and not state['paused']
     assert state['reference_height'] == reference
+    assert state['axes']['yaw'] > 0
+    c.tick(f['link'], .751)  # next ordinary 20 Hz manual-command boundary
     assert f['link'].messages('MANUAL_CONTROL')[-1].r > 0
+
+
+@pytest.mark.parametrize("manual_action", ["direction", "stop"])
+def test_manual_action_wins_during_the_extended_neutral_pause(flight, manual_action):
+    f, c = flight, flight['control']
+    f['select']()
+    f['engage']()
+    f['now'][0] = .3
+    f['observe'](detections=[])
+    c.tick(f['link'], .3)
+    c.input(f['token'], 2, ZERO, link=f['link'], now=.35)
+    f['now'][0] = .5
+    f['observe'](detections=[])
+    c.tick(f['link'], .5)
+    f['now'][0] = .7  # inside the new pause, beyond the old 350 ms window
+    if manual_action == 'direction':
+        c.input(f['token'], 3, {**ZERO, 'yaw': -1}, link=f['link'], now=.7)
+    else:
+        assert f['request']('stop').status_code == 200
+    c.tick(f['link'], .71)
+    assert not c.framing.state(.71)['active']
+    assert not c.framing.state(.71)['paused']
+    assert f['link'].messages('MANUAL_CONTROL')[-1].r == (-300 if manual_action == 'direction' else 0)
+    f['now'][0] = .8
+    f['observe']()
+    c.tick(f['link'], .8)
+    assert not c.framing.state(.8)['active']
+    assert not c.framing.takeover_due(10.)
+    assert not any(msg.command == 176 and msg.param2 == 9
+                   for msg in f['link'].messages('COMMAND_LONG'))
+
+
+def expire_detection_pause(f):
+    """Keep the image and browser alive while the first detection gap expires."""
+    c = f['control']
+    f['now'][0] = .2
+    bad_sequence = f['observe'](detections=[])
+    c.tick(f['link'], .2)
+    for seq, at in enumerate((.3, .5, .7), 2):
+        f['now'][0] = at
+        f['observe'](detections=[])
+        c.input(f['token'], seq, ZERO, link=f['link'], now=at)
+        c.tick(f['link'], at)
+    takeover_at = .2 + DETECTION_PAUSE + .01
+    f['now'][0] = takeover_at
+    f['observe']()  # a late good frame cannot replace first-bad-image evidence
+    c.tick(f['link'], takeover_at)
+    return bad_sequence, takeover_at, seq
 
 
 def test_dropout_deadline_wins_over_late_good_frame_and_keepalives(flight):
@@ -408,22 +472,18 @@ def test_dropout_deadline_wins_over_late_good_frame_and_keepalives(flight):
     c = f['control']
     f['select']()
     f['engage']()
-    f['now'][0] = .2
-    f['observe'](detections=[])
-    c.tick(f['link'], .2)
-    c.input(f['token'], 2, ZERO, link=f['link'], now=.3)
-    f['now'][0] = .56
-    f['observe']()
-    c.tick(f['link'], .56)
+    _, takeover_at, last_seq = expire_detection_pause(f)
     assert c.framing.phase == 'takeover'
-    assert c.framing.axes(.56) == ZERO
-    for seq in range(3, 22):
-        at = .56 + (seq - 2) * .1
+    assert c.framing.axes(takeover_at) == ZERO
+    for offset in range(1, 20):
+        at = takeover_at + offset * .1
         heartbeat(c, at, armed=True)
         simstate(c, at)
         landed(c, at, 2)
-        c.input(f['token'], seq, ZERO, link=f['link'], now=at)
-    c.tick(f['link'], 2.57)
+        c.input(f['token'], last_seq + offset, ZERO, link=f['link'], now=at)
+    c.tick(f['link'], takeover_at + 1.999)
+    assert c.state(takeover_at + 1.999)['owned']
+    c.tick(f['link'], takeover_at + 2.)
     assert c._token is None and c._command['action'] == 'land'
 
 
@@ -432,32 +492,27 @@ def test_late_expired_input_does_not_erase_target_loss_from_http_state(flight):
     c = f['control']
     assert f['select']().status_code == 200
     assert f['engage']().status_code == 200
-    f['now'][0] = .2
-    bad_sequence = f['observe'](detections=[])
-    c.tick(f['link'], .2)
-    c.input(f['token'], 2, ZERO, link=f['link'], now=.3)
-    f['now'][0] = .56
-    f['observe']()  # a late good frame must not replace the failed image evidence
-    c.tick(f['link'], .56)
-    for seq in range(3, 22):
-        at = .56 + (seq - 2) * .1
+    bad_sequence, takeover_at, last_seq = expire_detection_pause(f)
+    for offset in range(1, 20):
+        at = takeover_at + offset * .1
         heartbeat(c, at, armed=True)
         simstate(c, at)
         landed(c, at, 2)
-        c.input(f['token'], seq, ZERO, link=f['link'], now=at)
-    f['now'][0] = 2.57
+        c.input(f['token'], last_seq + offset, ZERO, link=f['link'], now=at)
+    expired_at = takeover_at + 2.01
+    f['now'][0] = expired_at
     response = f['client'].post('/api/control/input', json={
-        'token': f['token'], 'seq': 22, 'axes': ZERO, 'throttle': 0,
+        'token': f['token'], 'seq': last_seq + 20, 'axes': ZERO, 'throttle': 0,
     }, headers=ORIGIN)
     assert response.status_code == 409
     before = f['client'].get('/api/state').json()['control']
     interruption = before['interruption']
     assert not before['owned'] and before['command']['action'] == 'land'
-    assert interruption['at'] == pytest.approx(2.57)
+    assert interruption['at'] == pytest.approx(expired_at)
     assert interruption['lease_started_at'] == before['lease_started_at'] == 0.
     assert 'manual takeover' in interruption['reason']
     loss = interruption['framing_loss']
-    assert loss['at'] == pytest.approx(.56)
+    assert loss['at'] == pytest.approx(takeover_at)
     assert loss['evidence_at'] == pytest.approx(.2)
     assert loss['sequence'] == bad_sequence and loss['detections'] == []
     assert loss['target_id'] == 1
