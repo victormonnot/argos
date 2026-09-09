@@ -15,18 +15,22 @@
   let runId = null, environment = null, focused = true;
   let claiming = false, actionPending = false, inputPending = false, inputChanged = false;
   let draftMode = 2, throttle = 0;
+  let modeSwitchPending = false, modeSyncPending = false, seededModeGeneration = -1;
   let framingIntent = 0, framingBusy = false, framingOperation = null, framingSuppressed = false;
   let framingFeedback = "", acknowledgedInputSeq = -1;
   let vision = { enabled: false, recent: false };
   let feedback = "", feedbackTone = "neutral";
   let leaseStartedAt = null, leaseInterruption = null, interruptionPending = false;
   const active = () => document.body.dataset.view === "control" && !document.hidden && focused;
-  const owned = () => Boolean(token && control?.owned && fresh && control?.available);
+  const sameOwnedLease = (value = control) => leaseStartedAt === null || value?.lease_started_at === leaseStartedAt;
+  const owned = () => Boolean(token && control?.owned && sameOwnedLease() && fresh && control?.available);
   const selectedMode = () => control?.selected_mode === 0 ? 0 : 2;
+  const generation = (value = control) => value?.mode_generation ?? 0;
+  const modeChanging = () => modeSwitchPending || modeSyncPending || (owned() && (control?.phase === "switching" || Boolean(control?.mode_transition)));
   const modeName = (mode) => mode === 0 ? "Stabilize" : "AltHold";
   const prepared = () => control?.prepared ?? (control?.command?.action === "prepare" && control.command.observed);
   const flyingMode = () => control?.vehicle?.armed === true ? selectedMode() : draftMode;
-  const movingAllowed = () => active() && owned() && !actionPending && control.vehicle?.armed === true && control.vehicle?.mode === selectedMode()
+  const movingAllowed = () => active() && owned() && !actionPending && !modeChanging() && control.vehicle?.armed === true && control.vehicle?.mode === selectedMode()
     && !["landing", "released", "expired", "error"].includes(control.phase);
   const text = (id, value) => { if (node(id).textContent !== value) node(id).textContent = value; };
   const message = (value, tone = "neutral") => { feedback = value; feedbackTone = tone; };
@@ -73,7 +77,7 @@
   function setThrottle(value) {
     if (!movingAllowed() || selectedMode() !== 0) return;
     manualIntent();
-    throttle = Math.round(Math.max(0, Math.min(100, value))) / 100;
+    throttle = Math.round(Math.max(0, Math.min(100, value)) * 10) / 1000;
     inputChanged = true;
     render();
     void sendInput();
@@ -90,10 +94,40 @@
     render();
   }
 
-  function adopt(next) {
+  function adopt(next, { newLease = false } = {}) {
     if (!next || typeof next !== "object" || !Number.isFinite(next.at)) throw new Error("Invalid flight-control state.");
+    if (!Number.isSafeInteger(generation(next)) || generation(next) < 0) throw new Error("Invalid flight-mode generation.");
     if (control && next.at < control.at) return false;
+    const sameLease = control && next.lease_started_at === control.lease_started_at;
+    if (sameLease && !newLease && generation(next) < generation()) return false;
+    const modeChanged = sameLease && generation(next) > generation();
+    const transfer = next.mode_transfer;
+    const completedTransfer = transfer && Number.isSafeInteger(transfer.generation) && transfer.generation === generation(next)
+      && [0, 2].includes(transfer.from_mode) && [0, 2].includes(transfer.to_mode) && transfer.from_mode !== transfer.to_mode
+      && Number.isFinite(transfer.completed_at) && transfer.completed_at <= next.at;
+    if (completedTransfer && transfer.to_mode === 0 && (!Number.isFinite(transfer.throttle) || transfer.throttle < 0 || transfer.throttle > 1)) {
+      throw new Error("Invalid transferred Stabilize throttle.");
+    }
     control = next;
+    if (modeChanged) {
+      // Mode intent supersedes every pending framing reply, even if it arrives
+      // after the transition has completed and normal controls are enabled.
+      framingIntent += 1;
+      framingBusy = false;
+      framingOperation = null;
+      framingSuppressed = true;
+      acknowledgedInputSeq = -1;
+    }
+    if (token && next.owned && sameOwnedLease(next) && next.vehicle?.armed === true && next.vehicle?.mode === selectedMode()
+      && next.phase !== "switching" && !next.mode_transition && completedTransfer
+      && transfer.to_mode === selectedMode() && transfer.generation > seededModeGeneration) {
+      // Seed only this confirmed generation. Later snapshots may still contain
+      // the record after the pilot has manually adjusted the throttle.
+      seededModeGeneration = transfer.generation;
+      draftMode = selectedMode();
+      throttle = selectedMode() === 0 ? transfer.throttle : 0;
+      inputChanged = true;
+    }
     rememberInterruption(next);
     if (next.vehicle?.armed !== true || selectedMode() !== 0 || ["landing", "released", "expired", "error"].includes(next.phase)) resetThrottle();
     return true;
@@ -135,7 +169,13 @@
       const response = await fetch(`/api/control/${path}`, { method: "POST", credentials: "same-origin", cache: "no-store",
         headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal: abort.signal, keepalive });
       const body = await response.json();
-      if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : "The command was rejected.");
+      if (!response.ok) {
+        const error = new Error(typeof body.detail === "string" ? body.detail : "The command was rejected.");
+        error.status = response.status;
+        error.code = body.code;
+        error.control = body.control;
+        throw error;
+      }
       return body;
     } catch (error) {
       if (error.name === "AbortError") throw new Error("The flight-control service did not respond in time.");
@@ -150,6 +190,9 @@
     const releaseEpoch = epoch, releaseRun = runId;
     claiming = false;
     actionPending = false;
+    modeSwitchPending = false;
+    modeSyncPending = false;
+    seededModeGeneration = -1;
     framingIntent += 1;
     framingBusy = false;
     framingOperation = null;
@@ -169,23 +212,28 @@
   }
 
   async function sendInput() {
-    if (!active() || !owned() || actionPending) return;
+    if (!active() || !owned() || actionPending || modeSyncPending) return;
     if (inputPending) { inputChanged = true; return; }
     // A pending capture can disappear before gotpointercapture; some browsers
     // then emit no lostpointercapture. Do not retain that unowned pointer.
     for (const [id, entry] of pointers) if (!entry.button.hasPointerCapture(id)) pointers.delete(id);
     inputPending = true;
     inputChanged = false;
-    const currentToken = token, currentEpoch = epoch;
+    const currentToken = token, currentEpoch = epoch, sentGeneration = generation();
     const sentSeq = ++seq;
     try {
-      const body = await post("input", { token: currentToken, seq: sentSeq, axes: axes(), throttle: movingAllowed() && selectedMode() === 0 ? throttle : 0 }, { timeout: 500 });
+      const body = await post("input", { token: currentToken, seq: sentSeq, mode_generation: sentGeneration,
+        axes: axes(), throttle: control.vehicle?.armed === true && selectedMode() === 0 && !["landing", "released", "expired", "error"].includes(control.phase) ? throttle : 0 }, { timeout: 500 });
       if (token !== currentToken || epoch !== currentEpoch) return;
       adopt(body.control);
-      acknowledgedInputSeq = Math.max(acknowledgedInputSeq, sentSeq);
+      if (sentGeneration === generation()) acknowledgedInputSeq = Math.max(acknowledgedInputSeq, sentSeq);
       if (!control.owned || !control.available) release("Control expired or unavailable. Take control again explicitly.", { send: false });
     } catch (error) {
-      if (token === currentToken && epoch === currentEpoch) release(`${error.message} Control released.`);
+      if (token === currentToken && epoch === currentEpoch) {
+        if (error.status === 409 && (error.code === "stale_mode_generation" || (sentGeneration < generation() && owned()))) {
+          await syncMode(currentToken, currentEpoch, error.code === "stale_mode_generation" ? error.control : null);
+        } else release(`${error.message} Control released.`);
+      }
     } finally {
       inputPending = false;
       render();
@@ -194,15 +242,44 @@
     }
   }
 
+  async function syncMode(currentToken, currentEpoch, suppliedControl = null) {
+    const currentRun = runId, abort = new AbortController();
+    const timer = window.setTimeout(() => abort.abort(), 400);
+    modeSyncPending = true;
+    clearInputs();
+    try {
+      let next = suppliedControl;
+      if (!next) {
+        const response = await fetch("/api/state", { credentials: "same-origin", cache: "no-store", signal: abort.signal });
+        if (!response.ok) throw new Error("Mode synchronization failed.");
+        const body = await response.json();
+        if (body.run_id !== currentRun || body.environment !== "simulation") throw new Error("The flight source changed.");
+        next = body.control;
+      }
+      if (token !== currentToken || epoch !== currentEpoch) return;
+      adopt(next);
+      if (!control?.owned || !control?.available || !sameOwnedLease()) release("Control expired or unavailable. Take control again explicitly.", { send: false });
+      else inputChanged = true;
+    } catch (error) {
+      if (token === currentToken && epoch === currentEpoch) release("Flight-mode synchronization failed. Control released.");
+    } finally {
+      window.clearTimeout(timer);
+      if (token === currentToken && epoch === currentEpoch) modeSyncPending = false;
+      render();
+    }
+  }
+
   async function requestFraming(operation, values = {}, { urgent = false } = {}) {
-    if (!active() || !owned() || !framingView()?.enabled || (framingBusy && !urgent)) return;
-    const currentToken = token, currentEpoch = epoch, intent = ++framingIntent;
+    const modeFenced = ["select", "engage", "closer", "farther"].includes(operation);
+    if (!active() || !owned() || (modeFenced && modeChanging()) || !framingView()?.enabled || (framingBusy && !urgent)) return;
+    const currentToken = token, currentEpoch = epoch, intent = ++framingIntent, capturedGeneration = generation();
     framingBusy = true;
     framingOperation = operation;
     if (operation === "stop" || operation === "clear") framingSuppressed = true;
     framingFeedback = ({ select: "Selecting person…", engage: "Engaging framing…", stop: "Returning to manual…", clear: "Clearing selection…", closer: "Adjusting closer…", farther: "Adjusting farther…" })[operation];
     render();
-    const current = () => intent === framingIntent && token === currentToken && epoch === currentEpoch && active() && owned();
+    const current = () => intent === framingIntent && token === currentToken && epoch === currentEpoch && active() && owned()
+      && (!modeFenced || (!modeChanging() && generation() === capturedGeneration));
     try {
       let extra = values;
       if (operation === "engage") {
@@ -216,7 +293,8 @@
         extra = { revision: framingView().revision, input_seq: acknowledgedInputSeq };
       }
       if (!current()) return;
-      const body = await post("framing", { token: currentToken, operation, intent, ...extra }, { timeout: operation === "stop" ? 500 : 1800 });
+      const body = await post("framing", { token: currentToken, operation, intent, ...extra,
+        ...(modeFenced ? { mode_generation: capturedGeneration } : {}) }, { timeout: operation === "stop" ? 500 : 1800 });
       if (!current()) return;
       adopt(body.control);
       framingFeedback = "";
@@ -235,7 +313,7 @@
   }
 
   function renderFraming() {
-    const framing = framingView(), hasControl = active() && owned();
+    const framing = framingView(), hasControl = active() && owned() && !modeChanging();
     node("framing-controls").hidden = !framing?.enabled;
     const effectiveActive = hasControl && framing?.active && !framingSuppressed;
     const paused = effectiveActive && framing.paused === true;
@@ -259,7 +337,8 @@
         : !hasControl || !effectiveActive || paused || framingBusy || !vision.recent;
     }
     document.querySelector('[data-framing-operation="stop"]').setAttribute("aria-pressed", String(!effectiveActive && !takeover));
-    let status = interruptionText() || (!hasControl ? "Take control to select a person in the image." : !vision.enabled ? "Enable person detection, then select a person in the image."
+    let status = interruptionText() || (active() && owned() && modeChanging() ? "Framing off during flight-mode transfer. Select and engage again in AltHold."
+      : !hasControl ? "Take control to select a person in the image." : !vision.enabled ? "Enable person detection, then select a person in the image."
       : takeover ? `${framing.reason || "Tracking lost"} · Manual takeover required${Number.isFinite(framing.takeover_remaining_s) ? ` within ${Math.max(0, framing.takeover_remaining_s).toFixed(1)} s` : ""}.`
       : paused ? `Framing paused · ${framing.reason || "Detection interrupted; corrections paused"}`
       : framingFeedback || (effectiveActive ? "Framing active · Any manual direction returns control to you." : framing.reason || "Select a person, then engage framing after manual takeoff."));
@@ -285,16 +364,26 @@
     text("control-armed", vehicle?.armed === true ? "Armed" : vehicle?.armed === false ? "Disarmed" : "Arming —");
     const mode = flyingMode(), isStabilize = mode === 0;
     node("control-panel").dataset.mode = String(mode);
-    node("control-mode-select").value = String(vehicle?.armed ? selectedMode() : draftMode);
-    node("control-mode-select").disabled = !active() || !hasControl || vehicle?.armed !== false || vehicle?.landed !== true || actionPending || commandPending();
+    node("control-mode-select").value = String(hasControl ? draftMode : selectedMode());
+    const airborne = vehicle?.armed === true && vehicle?.landed === false && vehicle?.mode === selectedMode();
+    const modeChoiceAllowed = active() && hasControl && !actionPending && !commandPending() && !modeChanging()
+      && ((vehicle?.armed === false && vehicle?.landed === true) || airborne);
+    node("control-mode-select").disabled = !modeChoiceAllowed;
+    node("control-mode-switch").hidden = vehicle?.armed !== true;
+    const switchReady = control?.mode_switch?.available === true && control.mode_switch.target_mode === draftMode;
+    node("control-mode-switch").disabled = !modeChoiceAllowed || !airborne || draftMode === selectedMode() || !switchReady;
+    text("control-mode-switch", modeChanging() ? "Switching…" : "Switch mode");
     node("control-height-pad").hidden = isStabilize;
     node("control-throttle-group").hidden = !isStabilize;
     text("control-height-title", isStabilize ? "Throttle and yaw" : "Height and yaw");
-    text("control-throttle-value", `${Math.round(throttle * 100)} %`);
-    node("control-throttle").value = String(Math.round(throttle * 100));
+    text("control-throttle-value", `${Number((throttle * 100).toFixed(1))} %`);
+    node("control-throttle").value = String(throttle * 100);
     node("control-throttle").disabled = !isStabilize || !movingAllowed();
     for (const button of throttleButtons) button.disabled = !isStabilize || !movingAllowed() || (Number(button.dataset.throttleStep) < 0 ? throttle <= 0 : throttle >= 1);
-    text("control-mode-note", isStabilize ? "Stabilize: self-leveling, manual throttle. Prepare the mode on the ground." : "AltHold: self-leveling, assisted altitude. Prepare the mode on the ground.");
+    text("control-mode-note", vehicle?.armed ? draftMode === 0 && selectedMode() !== 0
+      ? "Switch to Stabilize: throttle starts from the autopilot’s recent output. Adjust it manually after switching."
+      : "Choose a flight mode, then use Switch mode. The selector alone does not change flight."
+      : isStabilize ? "Stabilize: self-leveling, manual throttle. Prepare the mode on the ground." : "AltHold: self-leveling, assisted altitude. Prepare the mode on the ground.");
     text("control-neutral-note", isStabilize ? "Releasing a direction neutralizes tilt. Throttle stays at the chosen value: adjust it to maintain height. The drone may drift without GPS." : "Release to neutralize inputs: the drone may keep drifting without GPS. To take off, hold Climb after arming.");
     const motion = axes();
     for (const button of directions) {
@@ -303,7 +392,7 @@
     }
     for (const button of actionButtons) {
       const action = button.dataset.controlAction;
-      const pending = actionPending || commandPending();
+      const pending = actionPending || commandPending() || modeChanging();
       button.disabled = !active() || !hasControl || (action !== "release" && action !== "land" && pending)
         || (action === "prepare" && (vehicle?.armed !== false || vehicle?.landed !== true))
         || (action === "arm" && (vehicle?.armed !== false || !prepared() || vehicle?.mode !== selectedMode() || draftMode !== selectedMode() || !control?.profile?.ready))
@@ -311,12 +400,14 @@
         || (action === "disarm" && (vehicle?.armed !== true || vehicle?.landed !== true));
     }
     const command = control?.command;
-    const commandText = command ? `${({ prepare: `Preparation ${modeName(command.mode ?? selectedMode())}`, arm: "Arming", land: "Landing", disarm: "Disarming", release: "Release" })[command.action] || "Command"} · ${command.observed && command.state === "observed" ? "confirmed by the drone" : ({ sent: "sent, awaiting confirmation", accepted: "accepted, awaiting confirmation", denied: "rejected by the drone", timeout: "confirmation not received", send_failed: "send failed" })[command.state] || "awaiting confirmation"}.` : "";
+    const commandText = command ? `${({ prepare: `Preparation ${modeName(command.mode ?? selectedMode())}`, switch_mode: `Switch to ${modeName(command.mode ?? selectedMode())}`, arm: "Arming", land: "Landing", disarm: "Disarming", release: "Release" })[command.action] || "Command"} · ${command.observed && command.state === "observed" ? "confirmed by the drone" : ({ sent: "sent, awaiting confirmation", accepted: "accepted, awaiting confirmation", denied: "rejected by the drone", timeout: "confirmation not received", send_failed: "send failed" })[command.state] || "awaiting confirmation"}.` : "";
     const unavailable = !fresh ? "Service connection interrupted. Take control again after recovery." : !control ? "Flight controls are not enabled on this service." : !control.available ? control.reason || "Simulation unavailable." : "";
     const profileIssue = hasControl && !control?.profile?.ready ? control?.profile?.mismatched?.length ? "Incompatible simulation settings: check the GPS-free startup profile." : "Checking GPS-free configuration…" : "";
     const draftIssue = hasControl && vehicle?.armed === false && (!prepared() || draftMode !== selectedMode()) ? `Prepare ${modeName(draftMode)}, then arm for manual takeoff.` : "";
     const hint = hasControl ? vehicle?.armed ? isStabilize ? "Adjust throttle; hold directions to fly." : "Hold the buttons to fly." : control?.profile?.ready ? isStabilize ? "Arm at 0% throttle, then increase gradually to take off." : "Arm, then hold Climb to take off." : "Waiting for GPS-free configuration confirmation." : vehicle?.armed !== false ? "Taking control requires a disarmed drone." : "Take control to prepare for flight.";
-    text("control-feedback", interruptionText() || unavailable || feedback || (["denied", "timeout", "send_failed"].includes(command?.state) ? commandText : profileIssue) || draftIssue || commandText || control?.last_error || hint);
+    const switching = modeChanging() ? `Switching to ${modeName(control?.mode_transition?.to_mode ?? draftMode)} · Directions paused; waiting for confirmation from the drone.` : "";
+    const switchIssue = hasControl && airborne && draftMode !== selectedMode() && !switchReady ? control?.mode_switch?.reason || "Flight-mode transfer is not currently available." : "";
+    text("control-feedback", interruptionText() || unavailable || switching || feedback || switchIssue || (["denied", "timeout", "send_failed"].includes(command?.state) ? commandText : profileIssue) || draftIssue || commandText || control?.last_error || hint);
     node("control-feedback").dataset.tone = leaseInterruption || unavailable || profileIssue ? "warning" : feedback ? feedbackTone : ["denied", "timeout", "send_failed"].includes(command?.state) ? "error" : "neutral";
     renderFraming();
   }
@@ -338,7 +429,7 @@
         void post("action", { token: body.token, action: "release" }, { keepalive: true }).catch(() => {});
         return;
       }
-      adopt(body.control);
+      adopt(body.control, { newLease: true });
       leaseStartedAt = Number.isFinite(body.control.lease_started_at) ? body.control.lease_started_at : null;
       leaseInterruption = null;
       interruptionPending = leaseStartedAt !== null;
@@ -347,6 +438,7 @@
       framingIntent = 0;
       framingSuppressed = false;
       acknowledgedInputSeq = -1;
+      seededModeGeneration = -1;
       draftMode = selectedMode();
       void sendInput();
     } catch (error) {
@@ -354,6 +446,46 @@
       if (epoch === currentEpoch) message(error.message, "error");
     }
     finally { if (epoch === currentEpoch) claiming = false; render(); }
+  });
+
+  node("control-mode-switch").addEventListener("click", async () => {
+    if (node("control-mode-switch").disabled) return;
+    const currentToken = token, currentEpoch = epoch, startGeneration = generation(), targetMode = draftMode;
+    const current = () => token === currentToken && epoch === currentEpoch && active() && owned();
+    modeSwitchPending = true;
+    framingIntent += 1;
+    framingBusy = false;
+    framingOperation = null;
+    framingSuppressed = true;
+    framingFeedback = "";
+    clearInputs();
+    message("");
+    render();
+    try {
+      while (inputPending && current()) await new Promise(resolve => window.setTimeout(resolve, 10));
+      if (!current() || generation() !== startGeneration) return;
+      // Clear the prior maneuver and confirm a neutral input before requesting
+      // the transfer. Ordinary keepalives continue while its action is pending.
+      await sendInput();
+      if (!current() || generation() !== startGeneration || acknowledgedInputSeq < 0) return;
+      const body = await post("action", { token: currentToken, action: "switch_mode", mode: targetMode,
+        mode_generation: startGeneration, input_seq: acknowledgedInputSeq });
+      if (current()) adopt(body.control);
+    } catch (error) {
+      if (current()) {
+        message(error.message, "warning");
+        // Never retry a mode-changing action after an uncertain reply. Resync
+        // its state and let the backend's fixed deadline determine the outcome.
+        await syncMode(currentToken, currentEpoch, error.code === "stale_mode_generation" ? error.control : null);
+      }
+    } finally {
+      if (token === currentToken && epoch === currentEpoch) {
+        modeSwitchPending = false;
+        inputChanged = true;
+        void sendInput();
+      }
+      render();
+    }
   });
 
   for (const button of actionButtons) button.addEventListener("click", async () => {
@@ -379,7 +511,7 @@
   node("control-mode-select").addEventListener("change", () => {
     if (node("control-mode-select").disabled) { render(); return; }
     draftMode = Number(node("control-mode-select").value) === 0 ? 0 : 2;
-    resetThrottle();
+    if (control?.vehicle?.armed !== true) resetThrottle();
     clearInputs();
     message("");
     render();
@@ -452,7 +584,7 @@
   });
   document.addEventListener("argos:select-person", event => {
     const framing = framingView();
-    if (!active() || !owned() || !framing?.enabled || framing.active || framing.phase === "takeover" || framingBusy || !vision.enabled || !vision.recent) return;
+    if (!active() || !owned() || modeChanging() || !framing?.enabled || framing.active || framing.phase === "takeover" || framingBusy || !vision.enabled || !vision.recent) return;
     const value = event.detail;
     if (!value || value.run_id !== runId || value.video_id !== vision.video_id || !Number.isSafeInteger(value.frame_sequence)
       || value.frame_sequence < 0 || !Number.isSafeInteger(value.track_id) || value.track_id < 1) return;
@@ -478,7 +610,7 @@
     fresh = detail.fresh === true;
     environment = detail.environment;
     try { if (detail.control) adopt(detail.control); else control = null; } catch { fresh = false; }
-    if ((token && (!fresh || !control?.available || !control?.owned || environment !== "simulation"))
+    if ((token && (!fresh || !control?.available || !control?.owned || !sameOwnedLease() || environment !== "simulation"))
       || (claiming && (!fresh || !control?.available || environment !== "simulation"))) release("Flight control was interrupted. Take control again explicitly.");
     if (!movingAllowed() && (pointers.size || pressedKeys.size)) { clearInputs(); void sendInput(); }
     render();

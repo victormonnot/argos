@@ -8,7 +8,7 @@ mav = pytest.importorskip("pymavlink.dialects.v20.ardupilotmega")
 from argos.backends.mavlink.link import Received, SendResult, SendStatus
 from argos.console.control import (
     ARM_DISARM, DO_SET_MODE, FlightControl, INPUT_TIMEOUT,
-    REQUIRED_PARAMETERS,
+    REQUIRED_PARAMETERS, PARAMETER_INITIAL_BATCH,
 )
 
 
@@ -139,12 +139,12 @@ def test_claim_requires_fresh_receipts_and_does_not_use_simulator_coordinates():
 def test_claim_only_requests_parameters_and_stream_then_low_throttle_and_gcs_heartbeat():
     control, link, token = claimed()
     requests = link.messages("PARAM_REQUEST_READ")
-    assert {msg.param_id for msg in requests} == set(REQUIRED_PARAMETERS)
+    assert {msg.param_id for msg in requests} == set(list(REQUIRED_PARAMETERS)[:PARAMETER_INITIAL_BATCH])
     assert all(msg.param_index == -1 for msg in requests)
     commands = link.messages("COMMAND_LONG")
-    assert len(commands) == 2
+    assert len(commands) == 3
     assert all(command.command == 511 and command.param2 == 200000 for command in commands)
-    assert {command.param1 for command in commands} == {0, 245}
+    assert {command.param1 for command in commands} == {0, 245, 83}
     manual, = link.messages("MANUAL_CONTROL")
     assert (manual.x, manual.y, manual.z, manual.r) == (0, 0, 0, 0)
     assert link.messages("HEARTBEAT")[0].type == mav.MAV_TYPE_GCS

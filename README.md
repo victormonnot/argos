@@ -83,7 +83,9 @@ Open **http://127.0.0.1:8081** and choose **Flight controls**. Take control, sel
 AltHold or Stabilize on the ground, prepare and arm. AltHold uses held
 climb/descent buttons; Stabilize uses a slider and +/− buttons for manual
 throttle. Direction buttons work while held; touch supports simultaneous axes.
-Keyboard shortcuts are optional. The [web-control guide](docs/web-control.md)
+Once airborne, select the other flight mode and use **Switch mode**. The service
+confirms the change from the autopilot and transfers the vertical input; entering
+Stabilize resumes manual throttle. Keyboard shortcuts are optional. The [web-control guide](docs/web-control.md)
 explains the flight sequence, input release, GPS-free profile and current limits.
 
 The launcher uses its own model copy, Gazebo partition, ports and SITL files;

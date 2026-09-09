@@ -775,3 +775,86 @@ tracker and remains separate evidence. Neither nominal success nor the supplied
 box replays establish robust human identity, physical flight or reliable operation
 through a communications interruption. Lease, freshness and takeover deadlines
 were not relaxed for these trials.
+## Airborne flight-mode transitions — September 9, 2026
+
+The [manual web controls](web-control.md#change-mode-in-flight) now support
+explicit Stabilize/AltHold changes while the autopilot reports `IN_AIR`.
+The transfer uses the actual supported ArduCopter binary's throttle mapping
+(compiled revision `8927564c84f4cdb0`), recent scalar `ATTITUDE_TARGET` demand and
+the current learned hover parameter. It does not use simulator coordinates,
+known person size or new navigation sensors.
+
+**Software checks.** The final Python suite passed **1,784 tests, no skips**.
+Coverage includes observed-mode confirmation, the one-second absolute deadline,
+quantized throttle reconstruction, invalid/stale scalar demand, expired leases,
+late inputs and framing selections, manual cancellation, rejected/partial sends
+and the Land fallback. `PILOT_THR_BHV=0` is now explicit in the launch profile,
+preserving the supported firmware's default; hover learning is unchanged.
+
+The full Chromium run passed **109 of 110 tests**. One test failed during its
+ordinary pre-switch setup because an input exceeded the existing 500 ms browser
+deadline. That test passed on its focused rerun. After the final delayed-Select
+correction, all **29 framing and eight focused mode browser tests passed**.
+No timeout was relaxed. The full 110-test run was not repeated after that
+correction. Desktop, tablet and mobile layouts were visually inspected; those
+fixture screenshots are separate from the live camera flight below.
+
+**Actual Gazebo/SITL flight, browser on the simulation computer.** A Chromium
+browser used the shipped UI over loopback: prepare/arm Stabilize at zero gas,
+set 57% manual throttle, take off, switch to AltHold, back to Stabilize, then
+AltHold again. It selected a detected person, engaged framing, switched to
+Stabilize to exit that engagement, returned to AltHold, then requested Land and
+released control after confirmed disarming. All five transfers completed:
+
+| Transfer | Command send to observed target HEARTBEAT |
+| --- | ---: |
+| Stabilize → AltHold | 38.695 ms |
+| AltHold → Stabilize | 22.968 ms |
+| Stabilize → AltHold | 34.768 ms |
+| Active framing → Stabilize | 27.962 ms |
+| Stabilize → AltHold | 38.531 ms |
+
+The two Stabilize entries seeded **48.3% and 49.5%** pilot throttle. Selection
+cleared and assistance remained stopped after the round trip. Framing was
+engaged only briefly: about **201 ms** separated the engagement request and
+the next mode-change request. This checks leaving an active engagement, not
+long-duration tracking or reliable following.
+
+There were 425 input requests: 422 succeeded and three received the expected
+stale-generation conflict, synchronized and continued without release. No input
+request was aborted; the largest recorded completed resource duration was
+7.777 ms. Maximum sampled owned-input age was 102 ms. These are observations
+from one loopback flight, not latency guarantees for another network.
+
+The first transition occurred during an existing climb. The reported NED
+vertical coordinate spanned 1.19 m in the sampled window from 0.5 s before to
+one second after the command. That window includes ongoing motion and the
+altitude controller's response; it is not an isolated switching error. The
+handoff does not promise instant vertical braking or perfect altitude retention.
+
+**Mac-to-PC trials remain limited.** Three earlier UI trials over the SSH tunnel
+did not finish their intended sequence. In the first, Stabilize → AltHold
+confirmed in 49.251 ms, then framing stopped 3.075 s later because an analyzed
+image aged to 459 ms against the unchanged 450 ms limit. The person still had
+the same ID and confidence 0.909. Raw camera images remained recent; inference
+time and simulation progression showed a concurrent slowdown. A fresh analyzed
+image returned in the next sample, but the existing policy had already latched
+manual takeover. Automatic Land and disarming completed.
+
+In the second trial, AltHold → Stabilize confirmed in 65.580 ms, with 48.8%
+initial throttle. A browser input response then failed to arrive before its
+500 ms deadline. The backend had accepted that input; an independent state
+reader also received a previously generated snapshot about 543 ms later than
+its usual offset. In the third trial the same browser deadline interrupted
+manual Stabilize before any mode change: response headers arrived at about
+498 ms and the request was aborted while its body was completing. Both cases
+ended with Release/Land and confirmed disarming. This evidence points to delayed
+delivery or client processing, but does not isolate SSH, the network, browser
+or host scheduling as the cause. It does not establish that this brick fixes
+the previously observed command-input interruptions.
+
+The final service was left disarmed, unowned and recording-idle with recent
+video and telemetry. All eight existing user journals retained identical byte
+sizes and SHA-256 hashes. No physical aircraft, radio, QGroundControl, GPS,
+tracking thresholds, detector model, controller gains or recording format
+were changed by this milestone.

@@ -361,7 +361,8 @@ class ConsoleSession:
                     now=self.clock(), selection_check=check_selection)}
         expected = {"claim": set(), "input": {"token", "seq", "axes"},
                     "action": {"token", "action"}}[operation]
-        optional = {"claim": set(), "input": {"throttle"}, "action": {"mode"}}[operation]
+        optional = {"claim": set(), "input": {"throttle", "mode_generation"},
+                    "action": {"mode", "mode_generation", "input_seq"}}[operation]
         if not expected <= set(values) or not set(values) <= expected | optional:
             raise ValueError("Invalid command fields")
         now = self.clock()
@@ -370,11 +371,13 @@ class ConsoleSession:
         if operation == "input":
             result = self.control.input(values["token"], values["seq"], values["axes"],
                                         link=self.link, now=now,
-                                        **({"throttle": values["throttle"]} if "throttle" in values else {}))
+                                        **{key: values[key] for key in ("throttle", "mode_generation")
+                                           if key in values})
         else:
             result = self.control.action(values["token"], values["action"],
                                          link=self.link, now=now,
-                                         **({"mode": values["mode"]} if "mode" in values else {}))
+                                         **{key: values[key] for key in ("mode", "mode_generation", "input_seq")
+                                            if key in values})
         return {"control": result}
 
     def close(self):

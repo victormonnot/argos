@@ -24,6 +24,14 @@ from copy import deepcopy
 from .framing import FramingControl
 
 
+DIGITAL_INPUT_PARAMETERS = {
+    "RCMAP_ROLL": 1., "RCMAP_PITCH": 2., "RCMAP_THROTTLE": 3., "RCMAP_YAW": 4.,
+    "RC1_REVERSED": 0., "RC2_REVERSED": 0., "RC3_REVERSED": 0., "RC4_REVERSED": 0.,
+    "RC1_MIN": 1100., "RC1_MAX": 1900., "RC1_TRIM": 1500.,
+    "RC2_MIN": 1100., "RC2_MAX": 1900., "RC2_TRIM": 1500.,
+    "RC3_MIN": 1100., "RC3_MAX": 1900., "RC3_TRIM": 1500.,
+    "RC4_MIN": 1100., "RC4_MAX": 1900., "RC4_TRIM": 1500.,
+}
 REQUIRED_PARAMETERS = {
     "GPS1_TYPE": 0.,
     "GPS2_TYPE": 0.,
@@ -38,17 +46,14 @@ REQUIRED_PARAMETERS = {
     "LAND_SPD_MS": .5,
     "ATC_ANGLE_MAX": 20.,
     "RC1_DZ": 0., "RC2_DZ": 0., "RC3_DZ": 0., "RC4_DZ": 0., "THR_DZ": 0.,
+    # The airborne throttle transfer is defined for this digital Copter input map.
+    **DIGITAL_INPUT_PARAMETERS,
+    "FRAME_CLASS": 1., "RC_OPTIONS": 0., "PILOT_THR_BHV": 0.,
 }
-# The optional body-camera framing law also depends on this digital input map.
-# MANUAL_CONTROL scales through MIN/MAX, but attitude axes use TRIM: explicitly
-# symmetric endpoints make zero stay neutral and preserve the .3-axis gain.
+# The camera law adds its yaw gain and fixed camera checks to the shared digital
+# input map. Symmetric endpoints and trims keep neutral attitude valid for both
+# manual flight-mode bridges and camera framing.
 FRAMING_PARAMETERS = {
-    "RCMAP_ROLL": 1., "RCMAP_PITCH": 2., "RCMAP_THROTTLE": 3., "RCMAP_YAW": 4.,
-    "RC1_REVERSED": 0., "RC2_REVERSED": 0., "RC3_REVERSED": 0., "RC4_REVERSED": 0.,
-    "RC1_MIN": 1100., "RC1_MAX": 1900., "RC1_TRIM": 1500.,
-    "RC2_MIN": 1100., "RC2_MAX": 1900., "RC2_TRIM": 1500.,
-    "RC3_MIN": 1100., "RC3_MAX": 1900., "RC3_TRIM": 1500.,
-    "RC4_MIN": 1100., "RC4_MAX": 1900., "RC4_TRIM": 1500.,
     "SIMPLE": 0., "SUPER_SIMPLE": 0.,
     "PILOT_Y_RATE": 202.5, "PILOT_Y_EXPO": 0.,
     "MNT1_TYPE": 0.,
@@ -60,6 +65,11 @@ HEARTBEAT_MAX_AGE = 2.
 SIMSTATE_MAX_AGE = 3.
 LANDED_MAX_AGE = 2.
 COMMAND_TIMEOUT = 4.
+MODE_CHANGE_TIMEOUT = 1.
+THRUST_MAX_AGE = .45
+HOVER_MAX_AGE = 1.
+HOVER_READ_INTERVAL = .5
+BRIDGE_THROTTLE_MIN, BRIDGE_THROTTLE_MAX = .25, .75
 MANUAL_INTERVAL = .05
 HEARTBEAT_INTERVAL = 1.
 PARAMETER_INITIAL_BATCH = 17
@@ -70,6 +80,14 @@ MANUAL_MODES = frozenset((STABILIZE, ALT_HOLD))
 _MISSING = object()
 DO_SET_MODE, ARM_DISARM = 176, 400
 COPTER_TYPES = frozenset((2, 3, 4, 13, 14, 15, 29, 35))
+
+
+class ModeGenerationConflict(RuntimeError):
+    """An owned request belongs to an older set of input semantics."""
+
+    def __init__(self, control):
+        super().__init__("Flight mode changed; synchronize controls before sending input")
+        self.control = control
 
 
 def _number(value):
@@ -107,9 +125,14 @@ class FlightControl:
         self._claimed_at = self._input_at = None
         self._seq = -1
         self._last_manual_seq = -1
+        self._last_mode_input_seq = -1
         self._framing_intent = 0
         self._axes = dict.fromkeys(AXES, 0.)
         self._selected_mode = ALT_HOLD
+        self._mode_generation = 0
+        self._mode_transition = self._mode_transfer = None
+        self._attitude_thrust = self._hover_thrust = self._hover_read_at = None
+        self._attitude_thrust_at = self._hover_thrust_at = None
         self._prepared_mode = None
         self._throttle = 0.
         self._last_manual = self._last_gcs = None
@@ -155,11 +178,13 @@ class FlightControl:
                 self.framing.clear("Drone disarmed; framing stopped")
             if self._armed is False:
                 self._throttle = 0.
+                self._attitude_thrust = self._hover_thrust = None
+                self._attitude_thrust_at = self._hover_thrust_at = at
             if custom != self._selected_mode:
                 self._prepared_mode = None
-            self._observe_command(at)
+            self._observe_command(at, now)
             if self._token and self._phase != "landing":
-                self._phase = "armed" if self._armed else (
+                self._phase = "switching" if self._mode_transition else "armed" if self._armed else (
                     "prepared" if self._prepared_mode == custom else "claimed")
         elif event.type_name == "SIMSTATE":
             # Validate receipt shape, but deliberately never retain its coordinates.
@@ -175,6 +200,17 @@ class FlightControl:
                 self._landed_at = at
                 self._landed_state = landed
                 self._landed = True if landed == 1 else False if landed in (2, 3, 4) else None
+        elif event.type_name == "ATTITUDE_TARGET":
+            if (self._armed is True and self._claimed_at is not None
+                    and at >= self._claimed_at
+                    and (self._attitude_thrust_at is None or at >= self._attitude_thrust_at)):
+                self._attitude_thrust_at = at
+                thrust = fields.get("thrust")
+                mask = fields.get("type_mask")
+                self._attitude_thrust = ((float(thrust), at)
+                    if _integer(mask) and mask == 0
+                    and _integer(fields.get("time_boot_ms"), maximum=2**32 - 1)
+                    and _number(thrust) and 0. <= thrust <= 1. else None)
         elif event.type_name == "PARAM_VALUE" and self._claimed_at is not None:
             key = fields.get("param_id")
             if isinstance(key, bytes):
@@ -182,6 +218,12 @@ class FlightControl:
             if isinstance(key, str):
                 key = key.split("\0", 1)[0]
             value = fields.get("param_value")
+            if (key == "MOT_THST_HOVER" and at >= self._claimed_at
+                    and (self._hover_thrust_at is None or at >= self._hover_thrust_at)):
+                self._hover_thrust_at = at
+                self._hover_thrust = ((float(value), at)
+                    if fields.get("param_type") == 9 and _number(value)
+                    and .125 <= value <= .6875 else None)
             if (isinstance(key, str) and key in self._required_parameters and _number(value)
                     and at >= self._claimed_at):
                 previous = self._params.get(key)
@@ -221,7 +263,7 @@ class FlightControl:
             self._arm_uncertain = False
             self._recovery_at = None
 
-    def _observe_command(self, at):
+    def _observe_command(self, at, now):
         command = self._command
         if (command is None or at < command["sent_at"]
                 or command["state"] == "send_failed"):
@@ -229,6 +271,15 @@ class FlightControl:
         action = command["action"]
         observed = ((action == "prepare" and self._mode == command["mode"]
                      and self._armed is False)
+                    or (action == "switch_mode" and self._mode_transition is not None
+                        and command["state"] not in ("denied", "timeout")
+                        and command["sent_at"] < at and now < self._mode_transition["deadline"]
+                        and self._token is not None and now - self._input_at < INPUT_TIMEOUT
+                        and not self._unavailable(now) and self._profile()["ready"]
+                        and self._landed_state == 2 and self._landed_at is not None
+                        and now - self._landed_at <= LANDED_MAX_AGE
+                        and self._identity_valid and self._armed is True
+                        and self._mode == command["mode"])
                     or (action == "arm" and self._armed)
                     or (action == "land" and self._mode == LAND)
                     or (action == "disarm" and self._armed is False))
@@ -241,6 +292,19 @@ class FlightControl:
                 command["detail"] = "State confirmed by vehicle HEARTBEAT"
                 if action == "prepare" and first_observation:
                     self._prepared_mode = command["mode"]
+                elif action == "switch_mode" and first_observation:
+                    transition = self._mode_transition
+                    self._selected_mode = self._prepared_mode = command["mode"]
+                    self._axes = dict.fromkeys(AXES, 0.)
+                    self._throttle = transition["target_throttle"]
+                    self._mode_generation += 1
+                    self._mode_transfer = {
+                        "generation": self._mode_generation,
+                        "from_mode": transition["from_mode"], "to_mode": command["mode"],
+                        "completed_at": at, "throttle": self._throttle,
+                    }
+                    self._mode_transition = None
+                    self._last_manual = None  # publish target semantics at the next tick
             if action == "disarm":
                 self._throttle = 0.
             if action in ("arm", "disarm") or (action == "land" and not self._armed):
@@ -279,6 +343,10 @@ class FlightControl:
                 "last_input_age": _age(now, self._input_at),
                 "input_timeout": INPUT_TIMEOUT, "axes": dict(self._axes),
                 "selected_mode": self._selected_mode, "throttle": self._throttle,
+                "mode_generation": self._mode_generation,
+                "mode_transition": deepcopy(self._mode_transition),
+                "mode_transfer": deepcopy(self._mode_transfer),
+                "mode_switch": self._mode_switch_state(now),
                 "prepared": self._prepared_mode == self._selected_mode,
                 "input_seq": self._seq,
                 "framing": self.framing.state(now, self._framing_vehicle_reason(now)),
@@ -312,7 +380,7 @@ class FlightControl:
             # Never retain the message for a later retry after a send exception.
             return "error", str(exc)
 
-    def _manual(self, link, now, *, neutral=False):
+    def _manual(self, link, now, *, neutral=False, bridge_throttle=None):
         axes = (dict.fromkeys(AXES, 0.) if neutral else self.framing.axes(now)
                 if self.framing.phase in ("active", "takeover") else self._axes)
         if self._armed is not True:
@@ -324,6 +392,8 @@ class FlightControl:
             # throttle for this one packet; neither 0 nor 50% is a neutral gas.
             z = (round(self._throttle * 1000) if self._selected_mode == STABILIZE
                  else round((axes["up"] + 1.) * 500))
+            if bridge_throttle is not None:
+                z = round(bridge_throttle * 1000)
         message = self._dialect().MAVLink_manual_control_message(self.system, x, y, z, r, 0)
         self._last_manual = now
         return self._send(link, message, now)
@@ -376,10 +446,15 @@ class FlightControl:
         self._claimed_at = self._input_at = now
         self._seq = -1
         self._last_manual_seq = -1
+        self._last_mode_input_seq = -1
         self._framing_intent = 0
         self.framing.clear("New control lease; select a person", reset_loss=True)
         self._axes = dict.fromkeys(AXES, 0.)
         self._selected_mode = ALT_HOLD
+        self._mode_generation = 0
+        self._mode_transition = self._mode_transfer = None
+        self._attitude_thrust = self._hover_thrust = self._hover_read_at = None
+        self._attitude_thrust_at = self._hover_thrust_at = now
         self._prepared_mode = None
         self._throttle = 0.
         self._params = {}
@@ -401,7 +476,7 @@ class FlightControl:
         # Ask for HEARTBEAT and EXTENDED_SYS_STATE at 5 Hz. Sim time may run below
         # wall time; this keeps the same strict receipt-age bounds. A stream ACK
         # never stands in for an actual vehicle-state observation/action ACK.
-        for message_id in (0, 245):
+        for message_id in (0, 245, 83):
             interval = self._dialect().MAVLink_command_long_message(
                 self.system, self.component, 511, 0, float(message_id), 200000., 0., 0., 0., 0., 0.)
             status, detail = self._send(link, interval, now)
@@ -418,8 +493,22 @@ class FlightControl:
         if not isinstance(token, str) or self._token is None or not secrets.compare_digest(token, self._token):
             raise RuntimeError("Control absent, expired or owned by another browser")
 
-    def input(self, token, seq, axes, *, link, now, throttle=_MISSING):
+    def _check_mode_generation(self, generation, now):
+        # Compatibility is limited to the initial generation. Once an airborne
+        # handoff has started, an unversioned delayed packet can never be accepted.
+        if generation is _MISSING and self._mode_generation == 0:
+            return
+        if not _integer(generation, maximum=2**53 - 1):
+            if generation is not _MISSING:
+                raise ValueError("A nonnegative flight mode generation is required")
+            raise ModeGenerationConflict(self.state(now))
+        if generation != self._mode_generation:
+            raise ModeGenerationConflict(self.state(now))
+
+    def input(self, token, seq, axes, *, link, now, throttle=_MISSING,
+              mode_generation=_MISSING):
         self._owner(token, link, now)
+        self._check_mode_generation(mode_generation, now)
         if not _integer(seq, maximum=2**53 - 1) or seq <= self._seq:
             raise ValueError("Command sequence must be strictly increasing")
         if (not isinstance(axes, dict) or set(axes) != set(AXES)
@@ -428,6 +517,11 @@ class FlightControl:
             raise ValueError("Four finite axes between -1 and 1 are required")
         if throttle is not _MISSING and (not _number(throttle) or not 0. <= throttle <= 1.):
             raise ValueError("Throttle must be a finite number between 0 and 1")
+        if self._mode_transition is not None:
+            if any(axes.values()) or (throttle is not _MISSING and throttle != self._throttle):
+                raise RuntimeError("Keep inputs released while the flight mode is changing")
+            self._seq, self._input_at = seq, now
+            return self.state(now)
         if self._selected_mode == ALT_HOLD:
             if throttle is not _MISSING and throttle != 0:
                 raise ValueError("AltHold uses the vertical axis; explicit throttle must remain zero")
@@ -443,6 +537,8 @@ class FlightControl:
         if any(axes.values()) or accepted_throttle != 0:
             self._last_manual_seq = seq
             self.framing.stop("Manual input; framing stopped")
+        if any(axes.values()) or accepted_throttle != self._throttle:
+            self._last_mode_input_seq = seq
         self._seq = seq
         self._input_at = now
         self._axes = {key: float(axes[key]) for key in AXES}
@@ -457,6 +553,8 @@ class FlightControl:
             return "Take control before selecting or engaging framing"
         if self._input_at is None or now - self._input_at >= INPUT_TIMEOUT:
             return "Pilot input lease expired"
+        if self._mode_transition is not None:
+            return "Wait for the flight mode change to complete"
         if self._selected_mode != ALT_HOLD or self._mode != ALT_HOLD:
             return "Framing requires AltHold"
         if self._armed is not True:
@@ -482,8 +580,17 @@ class FlightControl:
                  "clear": set(), "closer": set(), "farther": set()}
         if not isinstance(operation, str) or operation not in extra:
             raise ValueError("Unknown framing operation")
-        if set(values) != {"token", "operation", "intent"} | extra[operation]:
+        expected = {"token", "operation", "intent"} | extra[operation]
+        versioned = operation not in ("stop", "clear")
+        optional = {"mode_generation"} if versioned else set()
+        if not expected <= set(values) or not set(values) <= expected | optional:
             raise ValueError("Invalid framing fields")
+        if versioned:
+            # A delayed pre-switch Select must not restore a target after the
+            # transition cleared it, even after an AltHold round trip. Stale
+            # generations neither mutate the target nor advance operator intent.
+            # Stop/Clear retain their unversioned manual-priority contract.
+            self._check_mode_generation(values.get("mode_generation", _MISSING), now)
         intent = values["intent"]
         if not _integer(intent, minimum=1, maximum=2**53 - 1):
             raise ValueError("A positive framing intent sequence is required")
@@ -502,6 +609,8 @@ class FlightControl:
         elif operation == "select":
             if self._phase == "landing":
                 raise RuntimeError("Target selection is unavailable during landing")
+            if self._mode_transition is not None:
+                raise RuntimeError("Wait for the flight mode change before selecting a target")
             if not all(isinstance(values[key], str) and 1 <= len(values[key]) <= 128
                        for key in ("run_id", "video_id")) or not all(
                        _integer(values[key], minimum=1, maximum=2**53 - 1)
@@ -531,9 +640,104 @@ class FlightControl:
     def _pending(self):
         return self._command is not None and self._command["state"] in ("sent", "accepted")
 
-    def _issue(self, action, link, now):
-        command_id = DO_SET_MODE if action in ("prepare", "land") else ARM_DISARM
-        params = ([1., float(self._selected_mode if action == "prepare" else LAND)]
+    @staticmethod
+    def _inverse_stabilize_throttle(thrust, hover):
+        """Invert ArduCopter's hover-aware manual throttle, not motor percentage.
+
+        Verified in the supported SITL build (8927564c84f4cdb0):
+        Mode::get_pilot_desired_throttle uses this cubic with zero RC deadzone.
+        ATTITUDE_TARGET.thrust is the input before angle boost, unlike VFR_HUD.
+        Search actual integer MANUAL_CONTROL values including 800-PWM-span
+        truncation; this prevents an assumed continuous inverse hiding wire steps.
+        """
+        expo = min(1., max(-.5, (.5 - hover) / .375))
+        def error(z):
+            pwm_offset = int(800 * z / 1000)
+            t = int(1000 * pwm_offset / 800) / 1000
+            return abs(t * (1. - expo) + expo * t**3 - thrust)
+        return min(range(1001), key=error) / 1000
+
+    def _mode_switch_state(self, now):
+        target = STABILIZE if self._selected_mode == ALT_HOLD else ALT_HOLD
+        reason, throttle = self._mode_switch_reason(target, now)
+        return {"available": not reason, "reason": reason,
+                "target_mode": target, "target_throttle": throttle}
+
+    def _mode_switch_reason(self, target, now):
+        reason = self._unavailable(now)
+        if reason:
+            return reason, None
+        if self._token is None:
+            return "Take control before changing flight mode", None
+        if now - self._input_at >= INPUT_TIMEOUT:
+            return "Pilot input lease expired", None
+        if self._mode_transition is not None or self._pending():
+            return "Wait for the autopilot command to complete", None
+        if self._phase == "landing" or self._recovery_at is not None:
+            return "Flight control is handing over or recovering", None
+        if self._armed is not True or self._arm_uncertain:
+            return "Take off manually before changing flight mode", None
+        if self._landed_state != 2 or self._landed_at is None or now - self._landed_at > LANDED_MAX_AGE:
+            return "A recent IN_AIR report is required", None
+        if (self._mode != self._selected_mode or self._prepared_mode != self._selected_mode
+                or not self._profile()["ready"]):
+            return "Prepared manual mode and the digital GPS-free profile are required", None
+        if any(self._axes.values()):
+            return "Release direction and climb inputs before changing flight mode", None
+        if target == STABILIZE:
+            if self._attitude_thrust is None or now - self._attitude_thrust[1] > THRUST_MAX_AGE:
+                return "Waiting for recent autopilot throttle demand", None
+            if self._hover_thrust is None or now - self._hover_thrust[1] > HOVER_MAX_AGE:
+                return "Waiting for the current learned hover thrust", None
+            throttle = self._inverse_stabilize_throttle(self._attitude_thrust[0], self._hover_thrust[0])
+        else:
+            throttle = self._throttle
+        if not BRIDGE_THROTTLE_MIN <= throttle <= BRIDGE_THROTTLE_MAX:
+            return "Throttle transfer outside the bounded range; stabilize the flight first", None
+        return "", throttle if target == STABILIZE else 0.
+
+    def _switch_mode(self, mode, generation, input_seq, *, link, now):
+        if mode is _MISSING:
+            raise ValueError("Choose Stabilize (0) or AltHold (2) for the mode change")
+        self._check_mode_generation(generation, now)
+        if generation is _MISSING or not _integer(input_seq, maximum=2**53 - 1):
+            raise ValueError("Mode change requires an observed mode generation and input sequence")
+        if not self._last_mode_input_seq <= input_seq <= self._seq:
+            raise RuntimeError("A manual input superseded this flight mode request")
+        if mode == self._selected_mode:
+            raise RuntimeError("The selected flight mode is already active")
+        reason, target_throttle = self._mode_switch_reason(mode, now)
+        if reason:
+            raise RuntimeError(reason)
+        bridge = target_throttle if mode == STABILIZE else self._throttle
+        self.framing.clear("Flight mode changed; select and engage framing again")
+        self._axes = dict.fromkeys(AXES, 0.)
+        self._mode_generation += 1
+        self._mode_transition = {"from_mode": self._selected_mode, "to_mode": mode,
+                                 "started_at": now, "deadline": now + MODE_CHANGE_TIMEOUT,
+                                 "target_throttle": target_throttle, "bridge_throttle": bridge}
+        self._phase = "switching"
+        # This bridge is explicit in both modes: Stabilize gas within .25-.75,
+        # or bounded AltHold vertical input while DO_SET_MODE is being processed.
+        # Keep that one RC override until target HEARTBEAT; never repeatedly send
+        # old-mode input while the mode is uncertain. Browser lease renewal stays
+        # live, but GCS heartbeat also pauses: the bridge MANUAL_CONTROL refreshes
+        # ArduPilot's GCS clock, preserving its 2s-vs-3s fallback/override margin.
+        status, detail = self._manual(link, now, neutral=True, bridge_throttle=bridge)
+        if status != "accepted":
+            self._revoke(link, now, reason=detail or "Mode-change throttle bridge not sent; landing requested",
+                         phase="error")
+            return self.state(now)
+        if not self._issue("switch_mode", link, now, mode=mode):
+            self._revoke(link, now, reason="Flight mode command not sent reliably; landing requested", phase="error")
+        else:
+            self._error = ""
+        return self.state(now)
+
+    def _issue(self, action, link, now, *, mode=None):
+        command_id = DO_SET_MODE if action in ("prepare", "switch_mode", "land") else ARM_DISARM
+        params = ([1., float(mode if action == "switch_mode" else
+                            self._selected_mode if action == "prepare" else LAND)]
                   if command_id == DO_SET_MODE else [1. if action == "arm" else 0., 0.])
         message = self._dialect().MAVLink_command_long_message(
             self.system, self.component, command_id, 0, *params, 0., 0., 0., 0., 0.)
@@ -545,21 +749,24 @@ class FlightControl:
                          "state": "sent" if status == "accepted" else "send_failed",
                          "detail": "Sent locally; awaiting confirmation"
                          if status == "accepted" else detail or "Command not sent"}
-        if action == "prepare":
-            self._command["mode"] = self._selected_mode
+        if action in ("prepare", "switch_mode"):
+            self._command["mode"] = mode if action == "switch_mode" else self._selected_mode
         if action == "arm" and status in ("accepted", "partial", "error"):
             self._arm_uncertain = True
         if status != "accepted":
             self._command_error(self._command["detail"])
         return status == "accepted"
 
-    def action(self, token, action, *, link, now, mode=_MISSING):
+    def action(self, token, action, *, link, now, mode=_MISSING,
+               mode_generation=_MISSING, input_seq=_MISSING):
         self._owner(token, link, now)
-        if action not in ("prepare", "arm", "land", "disarm", "release"):
+        if action not in ("prepare", "switch_mode", "arm", "land", "disarm", "release"):
             raise ValueError("Unknown flight-control action")
-        if mode is not _MISSING and (action != "prepare" or not _integer(mode)
+        if mode is not _MISSING and (action not in ("prepare", "switch_mode") or not _integer(mode)
                                       or mode not in MANUAL_MODES):
             raise ValueError("Preparation mode must be Stabilize (0) or AltHold (2)")
+        if action != "switch_mode" and (mode_generation is not _MISSING or input_seq is not _MISSING):
+            raise ValueError("Mode generation and input sequence belong to an airborne mode change")
         if action == "release":
             self._revoke(link, now, reason="Control released", phase="released")
             return self.state(now)
@@ -571,13 +778,17 @@ class FlightControl:
             if self._phase == "landing":
                 raise RuntimeError("Landing has already been requested")
             self._axes = dict.fromkeys(AXES, 0.)
-            self._manual(link, now, neutral=True)
+            if self._mode_transition is None:
+                self._manual(link, now, neutral=True)
+            self._mode_transition = None
             self._throttle = 0.
             self._prepared_mode = None
             self._phase = "landing"
             if self._issue("land", link, now):
                 self._error = ""
             return self.state(now)
+        if action == "switch_mode":
+            return self._switch_mode(mode, mode_generation, input_seq, link=link, now=now)
         if self._pending():
             raise RuntimeError("Wait for confirmation of the previous command")
         if action in ("prepare", "arm"):
@@ -624,6 +835,8 @@ class FlightControl:
                               if self.framing.phase == "takeover" else None}
         self.framing.clear(reason)
         handoff_started = self._phase == "landing"
+        switching = self._mode_transition is not None
+        self._mode_transition = None
         self._token = None
         self._axes = dict.fromkeys(AXES, 0.)
         self._phase = phase
@@ -632,7 +845,8 @@ class FlightControl:
         # is gone no send is possible; stopping heartbeat triggers SITL's profile.
         if (not handoff_started and link is not None and (self._armed is True or self._arm_uncertain)
                 and not (self._command and self._command["action"] == "land")):
-            self._manual(link, now, neutral=True)
+            if not switching:
+                self._manual(link, now, neutral=True)
             self._issue("land", link, now)
         self._throttle = 0.
         self._prepared_mode = None
@@ -650,6 +864,12 @@ class FlightControl:
                 self._revoke(link, now, reason=reason, phase="error")
             elif now - self._input_at >= INPUT_TIMEOUT:
                 self._revoke(link, now, reason="Browser inputs expired; control released", phase="expired")
+            elif self._mode_transition is not None and (
+                    now >= self._mode_transition["deadline"]
+                    or self._command["state"] in ("denied", "send_failed", "timeout")
+                    or self._armed is not True):
+                self._revoke(link, now, reason="Flight mode change was not confirmed; landing requested",
+                             phase="error")
             elif self._armed is True and self._mode != self._selected_mode and self._phase != "landing":
                 self._revoke(link, now, reason="Mode changed outside web flight controls", phase="released")
             elif self._armed is True and not self._profile()["ready"]:
@@ -672,6 +892,11 @@ class FlightControl:
             # A new explicit ground preparation leaves this phase and resumes
             # heartbeat/manual input; a landing receipt alone never does.
             return
+        if self._mode_transition is not None:
+            # Both clocks start with the bridge MANUAL_CONTROL. A later GCS
+            # heartbeat could move the 2s failsafe past the 3s bridge override.
+            # The absolute 1s mode deadline expires before either autopilot bound.
+            return
         if self._last_gcs is None or now - self._last_gcs >= HEARTBEAT_INTERVAL:
             message = self._dialect().MAVLink_heartbeat_message(6, 8, 0, 0, 4, 3)
             status, detail = self._send(link, message, now)
@@ -684,6 +909,13 @@ class FlightControl:
             if status != "accepted":
                 self._revoke(link, now, reason=detail or "Manual input not sent", phase="error")
         self._read_missing_parameter(link, now)
+        if (self._token is not None and self._mode_transition is None and self._armed is True
+                and self._selected_mode == ALT_HOLD
+                and (self._hover_read_at is None or now - self._hover_read_at >= HOVER_READ_INTERVAL)):
+            self._hover_read_at = now
+            status, detail = self._read_parameter("MOT_THST_HOVER", link, now)
+            if status != "accepted":
+                self._revoke(link, now, reason=detail or "Hover-thrust parameter request not sent", phase="error")
 
     def check_reconfigure(self):
         if self.enabled and (self._token is not None or self._armed is True or self._arm_uncertain):

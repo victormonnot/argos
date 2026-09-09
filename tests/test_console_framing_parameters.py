@@ -5,7 +5,10 @@ import pytest
 
 mav = pytest.importorskip("pymavlink.dialects.v20.ardupilotmega")
 
-from argos.console.control import FRAMING_PARAMETERS, REQUIRED_PARAMETERS, FlightControl
+from argos.console.control import (
+    DIGITAL_INPUT_PARAMETERS, FRAMING_PARAMETERS, PARAMETER_INITIAL_BATCH,
+    REQUIRED_PARAMETERS, FlightControl,
+)
 from test_console_flight_control import Link, event, heartbeat, landed, simstate
 
 
@@ -35,15 +38,22 @@ def test_extra_parameter_requests_and_checks_require_explicit_framing_enablement
     expected = REQUIRED_PARAMETERS | (FRAMING_PARAMETERS if framing else {})
     # Both profiles retain the small initial batch; the framing additions are
     # read over later ticks so they do not saturate the autopilot response queue.
-    assert {message.param_id for message in link.messages("PARAM_REQUEST_READ")} == set(REQUIRED_PARAMETERS)
+    assert {message.param_id for message in link.messages("PARAM_REQUEST_READ")} == set(
+        list(REQUIRED_PARAMETERS)[:PARAMETER_INITIAL_BATCH])
     assert control.state(0.)["profile"]["required"] == expected
+    assert DIGITAL_INPUT_PARAMETERS.items() <= expected.items()
+    assert not set(FRAMING_PARAMETERS) & set(REQUIRED_PARAMETERS)
     confirmed_profile(control)
     assert control.state(0.)["profile"]["ready"]
     assert not link.messages("PARAM_SET")
     if not framing:
-        parameter(control, "RCMAP_YAW", 8, .01)
-        assert "RCMAP_YAW" not in control.state(.01)["profile"]["values"]
+        parameter(control, "MNT1_TYPE", 1, .01)
+        assert "MNT1_TYPE" not in control.state(.01)["profile"]["values"]
         assert control.state(.01)["profile"]["ready"]
+        # Manual flight needs the same neutral digital attitude map even when
+        # there is no camera law. Only camera-specific additions remain opt-in.
+        parameter(control, "RCMAP_YAW", 8, .02)
+        assert control.state(.02)["profile"]["mismatched"] == ["RCMAP_YAW"]
 
 
 @pytest.mark.parametrize("key,bad", [

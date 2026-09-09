@@ -84,8 +84,7 @@ Flight controls. The capture continues while flying.
    controls at a time. Taking control starts neutral pilot inputs and checks the
    required simulation parameters; it does not arm or take off.
 3. Wait for a fresh landed report, choose **AltHold** or **Stabilize** while
-   disarmed, then select **Prepare** and wait for confirmation of that mode. Mode
-   selection is locked while armed; in-flight transitions are not implemented.
+   disarmed, then select **Prepare** and wait for confirmation of that mode.
 4. Select **Arm** with neutral axes and zero manual throttle. A new control
    lease always requires explicit preparation, even if the vehicle already
    reports the chosen mode. Normal ArduPilot arming checks remain enabled.
@@ -95,7 +94,10 @@ Flight controls. The capture continues while flying.
 6. Hold the direction or yaw buttons to maneuver. Multiple fingers can combine
    inputs. In Stabilize, releasing a direction preserves the chosen throttle
    while control remains active; it does not automatically hold altitude.
-7. Select **Land** to request ArduPilot's Land mode. After landing,
+7. Once airborne, release directions, choose the other **Flight mode** and
+   select **Switch mode**. Wait for confirmation from the drone. See the transfer
+   behavior below; selecting an option alone does not change the autopilot mode.
+8. Select **Land** to request ArduPilot's Land mode. After landing,
    **Disarm on ground** requires a fresh landed report. **Release** gives up the
    controls and requests landing when armed. A new lease starts with zero
    manual throttle; old throttle values are not restored.
@@ -129,6 +131,43 @@ The throttle slider sets a value rather than a held climb command.
 attitude request but horizontal drift can continue. In Stabilize you must keep
 adjusting throttle to control height. AltHold's vertical neutral seeks to hold
 altitude; it does not observe or hold horizontal position.
+
+## Change mode in flight
+
+The browser supports an explicit **Stabilize ↔ AltHold** change after the
+autopilot reports `IN_AIR`. It requires the current lease, a prepared current
+mode, the checked simulation profile and released direction buttons. Framing
+stops and its selection clears when a switch starts. Input buttons pause until
+the new mode is confirmed by a received autopilot heartbeat; a command
+acknowledgement alone does not enable them.
+
+- **Stabilize → AltHold:** the service retains the last manual throttle through
+  the transfer, then centers the altitude stick when AltHold is observed.
+- **AltHold → Stabilize:** the service uses recent autopilot `ATTITUDE_TARGET`
+  thrust and `MOT_THST_HOVER` receipts to invert ArduPilot's pilot-throttle
+  mapping. The slider starts at that accepted value. It then remains under
+  manual control: adjust it to maintain height.
+
+This uses reported controller output and the autopilot's learned hover setting,
+not simulator position or a calibrated motor-thrust measurement. It does not
+assume that 50% pilot input is 50% thrust. Missing, old or incompatible mapping
+information prevents the switch and is explained in the interface.
+
+A single neutral-attitude bridge input precedes the mode command. Its throttle
+is limited to 25–75% pilot input for this transfer. Pilot packets and GCS
+heartbeats pause while waiting for the target mode; browser keepalives continue to renew
+the usual 650 ms lease. A retained input can briefly mean climb/descent in
+AltHold, bounded by the checked profile to −0.35/+0.5 m/s requested vertical
+speed. The mode must be confirmed within one second. This limits the transfer
+window; it does not guarantee an altitude-perfect or completely smooth handoff.
+The bridge refreshes ArduPilot's GCS presence and RC override together. Pausing
+both streams preserves the checked two-second GCS fallback before the
+three-second override expiry if the subsequent Land command cannot be confirmed.
+
+If transmission fails, the autopilot rejects the change, confirmation times
+out or another mode appears, control is released and the existing Land/GCS
+fallback applies. **Land** and **Release** remain available during the transfer.
+No old stick packet or previous framing engagement resumes after a switch.
 
 ## What happens when control is lost
 
@@ -191,10 +230,17 @@ It does not rewrite them or bypass a mismatch. It also requires recent selected
 ArduCopter heartbeat and SIMSTATE receipts. SIMSTATE is used only as a simulation
 presence check: its coordinates are not retained by the controller or used to
 steer. This check is an accidental-hardware guard, not sender authentication.
-Taking control also requests HEARTBEAT and EXTENDED_SYS_STATE at 5 Hz, retaining
-the two-second receipt limit even when simulation runs below real-time speed.
+Taking control also requests HEARTBEAT, EXTENDED_SYS_STATE and ATTITUDE_TARGET
+at 5 Hz, retaining
+the two-second heartbeat/landed receipt limits even when simulation runs below
+real-time speed.
+While armed in AltHold, the service reads the learned `MOT_THST_HOVER` value
+every 0.5 seconds. Transfer admission requires thrust no older than 0.45 seconds
+and a hover receipt no older than one second. These are local receipt ages.
+The service also checks the throttle-channel mapping, quad frame and override
+settings used by the transfer. It does not change the learned hover value.
 The digital profile sets RC stick and throttle deadzones to zero. Framing-enabled
-sessions add mapping, calibration and fixed-camera checks described in the
+sessions add yaw, simple-mode and fixed-camera checks described in the
 [framing guide](framing.md).
 
 For an already prepared isolated instance, the equivalent opt-in console command
@@ -218,10 +264,11 @@ The local API uses JSON and the exact console Origin for all mutations.
 
 | Endpoint | Request / result |
 | --- | --- |
-| `GET /api/state` | Includes `control`: availability, ownership, phase, vehicle state, checked profile, selected_mode (0/2), prepared, axes, throttle and latest command evidence. No token is exposed. |
+| `GET /api/state` | Includes `control`: availability, ownership, phase, vehicle state, checked profile, selected_mode (0/2), prepared, axes, throttle, mode_generation, mode_switch readiness, mode_transition, mode_transfer and latest command evidence. No token is exposed. |
 | `POST /api/control/claim` | `{}` → `{token, control}`. Requires a disarmed, available simulation. |
-| `POST /api/control/input` | `{token, seq, axes: {forward, right, up, yaw}, throttle}` → `{control}`. Axes are finite within `[-1, 1]`, throttle within `[0, 1]`, and `seq` increases strictly. |
-| `POST /api/control/action` | `{token, action}` → `{control}`. Actions: `prepare`, `arm`, `land`, `disarm`, `release`. Only `prepare` accepts optional `mode`: integer `0` (Stabilize) or `2` (AltHold; default). |
+| `POST /api/control/input` | `{token, seq, mode_generation, axes: {forward, right, up, yaw}, throttle}` → `{control}`. Axes are finite within `[-1, 1]`, throttle within `[0, 1]`, and `seq` increases strictly. |
+| `POST /api/control/action` | `{token, action}` → `{control}`. Actions: `prepare`, `arm`, `land`, `disarm`, `release`. `prepare` accepts optional `mode`: integer `0` (Stabilize) or `2` (AltHold; default). |
+| `POST /api/control/action` with `switch_mode` | `{token, action: "switch_mode", mode, mode_generation, input_seq}` → `{control}`. Requires the observed generation and an acknowledged neutral-direction input sequence not superseded by a maneuver or throttle adjustment. The service computes the destination throttle. |
 | `POST /api/control/framing` | Explicit selection, engagement, manual takeover and apparent-size adjustment; see the [framing contract](framing.md#api-and-journals). |
 
 Stabilize requires `up=0` and an explicit throttle in armed input updates.
@@ -229,8 +276,26 @@ Nonzero throttle is rejected while disarmed or in AltHold. Legacy AltHold
 clients can omit throttle; new clients send it explicitly. Preparation requires
 neutral input, confirmed disarming and a fresh landed report. The requested mode
 must then be confirmed before arming. `prepared` belongs to the current lease;
-an observed mode alone does not authorize arming. Unsupported modes and mode
-changes during armed or uncertain flight are rejected.
+an observed mode alone does not authorize arming. Airborne changes use
+`switch_mode`; preparation remains ground-only. Unsupported modes and uncertain
+flight state are rejected.
+
+`mode_generation` starts at zero for a new lease and advances at transfer start
+and completion. Legacy input can omit it only at generation zero. A stale
+generation returns HTTP 409 with `code: "stale_mode_generation"`, `detail` and
+the current `control` snapshot. That rejected input does not renew the lease or
+change the accepted input sequence. The browser synchronizes and sends a fresh
+neutral update; it does not replay the old movement or retry the mode action.
+Other ownership/expiry failures retain their normal release behavior. Framing
+selection, engagement and distance adjustments use the same generation fence;
+manual Stop/Clear remain available without it.
+
+While `mode_transition` is present, valid keepalives contain zero axes and the
+unchanged source-mode throttle. The backend owns the bridge and does not apply
+new stick values. Completion retains `mode_transfer` with its generation, source
+and destination modes, completion time and accepted throttle. The UI seeds its
+manual throttle once for that generation, then preserves subsequent operator
+adjustments even when later snapshots still contain the transfer record.
 
 `control.owned` means some browser owns the lease; possession of the token is
 required to operate it. The browser keeps its token only in memory. The snapshot

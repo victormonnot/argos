@@ -14,13 +14,26 @@ async function installFraming(page, model) {
     axes: zero(), frame_age_s: 0, takeover_remaining_s: null };
   const control = { at: 0, enabled: true, available: true, reason: '', owned: false, phase: 'idle', last_input_age: 0,
     selected_mode: 2, prepared: false, throttle: 0, input_seq: -1, axes: zero(), lease_started_at: null,
+    mode_generation: 0, mode_transition: null, mode_transfer: null,
     vehicle: { armed: false, mode: 0, landed: true, heartbeat_age: .01 }, profile: { ready: true }, command: null, last_error: '', interruption: null, framing };
   const mock = { control, framing, calls: [], frames: new Map(), sequence: 0, token: null, intent: 0, manualSeq: -1,
-    video: 'framing-video-1', visionState: 'recent', hold: null, holdInput: null, stopError: false, visiblePerson: 7 };
+    video: 'framing-video-1', visionState: 'recent', hold: null, holdInput: null, stopError: false, visiblePerson: 7,
+    framingGenerationConflicts: [] };
   const snapshot = () => {
     framing.available = control.vehicle.armed && control.vehicle.landed === false && control.vehicle.mode === 2
       && framing.target_id !== null && framing.phase !== 'takeover' && mock.visionState === 'recent';
-    return { ...structuredClone(control), at: model.clock() };
+    return { ...structuredClone(control), at: model.clock(), mode_switch: {
+      available: control.vehicle.armed && control.vehicle.landed === false && !control.mode_transition,
+      reason: '', target_mode: control.selected_mode === 2 ? 0 : 2, target_throttle: control.selected_mode === 2 ? .374 : null,
+    } };
+  };
+  mock.completeSwitch = () => {
+    const transfer = control.mode_transition;
+    control.mode_generation += 1; control.vehicle.mode = transfer.to_mode; control.selected_mode = transfer.to_mode;
+    control.throttle = transfer.to_mode === 0 ? transfer.target_throttle : 0;
+    control.mode_transfer = { generation: control.mode_generation, from_mode: transfer.from_mode, to_mode: transfer.to_mode,
+      completed_at: model.clock(), throttle: control.throttle };
+    control.mode_transition = null; control.phase = 'armed'; control.command.state = 'observed'; control.command.observed = true;
   };
   model.modifyState = value => {
     value.control = snapshot();
@@ -58,6 +71,8 @@ async function installFraming(page, model) {
     }
     if (payload.token !== mock.token || !control.owned) return reply(409, { detail: 'Control unavailable.' });
     if (path.endsWith('/input')) {
+      if (payload.mode_generation !== control.mode_generation) return reply(409, {
+        detail: 'Flight mode changed; synchronize input.', code: 'stale_mode_generation', control: snapshot() });
       expect(payload.seq).toBeGreaterThan(control.input_seq);
       control.input_seq = payload.seq; control.axes = payload.axes;
       if (Object.values(payload.axes).some(Boolean)) {
@@ -76,6 +91,17 @@ async function installFraming(page, model) {
     }
     if (path.endsWith('/action')) {
       const { action } = payload;
+      if (action === 'switch_mode') {
+        expect(control.axes).toEqual(zero()); expect(payload.mode_generation).toBe(control.mode_generation);
+        control.mode_generation += 1;
+        control.mode_transition = { from_mode: control.selected_mode, to_mode: payload.mode, started_at: model.clock(),
+          deadline: model.clock() + 1, target_throttle: payload.mode === 0 ? .374 : null, bridge_throttle: .4 };
+        control.phase = 'switching'; framing.active = false; framing.phase = 'idle'; framing.paused = false;
+        framing.target_id = null; framing.reference_height = null;
+        framing.revision += 1; framing.reason = 'Flight mode changing; manual control.';
+        control.command = { action, mode: payload.mode, state: 'accepted', observed: false, command_id: 1 };
+        return reply(200, { control: snapshot() });
+      }
       if (action === 'prepare') { control.vehicle.mode = payload.mode; control.selected_mode = payload.mode; control.prepared = true; control.phase = 'prepared'; }
       if (action === 'arm') { control.vehicle.armed = true; control.phase = 'armed'; }
       if (action === 'land') { control.vehicle.mode = 9; control.phase = 'landing'; framing.active = false; framing.phase = 'idle'; }
@@ -88,6 +114,13 @@ async function installFraming(page, model) {
     if (hold) mock.hold = null;
     if (hold && !hold.afterApply) await holdFor(hold);
     if (payload.token !== mock.token || !control.owned) return reply(409, { detail: 'Control unavailable.' });
+    if (['select', 'engage', 'closer', 'farther'].includes(payload.operation)) {
+      const generation = payload.mode_generation ?? (control.mode_generation === 0 ? 0 : null);
+      if (generation !== control.mode_generation) {
+        mock.framingGenerationConflicts.push(payload);
+        return reply(409, { detail: 'Flight mode changed; synchronize framing.', code: 'stale_mode_generation', control: snapshot() });
+      }
+    } else expect(payload.mode_generation).toBeUndefined();
     if (payload.intent <= mock.intent) return reply(409, { detail: 'Superseded framing intent.' });
     mock.intent = payload.intent;
     if (payload.operation === 'stop' && mock.stopError) return reply(503, { detail: 'Stop confirmation unavailable.' });
@@ -170,6 +203,70 @@ test('selecting sends exact displayed frame identity and engagement stays explic
   expect(mock.calls.filter(call => call.path.endsWith('/action')).map(call => call.payload.action)).toEqual(['prepare', 'arm']);
   expect(await page.locator('#framing-controls').innerText()).not.toMatch(/metre|meter|position hold/i);
   await expect(page.getByRole('button', { name: 'Forward, hold', exact: true })).toBeEnabled();
+});
+
+test('mode changes fence an older Engage reply even after returning to AltHold', async ({ page, model }) => {
+  const mock = await ready(page, model);
+  const held = { operation: 'engage', afterApply: true }; mock.hold = held;
+  await page.locator(operation('engage')).click();
+  await expect.poll(() => held.requested).toBe(true);
+  await page.locator('#control-mode-select').selectOption('0');
+  await page.locator('#control-mode-switch').click();
+  await expect.poll(() => mock.control.mode_generation).toBe(1);
+  await expect(page.locator(operation('engage'))).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Select person #7 for framing' })).toHaveCount(0);
+  mock.completeSwitch();
+  await expect(page.locator('#control-mode-select')).toBeEnabled();
+  await page.locator('#control-mode-select').selectOption('2');
+  await page.locator('#control-mode-switch').click();
+  await expect.poll(() => mock.control.mode_generation).toBe(3);
+  mock.completeSwitch(); held.release();
+  await expect(page.locator('#control-mode')).toHaveText('Mode AltHold');
+  await expect(page.locator('#control-feedback')).not.toContainText('Switching');
+  await expect(page.locator('.control-heading .eyebrow')).toHaveText('MANUAL FLIGHT');
+  await expect(page.locator('#framing-status')).not.toContainText('Framing active');
+  await expect(page.locator('#framing-target')).toHaveText('No target');
+  await expect(page.locator(operation('engage'))).toBeDisabled();
+  expect(operations(mock).filter(call => call.payload.operation === 'engage')).toHaveLength(1);
+  expect(mock.framing.active).toBe(false);
+  expect(mock.calls.some(call => call.payload.action === 'release')).toBe(false);
+});
+
+test('late Select cannot restore a target after a mode round trip and new framing actions use its generation', async ({ page, model }) => {
+  const mock = await ready(page, model, { select: false });
+  const held = { operation: 'select' }; mock.hold = held;
+  await page.getByRole('button', { name: 'Select person #7 for framing' }).click();
+  await expect.poll(() => held.requested).toBe(true);
+  const original = operations(mock).find(call => call.payload.operation === 'select').payload;
+  expect(original.mode_generation).toBe(0);
+  for (const [target, pendingGeneration] of [[0, 1], [2, 3]]) {
+    await page.locator('#control-mode-select').selectOption(String(target));
+    await page.locator('#control-mode-switch').click();
+    await expect.poll(() => mock.control.mode_generation).toBe(pendingGeneration);
+    mock.completeSwitch();
+    await expect(page.locator('#control-mode-select')).toBeEnabled();
+  }
+  held.release();
+  await expect.poll(() => mock.framingGenerationConflicts.length).toBe(1);
+  await expect(page.locator('#framing-target')).toHaveText('No target');
+  await expect(page.locator(operation('engage'))).toBeDisabled();
+  expect(mock.framing.target_id).toBe(null);
+  await page.getByRole('button', { name: 'Select person #7 for framing' }).click();
+  await expect(page.locator('#framing-target')).toHaveText('Person #7');
+  await page.locator(operation('engage')).click();
+  await expect(page.locator('#framing-status')).toContainText('Framing active');
+  await page.locator(operation('closer')).click();
+  await page.locator(operation('farther')).click();
+  const framed = operations(mock).slice(1).filter(call => ['select', 'engage', 'closer', 'farther'].includes(call.payload.operation));
+  expect(framed.map(call => call.payload.operation)).toEqual(['select', 'engage', 'closer', 'farther']);
+  expect(framed.every(call => call.payload.mode_generation === 4)).toBe(true);
+  await page.locator(operation('stop')).click();
+  await expect(page.locator(operation('clear'))).toBeEnabled();
+  await page.locator(operation('clear')).click();
+  const manual = operations(mock).filter(call => ['stop', 'clear'].includes(call.payload.operation));
+  expect(manual.map(call => call.payload.operation)).toEqual(['stop', 'clear']);
+  expect(manual.every(call => call.payload.mode_generation === undefined)).toBe(true);
+  expect(mock.calls.some(call => call.payload.action === 'release')).toBe(false);
 });
 
 test('AltHold and confirmed airborne state are required before engagement', async ({ page, model }) => {

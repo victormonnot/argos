@@ -291,3 +291,60 @@ def test_prepare_mode_field_is_not_accepted_for_arm_or_unknown_input_fields(flig
     assert client.post("/api/control/input",
                        json={"token": token, "seq": 1, "axes": dict(forward=0, right=0, up=0, yaw=0),
                              "throttle": 0, "extra": True}, headers=ORIGIN).status_code == 422
+
+
+def test_airborne_mode_api_resynchronizes_owned_stale_input_without_renewing_it(flight):
+    client, session, wire, now = flight
+    token = arm_request(client, session, wire, now, mode=0)
+    wire.receive(mav.MAVLink_extended_sys_state_message(0, 2))
+    session.tick()
+    axes = dict(forward=0, right=0, up=0, yaw=0)
+    assert client.post("/api/control/input", json={"token": token, "seq": 1,
+        "axes": axes, "throttle": .58, "mode_generation": 0}, headers=ORIGIN).status_code == 200
+    now[0] = .3
+    changed = client.post("/api/control/action", json={"token": token, "action": "switch_mode",
+        "mode": 2, "mode_generation": 0, "input_seq": 1}, headers=ORIGIN)
+    assert changed.status_code == 200
+    assert changed.json()["control"]["mode_generation"] == 1
+    now[0] = .4
+    stale = client.post("/api/control/input", json={"token": token, "seq": 99,
+        "axes": axes, "throttle": .58, "mode_generation": 0}, headers=ORIGIN)
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "stale_mode_generation"
+    state = stale.json()["control"]
+    assert state["owned"] and state["input_seq"] == 1
+    assert state["last_input_age"] == pytest.approx(.2)
+    assert token not in stale.text
+    good = client.post("/api/control/input", json={"token": token, "seq": 2,
+        "axes": axes, "throttle": .58, "mode_generation": 1}, headers=ORIGIN)
+    assert good.status_code == 200
+    wire.receive(mav.MAVLink_command_ack_message(176, 0))
+    session.tick()
+    assert session.control.state(.4)["selected_mode"] == 0
+    now[0] = .5
+    wire.receive(mav.MAVLink_heartbeat_message(2, 3, 129, 2, 4, 3))
+    session.tick()
+    state = client.get("/api/state").json()["control"]
+    assert state["mode_generation"] == 2 and state["mode_transfer"]["to_mode"] == 2
+    assert state["selected_mode"] == 2 and state["throttle"] == 0
+    assert client.post("/api/control/input", json={"token": token, "seq": 3,
+        "axes": axes, "mode_generation": 2}, headers=ORIGIN).status_code == 200
+
+
+@pytest.mark.parametrize("changes", [{"mode_generation": True}, {"input_seq": None}, {"mode": 9},
+                                     {"throttle": .5}, {"mode_generation": 1}])
+def test_airborne_mode_api_invalid_intent_never_sends_mode_command(flight, changes):
+    client, session, wire, now = flight
+    token = arm_request(client, session, wire, now, mode=0)
+    wire.receive(mav.MAVLink_extended_sys_state_message(0, 2))
+    session.tick()
+    axes = dict(forward=0, right=0, up=0, yaw=0)
+    client.post("/api/control/input", json={"token": token, "seq": 1,
+        "axes": axes, "throttle": .58}, headers=ORIGIN)
+    before = len(wire.outgoing)
+    response = client.post("/api/control/action", json={"token": token, "action": "switch_mode",
+        "mode": 2, "mode_generation": 0, "input_seq": 1, **changes}, headers=ORIGIN)
+    assert response.status_code == (409 if type(changes.get("mode_generation")) is int
+                                   and changes["mode_generation"] == 1 else 422)
+    assert len(wire.outgoing) == before
+    assert session.control.state(now[0])["mode_generation"] == 0

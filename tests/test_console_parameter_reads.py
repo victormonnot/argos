@@ -43,7 +43,7 @@ def reads(link):
 @pytest.mark.parametrize("framing", [False, True])
 def test_initial_batch_is_legacy_size_then_only_one_read_per_interval(framing):
     control, link, token = claimed(framing=framing)
-    assert [key for key, _ in reads(link)] == list(REQUIRED_PARAMETERS)
+    assert [key for key, _ in reads(link)] == list(REQUIRED_PARAMETERS)[:PARAMETER_INITIAL_BATCH]
     assert len(reads(link)) == PARAMETER_INITIAL_BATCH == 17
     control.tick(link, .099)
     assert len(reads(link)) == 17
@@ -77,12 +77,12 @@ def test_framing_profile_completes_after_preparation_with_a_bounded_response_que
     heartbeat(control, .02)
     assert control.state(.02)["prepared"]
     assert not control.state(.02)["profile"]["ready"]
-    for index in range(1, 31):
+    for index in range(1, len(expected) - PARAMETER_INITIAL_BATCH + 2):
         now = index * .11
         step(control, link, token, now)
         drain(now)
     assert control.state(now)["profile"]["ready"]
-    assert len(reads(link)) == len(expected) == 45
+    assert len(reads(link)) == len(expected)
     assert {key for key, _ in reads(link)} == set(expected)
     control.action(token, "arm", link=link, now=now)
     assert control.state(now)["command"]["action"] == "arm"
@@ -132,7 +132,8 @@ def test_retry_window_is_absolute_despite_neutral_renewal_and_missing_responses(
     assert control.state(16.)["owned"]
     assert control.state(16.)["profile"]["missing"]
     # Only the original stream requests exist; retries never issue mode/arm.
-    assert [message.command for message in link.messages("COMMAND_LONG")] == [511, 511]
+    assert [message.command for message in link.messages("COMMAND_LONG")] == [511, 511, 511]
+    assert {message.param1 for message in link.messages("COMMAND_LONG")} == {0, 245, 83}
     step(control, link, token, 16.1)
     assert reads(link) == actual
 
@@ -146,7 +147,7 @@ def test_late_tick_sends_one_missing_read_without_catching_up_a_burst():
     assert len(reads(link)) == 18
 
 
-def test_armed_unknown_or_uncertain_arm_blocks_parameter_reads():
+def test_armed_unknown_or_uncertain_arm_blocks_static_profile_discovery():
     for guard in ("armed", "unknown", "uncertain"):
         control, link, token = claimed()
         if guard == "armed":
@@ -160,7 +161,10 @@ def test_armed_unknown_or_uncertain_arm_blocks_parameter_reads():
             control._arm_uncertain = True
         control.input(token, 0, ZERO, link=link, now=.1)
         control.tick(link, .1)
-        assert len(reads(link)) == 17
+        static_reads = [(key, at) for key, at in reads(link) if key != "MOT_THST_HOVER"]
+        assert len(static_reads) == PARAMETER_INITIAL_BATCH
+        dynamic_reads = [(key, at) for key, at in reads(link) if key == "MOT_THST_HOVER"]
+        assert dynamic_reads == ([("MOT_THST_HOVER", .1)] if guard == "armed" else [])
 
 
 def test_revoke_clears_reads_and_reclaim_starts_fresh_queue_and_deadline():

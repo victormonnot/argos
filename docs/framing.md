@@ -55,8 +55,12 @@ a profile. Freshness, clipping, identity and takeover rules remain unchanged.
    removes a stopped selection. **Land** and **Release** retain their usual
    landing behavior. Another engagement always requires an explicit request.
 
-Stabilize remains available for manual flight; framing requires AltHold. Mode
-changes remain restricted to the ground. Turning Person detection off stops
+Stabilize remains available for manual flight; framing requires AltHold. After
+a Stabilize takeoff, release directions and use **Switch mode** to enter AltHold
+before selecting and engaging. An in-flight mode change stops framing and clears
+the selection. Returning to AltHold does not resume it: select the person and
+engage explicitly again. See [mode transitions](web-control.md#change-mode-in-flight).
+Turning Person detection off stops
 framing. Leaving the flight view or losing browser/service context releases the
 control lease as it does during manual flight.
 
@@ -137,10 +141,10 @@ derivative kick. Large centering errors inhibit forward pitch while yaw and
 vertical centering continue. Commands have deadbands, caps and slew limits; the
 controller has no integral term. See [image_framing.py](../argos/guidance/image_framing.py).
 
-The explicit digital profile removes RC stick/throttle deadzones so small
-corrections reach ArduPilot. Framing-enabled sessions additionally check channel
-mapping, reversal, RC calibration, yaw mapping, simple-mode settings and the
-fixed camera's servo configuration. Unexpected values block arming and engagement;
+The explicit digital profile removes RC stick/throttle deadzones and checks
+channel mapping, reversal and RC calibration for manual flight and framing.
+Framing-enabled sessions additionally check yaw mapping, simple-mode settings
+and the fixed camera's servo configuration. Unexpected values block arming and engagement;
 a received profile change during armed control invokes the existing landing
 path. The service reads parameters; it never silently rewrites a mismatch.
 It spaces remaining/missing reads on the ground within a bounded startup window
@@ -166,9 +170,18 @@ strictly increasing integer within the current lease.
 
 | Operation | Additional fields |
 | --- | --- |
-| `select` | `run_id`, `video_id`, `frame_sequence`, `track_id` from the displayed analysis |
-| `engage` | `revision`, `input_seq` from acknowledged control state |
-| `stop`, `clear`, `closer`, `farther` | None |
+| `select` | `mode_generation`, `run_id`, `video_id`, `frame_sequence`, `track_id` from current control/displayed analysis |
+| `engage` | `mode_generation`, `revision`, `input_seq` from acknowledged control state |
+| `closer`, `farther` | `mode_generation` from current control state |
+| `stop`, `clear` | None |
+
+Mode-sensitive operations carry the current flight-mode generation. Omission
+is accepted only at generation zero for legacy clients. A stale generation
+returns the [typed mode conflict](web-control.md#control-api-and-recordings)
+without changing the selection or advancing framing intent. Selection is also
+refused during a mode transfer. This prevents a delayed pre-switch Select from
+restoring the old target after returning to AltHold. Stop/Clear remain
+unversioned so manual cancellation retains priority.
 
 `control.framing` exposes phase, revision, selected target, eligibility/reason,
 normalized errors, current/reference height, pause status, derived axes, frame receipt age and

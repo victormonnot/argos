@@ -4,11 +4,32 @@ test.use({ hasTouch: true });
 
 async function installControl(page, model) {
   const control = { at: 0, enabled: true, available: true, reason: '', owned: false, phase: 'idle', last_input_age: null,
-    selected_mode: 2, prepared: false, throttle: 0,
+    selected_mode: 2, prepared: false, throttle: 0, input_seq: -1, lease_started_at: null,
+    mode_generation: 0, mode_transition: null, mode_transfer: null,
     axes: { forward: 0, right: 0, up: 0, yaw: 0 }, vehicle: { armed: false, mode: 0, landed: true, heartbeat_age: .01 },
     profile: { ready: false, values: {}, required: {} }, command: null, last_error: '' };
-  const mock = { control, calls: [], seq: 0, claims: 0, inputsActive: 0, maxInputsActive: 0, holdInput: null, holdClaim: null, token: null };
-  const snapshot = () => ({ ...structuredClone(control), at: model.clock() });
+  const mock = { control, calls: [], seq: 0, claims: 0, inputsActive: 0, maxInputsActive: 0, holdInput: null, holdClaim: null, token: null,
+    switchReason: '', targetThrottle: .374, holdSwitch: null, holdInputBefore: null };
+  const snapshot = () => ({ ...structuredClone(control), at: model.clock(), mode_switch: {
+    available: control.vehicle.armed && control.vehicle.landed === false && !control.mode_transition && !mock.switchReason,
+    reason: mock.switchReason, target_mode: control.selected_mode === 2 ? 0 : 2,
+    target_throttle: control.selected_mode === 2 ? mock.targetThrottle : null,
+  } });
+  mock.snapshot = snapshot;
+  const holdFor = async held => {
+    held.requested = true; model.pending.add(held);
+    await new Promise(resolve => { held.release = resolve; }); model.pending.delete(held);
+  };
+  mock.completeSwitch = () => {
+    const transfer = control.mode_transition;
+    if (!transfer) throw new Error('No pending fixture mode transition.');
+    control.mode_generation += 1; control.selected_mode = transfer.to_mode; control.vehicle.mode = transfer.to_mode;
+    control.throttle = transfer.to_mode === 0 ? transfer.target_throttle : 0;
+    control.mode_transfer = { generation: control.mode_generation, from_mode: transfer.from_mode,
+      to_mode: transfer.to_mode, completed_at: model.clock(), throttle: control.throttle };
+    control.mode_transition = null; control.phase = 'armed';
+    control.command.state = 'observed'; control.command.observed = true;
+  };
   model.modifyState = value => {
     value.control = snapshot();
     value.telemetry.heartbeat.fields.base_mode = control.vehicle.armed ? 128 : 0;
@@ -24,18 +45,26 @@ async function installControl(page, model) {
       mock.claims += 1;
       mock.token = `private-test-token-${mock.claims}`;
       control.owned = true; control.phase = 'claimed'; control.prepared = false; control.throttle = 0;
+      control.lease_started_at = model.clock(); control.mode_generation = 0; control.mode_transition = null; control.mode_transfer = null;
       value = { token: mock.token, control: snapshot() };
       if (mock.holdClaim) { mock.holdClaim.requested = true; await new Promise(resolve => { mock.holdClaim.release = resolve; }); }
     } else if (payload.token !== mock.token || !control.owned) {
       return route.fulfill({ status: 409, json: { detail: 'Les commandes ont expired.' } });
     } else if (path.endsWith('/input')) {
+      if (mock.holdInputBefore) { const held = mock.holdInputBefore; mock.holdInputBefore = null; await holdFor(held); }
+      if (payload.token !== mock.token || !control.owned) return route.fulfill({ status: 409, json: { detail: 'Control expired.' } });
+      if (mock.inputErrorOnce) { const detail = mock.inputErrorOnce; mock.inputErrorOnce = null; return route.fulfill({ status: 409, json: { detail } }); }
+      if (payload.mode_generation !== control.mode_generation) return route.fulfill({ status: 409,
+        json: { detail: 'Flight mode changed; synchronize input.', code: 'stale_mode_generation', control: snapshot() } });
       expect(payload.seq).toBeGreaterThan(mock.seq);
       mock.seq = payload.seq;
+      control.input_seq = payload.seq;
       control.axes = payload.axes;
       expect(payload.throttle).toBeGreaterThanOrEqual(0);
       expect(payload.throttle).toBeLessThanOrEqual(1);
       if (control.selected_mode === 2 || !control.vehicle.armed) expect(payload.throttle).toBe(0);
       if (control.selected_mode === 0) expect(payload.axes.up).toBe(0);
+      if (control.mode_transition) expect(payload.axes).toEqual(neutral);
       control.throttle = payload.throttle;
       mock.inputsActive += 1; mock.maxInputsActive = Math.max(mock.maxInputsActive, mock.inputsActive);
       value = { control: snapshot() };
@@ -44,11 +73,28 @@ async function installControl(page, model) {
       mock.inputsActive -= 1;
     } else if (path.endsWith('/action')) {
       const action = payload.action;
+      if (action === 'switch_mode') {
+        expect(payload.mode_generation).toBe(control.mode_generation);
+        expect(payload.input_seq).toBeLessThanOrEqual(control.input_seq);
+        expect(payload.input_seq).toBeGreaterThanOrEqual(1);
+        expect(control.axes).toEqual(neutral);
+        expect(payload.throttle).toBeUndefined();
+        expect(control.vehicle.landed).toBe(false);
+        control.mode_generation += 1;
+        control.mode_transition = { from_mode: control.selected_mode, to_mode: payload.mode,
+          started_at: model.clock(), deadline: model.clock() + 1, target_throttle: payload.mode === 0 ? mock.targetThrottle : null,
+          bridge_throttle: .4 };
+        control.phase = 'switching';
+        control.command = { action, mode: payload.mode, state: 'accepted', observed: false, command_id: 1 };
+        value = { control: snapshot() };
+        if (mock.holdSwitch) { const held = mock.holdSwitch; mock.holdSwitch = null; await holdFor(held); }
+        return route.fulfill({ json: value }).catch(() => {});
+      }
       if (action === 'prepare') { control.vehicle.mode = payload.mode; control.selected_mode = payload.mode; control.profile.ready = true; control.phase = 'prepared'; control.prepared = true; }
       if (action === 'arm') { control.vehicle.armed = true; control.phase = 'armed'; }
       if (action === 'land') { control.vehicle.mode = 9; control.phase = 'landing'; control.throttle = 0; }
       if (action === 'disarm') { control.vehicle.armed = false; control.phase = 'prepared'; control.throttle = 0; }
-      if (action === 'release') { control.owned = false; control.phase = 'released'; control.throttle = 0; mock.token = null; }
+      if (action === 'release') { control.owned = false; control.phase = 'released'; control.throttle = 0; control.mode_transition = null; mock.token = null; }
       control.command = { action, ...(action === 'prepare' ? { mode: payload.mode } : {}), command_id: 1, sent_at: model.clock(), transport: 'accepted', ack: 0, observed: true, state: 'observed', detail: '' };
       value = { control: snapshot() };
     } else throw new Error(`Unexpected control fixture route ${path}`);
@@ -74,6 +120,173 @@ async function ready(page, model, mode = 2) {
 async function center(locator) {
   const box = await locator.boundingBox();
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}
+
+async function airborneReady(page, model, mode = 2) {
+  const mock = await ready(page, model, mode);
+  mock.control.vehicle.landed = false;
+  await expect(page.locator('#control-mode-select')).toBeEnabled();
+  return mock;
+}
+
+test('airborne mode choice needs an explicit touch action and pending transfer keeps neutral lease inputs', async ({ page, model }) => {
+  const mock = await airborneReady(page, model);
+  const button = page.locator('#control-mode-switch');
+  await expect(button).toBeDisabled();
+  await page.locator('#control-mode-select').selectOption('0');
+  await expect(button).toBeEnabled();
+  await page.waitForTimeout(120);
+  expect(mock.calls.some(call => call.payload.action === 'switch_mode')).toBe(false);
+  const held = {}; mock.holdSwitch = held;
+  await button.tap();
+  await expect.poll(() => held.requested).toBe(true);
+  await expect(button).toHaveText('Switching…');
+  await expect(page.locator('#control-mode')).toHaveText('Mode AltHold');
+  await expect(page.getByRole('button', { name: 'Forward, hold', exact: true })).toBeDisabled();
+  const count = mock.calls.filter(call => call.path.endsWith('/input')).length;
+  await expect.poll(() => mock.calls.filter(call => call.path.endsWith('/input')).length).toBeGreaterThan(count + 1);
+  const transferInputs = mock.calls.filter(call => call.path.endsWith('/input') && call.payload.mode_generation === 1);
+  expect(transferInputs.length).toBeGreaterThan(0);
+  for (const call of transferInputs) { expect(call.payload.axes).toEqual(neutral); expect(call.payload.throttle).toBe(0); }
+  expect(mock.calls.some(call => call.payload.action === 'release')).toBe(false);
+  mock.completeSwitch(); held.release();
+  await expect(page.locator('#control-throttle')).toBeEnabled();
+  await expect.poll(() => lastThrottle(mock)).toBe(.374);
+  expect(mock.calls.filter(call => call.payload.action === 'switch_mode')).toHaveLength(1);
+});
+
+test('transferred gas seeds once, retains decimal steps and rejects late lower-generation state', async ({ page, model }) => {
+  const mock = await airborneReady(page, model);
+  await page.locator('#control-mode-select').selectOption('0');
+  await page.locator('#control-mode-switch').click();
+  await expect.poll(() => mock.control.mode_generation).toBe(1);
+  const old = mock.snapshot();
+  mock.completeSwitch();
+  await expect.poll(() => lastThrottle(mock)).toBe(.374);
+  await expect(page.locator('#control-throttle-value')).toHaveText('37.4 %');
+  await page.getByRole('button', { name: 'Increase throttle by 2 percentage points', exact: true }).click();
+  await expect.poll(() => lastThrottle(mock)).toBe(.394);
+  await page.locator('#control-panel').click({ position: { x: 2, y: 2 } });
+  await page.keyboard.press('r');
+  await expect.poll(() => lastThrottle(mock)).toBe(.414);
+  // A future timestamp cannot make an older mode generation authoritative.
+  old.at = model.clock() + 5;
+  await page.evaluate(value => document.dispatchEvent(new CustomEvent('argos:control-state', { detail: value })),
+    { run_id: model.run, fresh: true, environment: 'simulation', control: old });
+  await expect(page.locator('#control-mode')).toHaveText('Mode Stabilize');
+  await page.waitForTimeout(150);
+  await expect.poll(() => lastThrottle(mock)).toBe(.414);
+  // The retained completion record remains present in every later snapshot.
+  expect(mock.control.mode_transfer.throttle).toBe(.374);
+  await expect(page.locator('#control-throttle-value')).toHaveText('41.4 %');
+});
+
+test('Stabilize draft and transfer keep held gas until AltHold is observed', async ({ page, model }) => {
+  const mock = await airborneReady(page, model, 0);
+  await page.locator('#control-throttle').fill('47.3');
+  await expect.poll(() => lastThrottle(mock)).toBe(.473);
+  await page.locator('#control-mode-select').selectOption('2');
+  await page.waitForTimeout(120);
+  expect(lastThrottle(mock)).toBe(.473);
+  await page.locator('#control-mode-switch').click();
+  await expect.poll(() => mock.control.phase).toBe('switching');
+  await expect.poll(() => mock.calls.filter(call => call.path.endsWith('/input')).at(-1).payload.mode_generation).toBe(1);
+  expect(lastThrottle(mock)).toBe(.473);
+  expect(lastAxes(mock)).toEqual(neutral);
+  mock.completeSwitch();
+  await expect(page.getByRole('button', { name: 'Climb, hold', exact: true })).toBeEnabled();
+  await expect.poll(() => lastThrottle(mock)).toBe(0);
+  await expect(page.locator('#control-throttle-group')).toBeHidden();
+});
+
+test('stale-generation input syncs from typed conflict without releasing or dropping transferred gas', async ({ page, model }) => {
+  const mock = await airborneReady(page, model);
+  await page.locator('#control-mode-select').selectOption('0');
+  await page.locator('#control-mode-switch').click();
+  await expect.poll(() => mock.control.mode_generation).toBe(1);
+  const held = {}; mock.holdInputBefore = held;
+  await expect.poll(() => held.requested).toBe(true);
+  mock.completeSwitch(); held.release();
+  await expect.poll(() => mock.calls.filter(call => call.path.endsWith('/input')).at(-1).payload.mode_generation).toBe(2);
+  await expect.poll(() => lastThrottle(mock)).toBe(.374);
+  await expect(page.locator('#control-authority')).toHaveText('You have control');
+  expect(mock.calls.some(call => call.payload.action === 'release')).toBe(false);
+  expect(mock.claims).toBe(1);
+});
+
+test('an unrelated input 409 during transfer still releases control', async ({ page, model }) => {
+  const mock = await airborneReady(page, model);
+  await page.locator('#control-mode-select').selectOption('0');
+  await page.locator('#control-mode-switch').click();
+  await expect.poll(() => mock.control.mode_generation).toBe(1);
+  mock.inputErrorOnce = 'Pilot input rejected.';
+  await expect.poll(() => mock.calls.some(call => call.payload.action === 'release')).toBe(true);
+  await expect(page.locator('#control-feedback')).toContainText('Pilot input rejected. Control released.');
+  await expect(page.locator('#control-throttle')).toBeDisabled();
+});
+
+test('late mode-action reply after release cannot restore mode authority', async ({ page, model }) => {
+  const mock = await airborneReady(page, model);
+  const held = {}; mock.holdSwitch = held;
+  await page.locator('#control-mode-select').selectOption('0');
+  await page.locator('#control-mode-switch').click();
+  await expect.poll(() => held.requested).toBe(true);
+  await page.locator('[data-control-action=release]').click();
+  held.release();
+  await expect(page.locator('#control-claim')).toBeVisible();
+  await expect(page.locator('#control-throttle')).toBeDisabled();
+  await expect(page.locator('#control-throttle-value')).toHaveText('0 %');
+  expect(mock.control.owned).toBe(false);
+});
+
+test('fresh claim accepts reset generation after a completed earlier transfer', async ({ page, model }) => {
+  const mock = await airborneReady(page, model);
+  await page.locator('#control-mode-select').selectOption('0');
+  await page.locator('#control-mode-switch').click();
+  await expect.poll(() => mock.control.mode_generation).toBe(1);
+  mock.completeSwitch();
+  await expect.poll(() => lastThrottle(mock)).toBe(.374);
+  await page.locator('[data-control-action=release]').click();
+  mock.control.vehicle.armed = false; mock.control.vehicle.landed = true;
+  await page.locator('#control-claim').click();
+  await expect(page.locator('#control-authority')).toHaveText('You have control');
+  await expect.poll(() => mock.calls.filter(call => call.path.endsWith('/input')).at(-1).payload.mode_generation).toBe(0);
+  await expect(page.locator('#control-throttle-value')).toHaveText('0 %');
+  expect(mock.claims).toBe(2);
+});
+
+test('mode transfer readiness explains missing autopilot output without suggesting default gas', async ({ page, model }) => {
+  const mock = await airborneReady(page, model);
+  mock.switchReason = 'Waiting for recent autopilot thrust.';
+  await page.locator('#control-mode-select').selectOption('0');
+  await expect(page.locator('#control-mode-switch')).toBeDisabled();
+  await expect(page.locator('#control-feedback')).toContainText('Waiting for recent autopilot thrust.');
+  expect(mock.calls.some(call => call.payload.action === 'switch_mode')).toBe(false);
+  await expect(page.locator('#control-mode-note')).toContainText('autopilot’s recent output');
+});
+
+for (const [width, height] of [[1366, 768], [768, 1024], [360, 640]]) {
+  test(`airborne mode transfer remains touch-accessible at ${width}x${height}`, async ({ page, model }) => {
+    await page.setViewportSize({ width, height });
+    const mock = await airborneReady(page, model);
+    await page.locator('#control-mode-select').selectOption('0');
+    const geometry = await page.evaluate(() => {
+      const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { width: r.width, height: r.height }; };
+      return { button: rect('#control-mode-switch'), selector: rect('#control-mode-select'), camera: rect('#camera-stage'),
+        scrollWidth: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth };
+    });
+    expect(geometry.button.width).toBeGreaterThanOrEqual(44); expect(geometry.button.height).toBeGreaterThanOrEqual(44);
+    expect(geometry.selector.height).toBeGreaterThanOrEqual(44); expect(geometry.selector.width).toBeGreaterThan(90);
+    expect(geometry.camera.height).toBeGreaterThan(100); expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.viewport);
+    await page.screenshot({ path: test.info().outputPath('airborne-mode-choice.png'), fullPage: true });
+    await page.locator('#control-mode-switch').tap();
+    await expect.poll(() => mock.control.phase).toBe('switching');
+    await expect(page.locator('#control-feedback')).toContainText('Directions paused');
+    await page.screenshot({ path: test.info().outputPath('airborne-mode-pending.png'), fullPage: true });
+    mock.completeSwitch();
+    await expect(page.locator('#control-throttle-value')).toHaveText('37.4 %');
+    await page.screenshot({ path: test.info().outputPath('airborne-stabilize.png'), fullPage: true });
+  });
 }
 
 test('pilotage is explicit and mouse hold releases outside the button without latching', async ({ page, model }) => {

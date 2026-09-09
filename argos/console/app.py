@@ -10,6 +10,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .config import ConsoleConfig
 from .context import capture_context
+from .control import ModeGenerationConflict
 from .archive import ArchiveError, RecordingArchive
 from .session import ConsoleSession
 from .vision import VisionService
@@ -223,6 +224,9 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
         values = await mutation_body(request)
         try:
             return JSONResponse(session.control_request(operation, values))
+        except ModeGenerationConflict as exc:
+            return JSONResponse({"detail": str(exc), "code": "stale_mode_generation",
+                                 "control": exc.control}, status_code=409)
         except (TypeError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
         except RuntimeError as exc:

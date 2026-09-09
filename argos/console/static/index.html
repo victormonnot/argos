@@ -287,11 +287,12 @@
         </div>
         <div class="control-vehicle"><span id="control-mode">Mode —</span><span id="control-armed">Arming —</span></div>
         <div class="control-mode-choice">
-          <label for="control-mode-select">Ground mode</label>
+          <label for="control-mode-select">Flight mode</label>
           <select disabled="" id="control-mode-select" aria-describedby="control-mode-note">
             <option value="2">AltHold · assisted altitude</option>
             <option value="0">Stabilize · manual throttle</option>
           </select>
+          <button class="button button-outline" disabled="" hidden="" id="control-mode-switch" type="button">Switch mode</button>
         </div>
         <div aria-label="Preparation and end of flight" class="control-actions">
           <button class="button button-outline" data-control-action="prepare" disabled="" type="button">Prepare</button>
@@ -335,7 +336,7 @@
             </div>
             <div class="control-throttle" hidden="" id="control-throttle-group">
               <label for="control-throttle">Held throttle <output id="control-throttle-value" for="control-throttle">0 %</output></label>
-              <input aria-describedby="control-neutral-note" disabled="" id="control-throttle" max="100" min="0" step="1" type="range" value="0"/>
+              <input aria-describedby="control-neutral-note" disabled="" id="control-throttle" max="100" min="0" step="0.1" type="range" value="0"/>
               <div class="control-throttle-steps">
                 <button aria-label="Decrease throttle by 2 percentage points" class="button button-outline" data-throttle-step="-2" disabled="" type="button">− <span>2 %</span></button>
                 <button aria-label="Increase throttle by 2 percentage points" class="button button-outline" data-throttle-step="2" disabled="" type="button">＋ <span>2 %</span></button>
