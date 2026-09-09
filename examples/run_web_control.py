@@ -66,6 +66,36 @@ def free_port(port, kind):
         probe.bind(("127.0.0.1", port))
 
 
+def process_start_ticks(pid: int, proc_root: Path = Path("/proc")) -> int | None:
+    """Read Linux process identity without making /proc a launch requirement."""
+    try:
+        stat = (proc_root / str(pid) / "stat").read_text()
+        # comm is parenthesized and may itself contain spaces or parentheses.
+        _, separator, fields = stat.rpartition(") ")
+        if not separator:
+            return None
+        start_ticks = int(fields.split()[19])  # Field 22; fields starts at state.
+        return start_ticks if start_ticks >= 0 else None
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def launch_provenance(gui: bool, proc_root: Path = Path("/proc")) -> dict:
+    """Keep startup evidence; these values are not a live process inventory."""
+    try:
+        boot_id = (proc_root / "sys/kernel/random/boot_id").read_text().strip() or None
+    except (OSError, ValueError):
+        boot_id = None
+    return {
+        "launcher_argv": list(sys.orig_argv),
+        "launcher_cwd": str(Path.cwd()),
+        "gazebo_mode": "gui" if gui else "headless",
+        "boot_id": boot_id,
+        "launcher_start_ticks": process_start_ticks(os.getpid(), proc_root),
+        "children": {},
+    }
+
+
 def main():
     repo = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
@@ -83,6 +113,10 @@ def main():
                         help="asset root populated by examples/setup_vision_scene.py")
     parser.add_argument("--vision-model", type=Path,
                         help="local detector model forwarded to the ARGOS console")
+    parser.add_argument("--vision-variant", choices=("tiny", "s"), default="tiny",
+                        help="pinned detector profile: tiny (416px) or s (640px)")
+    parser.add_argument("--vision-threads", type=int, choices=range(1, 7), default=2,
+                        help="CPU threads for the detector worker (default: 2)")
     args = parser.parse_args()
     if args.framing and (args.scene != "person" or args.vision_model is None):
         parser.error("--framing requires --scene person and --vision-model")
@@ -146,6 +180,7 @@ def main():
     env["PYTHONPATH"] = str(repo) + os.pathsep + env.get("PYTHONPATH", "")
     children = []
     logs = []
+    provenance = launch_provenance(args.gui)
 
     def start(name, command, cwd=run):
         log = (run / f"{name}.log").open("w")
@@ -153,11 +188,17 @@ def main():
         process = subprocess.Popen(command, cwd=cwd, env=env, stdout=log,
                                    stderr=subprocess.STDOUT, start_new_session=True)
         children.append((name, process))
+        provenance["children"][name] = {
+            "argv": list(command),
+            "cwd": str(Path(cwd).resolve()),
+            "start_ticks": process_start_ticks(process.pid),
+        }
         (run / "processes.json").write_text(json.dumps({
             "launcher": os.getpid(), "children": {n: p.pid for n, p in children},
             "partition": env["GZ_PARTITION"], "http_port": args.port,
             "mavlink_port": args.mavlink_port, "physics_port": args.physics_port,
             "scene": args.scene,
+            "provenance": provenance,
         }, indent=2))
 
     def interrupted(signum, frame):
@@ -197,7 +238,9 @@ def main():
         if args.framing:
             console_command += ["--sim-framing"]
         if args.vision_model is not None:
-            console_command += ["--vision-model", str(args.vision_model)]
+            console_command += ["--vision-model", str(args.vision_model),
+                                "--vision-variant", args.vision_variant,
+                                "--vision-threads", str(args.vision_threads)]
         start("console", console_command, repo)
         print(f"ARGOS: http://127.0.0.1:{args.port} — Flight controls (initialization may take a few seconds)", flush=True)
         while True:

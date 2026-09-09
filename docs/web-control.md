@@ -43,6 +43,18 @@ Press **Ctrl-C** in the launcher terminal to stop its console, SITL and Gazebo
 children. Their logs, copied world and SITL files remain in the printed run
 directory for inspection. The usual ARGOS recording directory is retained.
 
+The run's `processes.json` retains launcher and child PIDs, ports and partition.
+Its `provenance` section also records the launcher arguments and working directory,
+the requested Gazebo mode (`headless` or `gui`), and each directly launched child's
+command and working directory. On Linux, it includes the boot ID and process
+start ticks from `/proc` to help distinguish a process from a later reuse of its
+PID. Unavailable identity fields are `null` and do not prevent startup.
+
+These are startup records. They do not track later descendants, process
+replacements or renderer selection, so compare them with the current process
+tree and rendering log when investigating a failure. The manifest does not
+measure memory use or establish long-duration simulation stability.
+
 For access from another computer, forward the simulation's HTTP port through SSH:
 
 ```sh
