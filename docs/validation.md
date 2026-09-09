@@ -922,3 +922,56 @@ released explicitly. It made no arming request. This nominal check is separate
 from the measured intermittent stalls and is not a remote-flight guarantee.
 Final simulation state was disarmed, unowned and recording-idle; all eight user
 journals retained identical byte sizes and SHA-256 hashes.
+
+## Closer/Farther measurements — September 9, 2026
+
+One live Gazebo/SITL flight evaluated the existing apparent-height controller at
+`e4fab33`, with YOLOX-S and four inference threads. The controller, scene, gains
+and timeouts were unchanged. Chromium ran on the simulation computer and used
+the shipped UI: take off in AltHold, select the person, engage for 12 seconds,
+click **Closer** once, observe for 15 seconds, click **Farther** once, observe
+for 15 seconds, then select **Manual**, **Land** and release after disarming.
+
+The accepted engagement-to-Manual interval was **42.817 session-clock seconds**.
+All ten action replies and 748 input replies returned HTTP 200. The 199 distinct
+analyzed images during assistance each contained one confident detection of
+the selected ID; 429 state samples showed no pause, takeover or control loss.
+The largest sampled analyzed-image age was 407.1 ms. This is an observation of
+one loopback trial, not a guarantee for remote control or later flights.
+
+![Measured apparent height, centering and forward guidance through Closer and Farther](images/framing-size-2026-09-09.svg)
+
+Phase boundaries use accepted action replies' session times. Image measurements
+use the selected box in each distinct analyzed JPEG, grouped by original camera
+receipt time; repeated state reads do not add image samples. The late windows
+were chosen before the trial: the final eight seconds of baseline and the final
+five seconds after each click.
+
+| Phase | Actual duration | Distinct images | Requested image height | Late median measured height | Late height/reference, median (p10–p90) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Baseline | 12.286 s | 58 | 24.759% | 21.608% | 0.873 (0.847–0.903) |
+| Closer | 15.251 s | 69 | 27.235% | 35.054% | 1.287 (1.156–1.358) |
+| Farther | 15.280 s | 72 | 24.759% | 19.309% | 0.780 (0.761–0.808) |
+
+Both reference adjustments were exact: ×1.1, then ÷1.1, returning to the
+original reference without clamping. Size changed in the requested direction
+during each phase, but this does **not** isolate the clicks' effect. The person
+follows the existing [rectangular walking path](../examples/gazebo/person_walk.sdf),
+including toward/away legs and turns, on a 15.2-simulated-second loop. The
+baseline was already below its reference before Closer. Forward guidance was
+mostly negative during Closer as the person grew, then positive throughout
+Farther as the person shrank: feedback was reacting to changing image size.
+The plotted requests are sampled guidance state, not measured vehicle velocity.
+
+This trial demonstrates functioning size controls and uninterrupted assistance;
+it does not establish precise size regulation or a metric separation. No late
+window met the predeclared diagnostic of remaining within a multiplicative ±5%
+band around the reference. That diagnostic is not an operating requirement.
+The measurements do not identify a specific gain correction, so the controller
+was retained. A constant-reference observation would help assess the walking
+scene's variation before any future tuning. No runtime actor position, known
+body size or simulator range supplied the controller or these measurements.
+
+The flight ended disarmed and unowned. Existing journals were unchanged. The
+JPEG/state capture used for this evaluation was separate test instrumentation;
+Sessions still stores received MAVLink only, not visual-control replay.
