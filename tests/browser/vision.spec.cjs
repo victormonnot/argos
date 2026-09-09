@@ -9,13 +9,13 @@ async function installVision(page, model) {
     const image = color => { context.fillStyle = color; context.fillRect(0, 0, 640, 360); return canvas.toDataURL('image/jpeg').split(',')[1]; };
     return { raw: image('#aa3333'), vision: image('#3355bb') };
   });
-  const mock = { calls: [], video: 'video-vision-1', state: 'recent', configured: true, ageLimit: 1, stateAge: 0,
+  const mock = { calls: [], video: 'video-vision-1', state: 'recent', configured: true, modelName: 'YOLOX-Tiny', ageLimit: 1, stateAge: 0,
     rawSequence: 100, visionSequence: 1, freeze: false, capturedAt: model.clock() - .03, hold: null, malformed: null,
     result: { width: 640, height: 360, inference_ms: 37.4, detections: [{ track_id: 7, box: [.25, .2, .2, .6], confidence: .93 }] } };
   model.modifyState = value => {
     Object.assign(value.video, { source: 'gazebo', source_id: mock.video, state: 'recent', label: 'Test camera', endpoint: '/test/image',
       sequence: mock.rawSequence, received_at: value.at - .01, rx_age_s: .01, width: 640, height: 360, age_limit_s: 10 });
-    value.vision = { configured: mock.configured, state: mock.state, detail: '', model: 'YOLOX-Tiny', max_hz: 5,
+    value.vision = { configured: mock.configured, state: mock.state, detail: '', model: mock.modelName, max_hz: 5,
       age_limit_s: mock.ageLimit, frame_age_s: mock.stateAge, inference_ms: 37.4, processed: 1, tracks: 1 };
   };
   await page.route(/\/api\/(?:vision\/)?frame\.jpg$/, async route => {
@@ -54,6 +54,9 @@ test('detection is optional, off by default, and uses only the paired analyzed f
   await page.locator('#vision-toggle').check();
   await expect(page.locator('.vision-box-label')).toHaveText('Person #7 · 93%');
   await expect(page.locator('#vision-status')).toContainText('Visual tracking only · 1 person');
+  await expect(page.locator('#vision-status')).toContainText('YOLOX-Tiny');
+  mock.modelName = 'YOLOX-S';
+  await expect(page.locator('#vision-status')).toContainText('YOLOX-S');
   // Raw frame sequence was already >=100; the older analyzed sequence must be
   // accepted after toggling, and its blue JPEG must replace the red raw image.
   const pixel = await page.locator('#camera-image').evaluate(image => {

@@ -397,3 +397,174 @@ memory. Restarting only the idle manual simulation restored both feeds and more
 than 8 GiB of available memory. The cause of that memory growth remains
 uninvestigated; long-duration service operation is not established by the short
 flight tests above.
+
+## Optional detector profiles — September 9, 2026
+
+The optional [YOLOX-S 640 profile](vision.md#model-and-data-flow) was compared
+offline with the existing YOLOX-Tiny 416 profile on **21 saved camera JPEGs**.
+The images came from four September 8 failure neighborhoods: the short and
+higher baseline flights, and both later 600 ms-pause candidate flights. They
+include eight images where Tiny published no detection, five with a published
+box below the 0.5 framing threshold, and eight adjacent detections above it. This is
+a deliberately selected difficult sample, not a representative accuracy set.
+
+Both models used the same original pixels, preprocessing convention, person
+publication threshold of 0.35, NMS threshold of 0.45 and maximum of 16 boxes.
+S changes both network capacity and input resolution; this is not a resolution-only
+experiment. Tiny re-inference reproduced all recorded boxes and confidence
+values exactly. Neither weights nor thresholds were tuned for these images.
+
+| Model | Images with a box ≥ 0.35 | Images with a box ≥ 0.5 | Images with multiple boxes | Total median / p95 / maximum |
+| --- | ---: | ---: | ---: | --- |
+| Tiny416 | 13 / 21 | 8 / 21 | 0 | 45.2 / 54.3 / 68.9 ms |
+| S640 | 21 / 21 | 21 / 21 | 0 | 166.9 / 192.2 / 256.7 ms |
+
+These wall times were measured on the ground computer with OpenCV 5.0.0, CPU
+backend and two threads, while the simulator remained running and grounded.
+The models ran serially with two warmup forwards followed by three timed passes
+per image: 63 timed observations per model. Total time includes JPEG decoding,
+preprocessing, network inference and box decoding; it excludes disk access,
+model loading, worker IPC and event-loop publication. The p95 uses sorted sample
+index `floor(0.95 × (n − 1))`. Every repeated output was identical. These timings
+are broader than the network-only `inference_ms` displayed in the interface.
+
+All 21 original images were visually inspected against the S box coordinates.
+Each contained one visible full person, and the S boxes plausibly covered the
+person from head through feet; no obviously unrelated or body-part-only box was
+found. S confidence ranged from 0.782 to 0.889. This is qualitative pixel review,
+without annotated boxes, ground-truth IoU, calibrated confidence or a measured
+precision/recall score. Pose-dependent box changes remain relevant to framing.
+
+A separate **nine-image September 9 manual-yaw subset** contained five fully
+visible person images during rapid rightward image motion, three visually empty
+images after the person left the right edge, and one partially visible person
+at that edge. Both models returned six detections and three empty results, with
+no extra person boxes. Both detected the partial person, so clipping checks
+remain necessary. The S total median / p95 / maximum was **174.2 / 200.9 /
+223.6 ms** over 27 timed runs. The fully visible detections accompanied changing
+track IDs under rapid image displacement; changing the detector alone does not
+repair that association failure. Three empty images do not establish a general
+false-positive rate.
+
+The model files' exact sizes, hashes, upstream source and explicit setup/launch
+commands are documented in [vision.md](vision.md). The saved JPEGs and raw local
+benchmark outputs are not included in the repository, so these numbers document
+this evaluation rather than a clone-runnable image benchmark. The checked-in
+tests cover both export geometries, model integrity, variant selection and the
+worker/configuration path without downloading weights or running inference.
+
+**Tiny remains the default.** S is an explicit option for further ground-computer
+evaluation. Its p95 is close to the 200 ms interval of a five-Hz pipeline, and
+some calls take longer. One pending image prevents an accumulating queue, but
+camera age, IPC and scheduling still contribute to the 450 ms framing limit.
+This saved-image result does not establish live S freshness, continuous framing,
+identity preservation through crossings or real outdoor performance. It cannot
+prove an alternative successful flight: different commands would change later
+camera images. No S flight validation is claimed by this offline comparison.
+
+### S CPU thread comparison
+
+A subsequent bounded comparison reran the same verified S model and original
+21 JPEGs with two and four OpenCV CPU threads. This measurement was separate
+from the table above: the load now included a grounded simulator and the active
+S worker in the console. The comparison ran after the current capture finished,
+with the vehicle disarmed and control released. No flight commands were sent.
+
+The host reports an Intel Core i5-12400F, one socket, six cores and twelve logical
+CPUs with two hardware threads per core; `lscpu` also reports Microsoft full
+virtualization. Each setting used two warmups and 63 timed calls, preserving the
+same total-time definition and p95 calculation as the earlier comparison.
+The two-thread run preceded the four-thread run; changing background load and
+run order remain potential timing influences.
+
+| S thread limit | Total median / p95 / maximum | Images with a box ≥ 0.5 |
+| --- | --- | ---: |
+| 2 | 188.1 / 213.6 / 260.7 ms | 21 / 21 |
+| 4 | 123.5 / 132.2 / 141.2 ms | 21 / 21 |
+
+Four threads reduced median total time by about 34% and p95 by about 38% in this
+comparison, with a lower observed maximum. Six threads were not tested because
+four already met the investigation's target of median below 130 ms and p95 below
+160 ms. Those targets guide this benchmark; they are not flight admission rules
+or guaranteed execution bounds.
+
+The console and simulation launcher therefore expose the explicit
+`--vision-threads` integer option from 1 to 6, preserving the default of **2**.
+The configured limit appears in vision status. Frame freshness, detection
+thresholds, tracker gates and takeover deadlines are unchanged. Lower network
+cost leaves more room for camera receipt age, IPC and event-loop scheduling;
+only a subsequent live test can establish the resulting complete image age.
+
+### Live S framing checks
+
+The real console, camera worker, Gazebo and ArduPilot SITL were exercised through
+the shipped browser controls, with no mocked detections or injected flight state.
+The simulation profile still disabled GPS. The 0.5 framing confidence gate,
+450 ms image-age limit, 600 ms neutral detection pause, association gates and
+two-second takeover deadline were unchanged.
+
+With S and **two threads**, one engagement was accepted and then latched takeover
+for `Selected target image is stale` after approximately 0.23–0.28 seconds,
+bounded by the adjacent server snapshots. The lost observation was 468.3 ms old
+and still contained the selected ID with confidence 0.855. The requested 60-second
+window failed. Manual stop, Land, disarming and release were verified.
+
+Across the complete 115-second capture, 46 of 2,294 state samples (2.0%) contained
+an analyzed image older than 450 ms. Sampled age p50 / p95 / maximum was
+337.0 / 436.4 / 514.0 ms, with about 4.81 processed images per second. All 554
+unique images were first observed before 450 ms: images aged beyond the limit
+between subsequent results. `vision.state == recent` alone is insufficient here,
+since visual display uses a one-second limit and framing uses 450 ms.
+
+After selecting **four threads**, a separate flight used a 6.5-second held climb,
+released manual input, selected the detected person and engaged framing. It
+completed **60.010 seconds** of DOM-observed active framing without an observed
+pause, changed selected ID or loss of authority. Explicit Manual, Land, observed
+disarming and release completed afterward. DOM sampling and server capture are
+observations of the loop, not hard execution-time guarantees.
+
+The complete four-thread capture contained 2,294 state samples and 560 unique
+images. Sampled image age p50 / p95 / maximum was **254.3 / 362.5 / 410.8 ms**,
+with no sampled age over 450 ms and about 4.86 processed images per second.
+The 1,199 active states retained ID 1; all 1,095 non-active states had zero framing
+outputs. During the active interval, normalized horizontal error ranged from
+−0.180 to +0.286 and apparent height/reference from 0.801 to 1.259. Passing the
+continuity window does not demonstrate precise centering or distance convergence.
+
+A second four-thread flight, after an eight-second held climb, **failed the
+requested 90-second window after 10.331 seconds of DOM-observed framing**.
+The detector emitted two nested boxes on one visible person: selected ID 1 at
+0.834 confidence and a smaller ID 2 box at 0.357. The controller latched
+`Framing requires exactly one visible person` on a 106.1 ms-old image. Visual
+inspection confirmed one person in that image. Manual stop, Land, disarming and
+release were again verified. Duplicate suppression and identity continuity remain
+open; no detection was discarded or admission gate weakened for this trial.
+
+The changed thread limit followed a failed live run and a separate timing
+comparison; neither freshness nor detection admission was relaxed to obtain this
+result. These independent flights are not paired accuracy trials: simulator
+phase, vehicle motion and resulting pixels differ. They establish a limited
+working configuration on this ground computer, not reliable following outdoors.
+
+### Remaining association limitation
+
+A separate manual-yaw trial reproduced four consecutive ID changes while the
+same person remained detected above 0.5 confidence. The image moved horizontally
+by 43–66 pixels between detections, beyond the existing nearby-association gate;
+framing had not engaged. The person subsequently left the camera image, so the
+later empty results were legitimate. Changing detector capacity cannot repair
+all geometric association failures or supply an observation outside the image.
+
+Exploratory background feature matching and foreground feature tracking were
+not integrated. Background matches lacked spatial support near the person; the
+foreground prototype met its complete checks on only one of four broken pairs.
+Real different-person replacements and crossings were not evaluated. A future
+tracker requires those tests and exact previous/current image correspondence;
+no predicted box or silent ID reassignment was added in this change.
+
+
+For this profile/provenance change, **252 focused Python tests** passed on the
+simulation host and **25 browser vision tests** passed on macOS Chromium. They
+cover model integrity and geometry, option forwarding, worker/source lifecycle,
+framing integration, optional status rendering and startup manifests. These
+focused checks are not a new repository-wide validation claim.

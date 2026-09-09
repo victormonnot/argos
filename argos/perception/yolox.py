@@ -1,4 +1,4 @@
-"""Pinned YOLOX-Tiny inference on camera JPEGs, without model downloads.
+"""Pinned YOLOX person inference on camera JPEGs, without model downloads.
 
 The upstream ONNX example defines BGR 0..255 input, top-left letterboxing and
 the stride-grid output encoding used here. Only COCO's ``person`` class is
@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import time
+from types import MappingProxyType
 
 
 MODEL_NAME = "yolox_tiny.onnx"
@@ -24,23 +26,60 @@ CONFIDENCE_THRESHOLD = .35
 NMS_THRESHOLD = .45
 
 
-def default_model_path() -> Path:
+@dataclass(frozen=True)
+class ModelSpec:
+    variant: str
+    label: str
+    filename: str
+    url: str
+    sha256: str
+    size_bytes: int
+    input_size: int
+
+
+# The legacy MODEL_* / INPUT_SIZE names above remain aliases for the default.
+# Only these unmodified official exports are accepted; filenames confer no trust.
+MODEL_CATALOG = MappingProxyType({
+    "tiny": ModelSpec("tiny", "YOLOX-Tiny", MODEL_NAME, MODEL_URL,
+                      MODEL_SHA256, MODEL_BYTES, INPUT_SIZE),
+    "s": ModelSpec("s", "YOLOX-S", "yolox_s.onnx",
+        "https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx",
+        "c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063",
+        35_858_002, 640),
+})
+
+
+def get_model_spec(variant: str = "tiny") -> ModelSpec:
+    if not isinstance(variant, str) or variant not in MODEL_CATALOG:
+        raise ValueError("vision variant must be tiny or s")
+    return MODEL_CATALOG[variant]
+
+
+def validate_inference_threads(threads: int) -> int:
+    if type(threads) is not int or not 1 <= threads <= 6:
+        raise ValueError("vision threads must be an integer between 1 and 6")
+    return threads
+
+
+def default_model_path(variant: str = "tiny") -> Path:
+    model = get_model_spec(variant)
     cache = os.environ.get("XDG_CACHE_HOME", "")
     root = Path(cache) if cache and Path(cache).is_absolute() else Path.home() / ".cache"
-    return root / "argos" / "models" / MODEL_NAME
+    return root / "argos" / "models" / model.filename
 
 
-def read_verified_model(model_path: str | Path) -> bytes:
+def read_verified_model(model_path: str | Path, *, variant: str = "tiny") -> bytes:
     """Read the exact pinned model; a missing or changed file is an error."""
+    model = get_model_spec(variant)
     path = Path(model_path).expanduser()
     try:
         with path.open("rb") as source:
-            data = source.read(MODEL_BYTES + 1)
+            data = source.read(model.size_bytes + 1)
     except OSError as exc:
         raise ValueError(
-            "vision model is unavailable; run examples/setup_vision_model.py first"
+            f"vision model is unavailable; run examples/setup_vision_model.py --variant {variant} first"
         ) from exc
-    if len(data) != MODEL_BYTES or hashlib.sha256(data).hexdigest() != MODEL_SHA256:
+    if len(data) != model.size_bytes or hashlib.sha256(data).hexdigest() != model.sha256:
         raise ValueError("vision model failed its size/SHA-256 check")
     return data
 
@@ -48,28 +87,32 @@ def read_verified_model(model_path: str | Path) -> bytes:
 class YoloXPersonDetector:
     """One CPU inference instance, used serially by its owning worker.
 
-    OpenCV is optional and imported only on construction. It is limited to two
-    CPU threads (an OpenCV process-wide setting). The network is loaded from the
+    OpenCV is optional and imported only on construction. It defaults to two
+    CPU threads; an explicit 1..6 limit is an OpenCV process-wide setting.
+    The network is loaded from the
     verified bytes, so a file replacement cannot bypass the checksum check.
     ``inference_ms`` measures network inference, excluding JPEG decode and NMS.
     """
 
-    def __init__(self, model_path: str | Path):
-        data = read_verified_model(model_path)
+    def __init__(self, model_path: str | Path, *, variant: str = "tiny", threads: int = 2):
+        self.threads = validate_inference_threads(threads)
+        self.model = get_model_spec(variant)
+        self._input_size = self.model.input_size
+        data = read_verified_model(model_path, variant=variant)
         try:
             import cv2
             import numpy as np
         except ImportError as exc:
             raise RuntimeError("vision requires the optional ARGOS camera dependency") from exc
         self._cv2, self._np = cv2, np
-        cv2.setNumThreads(2)
+        cv2.setNumThreads(self.threads)
         self._net = cv2.dnn.readNetFromONNX(np.frombuffer(data, dtype=np.uint8))
         self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
         # CPU is the OpenCV backend default. The pinned OpenCV 5 graph engine
         # does not support setPreferableTarget and warns even for CPU selection.
         grids, strides = [], []
         for stride in (8, 16, 32):
-            yy, xx = np.mgrid[:INPUT_SIZE // stride, :INPUT_SIZE // stride]
+            yy, xx = np.mgrid[:self._input_size // stride, :self._input_size // stride]
             grids.append(np.column_stack((xx.ravel(), yy.ravel())))
             strides.append(np.full((xx.size, 1), stride))
         self._grid = np.concatenate(grids)
@@ -85,10 +128,10 @@ class YoloXPersonDetector:
         height, width = image.shape[:2]
         if not (0 < width <= 4096 and 0 < height <= 4096):
             raise ValueError("vision image dimensions must be between 1 and 4096 pixels")
-        ratio = min(INPUT_SIZE / width, INPUT_SIZE / height)
+        ratio = min(self._input_size / width, self._input_size / height)
         scaled_width, scaled_height = max(1, int(width * ratio)), max(1, int(height * ratio))
         resized = cv2.resize(image, (scaled_width, scaled_height), interpolation=cv2.INTER_LINEAR)
-        padded = np.full((INPUT_SIZE, INPUT_SIZE, 3), 114, dtype=np.uint8)
+        padded = np.full((self._input_size, self._input_size, 3), 114, dtype=np.uint8)
         padded[:scaled_height, :scaled_width] = resized
         blob = np.ascontiguousarray(padded.transpose(2, 0, 1)[None], dtype=np.float32)
         started = time.perf_counter()

@@ -16,6 +16,7 @@ from queue import Empty, Full
 import time
 
 from argos.perception.image_tracks import ImageTracker
+from argos.perception.yolox import get_model_spec, validate_inference_threads
 from .video import VideoSample
 
 MAX_HZ = 5
@@ -24,10 +25,10 @@ START_TIMEOUT = 20.
 INFERENCE_TIMEOUT = 5.
 
 
-def _worker(model_path, incoming, outgoing):
+def _worker(model_path, incoming, outgoing, variant="tiny", threads=2):
     try:
         from argos.perception.yolox import YoloXPersonDetector
-        detector = YoloXPersonDetector(model_path)
+        detector = YoloXPersonDetector(model_path, variant=variant, threads=threads)
         outgoing.put(("ready", None))
         while True:
             job = incoming.get()
@@ -54,9 +55,11 @@ class VisionService:
     Model recovery requires restarting the console; manual flight stays separate.
     """
 
-    def __init__(self, model_path: Path | None, *, wall_clock=time.monotonic,
+    def __init__(self, model_path: Path | None, *, variant="tiny", threads=2, wall_clock=time.monotonic,
                  process_context=None):
         self.model_path = model_path
+        self.model = get_model_spec(variant)
+        self.threads = validate_inference_threads(threads)
         self.wall_clock = wall_clock
         self._mp = process_context
         self._process = self._incoming = self._outgoing = None
@@ -76,7 +79,8 @@ class VisionService:
         try:
             ctx = self._mp or multiprocessing.get_context("spawn")
             self._incoming, self._outgoing = ctx.Queue(maxsize=1), ctx.Queue(maxsize=1)
-            self._process = ctx.Process(target=_worker, args=(str(self.model_path), self._incoming, self._outgoing), daemon=True)
+            self._process = ctx.Process(target=_worker,
+                args=(str(self.model_path), self._incoming, self._outgoing, self.model.variant, self.threads), daemon=True)
             self._started_at = self.wall_clock()
             self._process.start()
         except Exception as exc:
@@ -248,7 +252,9 @@ class VisionService:
         else:
             state, detail = "waiting", "Waiting for a recent camera image"
         return {"configured": self.model_path is not None, "state": state, "detail": detail,
-                "model": "YOLOX-Tiny", "max_hz": MAX_HZ, "age_limit_s": self._age_limit(session),
+                "model": self.model.label, "variant": self.model.variant, "input_size": self.model.input_size,
+                "threads": self.threads,
+                "max_hz": MAX_HZ, "age_limit_s": self._age_limit(session),
                 "frame_age_s": age, "inference_ms": candidate.result["inference_ms"] if candidate else None,
                 "processed": self._processed if self._context == self._identity(session) else 0,
                 "tracks": len(candidate.result["detections"]) if candidate else 0}

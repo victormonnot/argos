@@ -31,7 +31,10 @@ absolute path, otherwise `~/.cache/argos/gazebo`. Use setup's `--assets-dir DIR`
 and the launcher's matching `--person-assets DIR` for a different cache.
 `--scene runway` remains the default. `--vision-model PATH` forwards an explicit
 local detector model to the console; the scene also works without perception.
-Model setup and interpretation are documented in the main perception guide.
+The model variant defaults to `tiny`; use `--vision-variant s` with the verified
+S model path for the optional larger CPU detector. Model setup, pinned checksums
+and interpretation are documented in the [perception guide](../../docs/vision.md).
+Choosing a detector does not alter the scene, camera optics or actor.
 
 ## Asset provenance
 

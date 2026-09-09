@@ -4,6 +4,7 @@ import math
 from pathlib import Path
 
 from argos.backends.mavlink import SequenceScope, TelemetryLimits
+from argos.perception.yolox import MODEL_CATALOG
 from .config import ConsoleConfig, default_recordings_dir
 
 
@@ -36,7 +37,11 @@ def main():
     parser.add_argument("--sim-control", action="store_true",
                         help="enable manual web controls for the verified GPS-free loopback SITL profile")
     parser.add_argument("--vision-model", type=Path,
-                        help="local verified YOLOX-Tiny ONNX model; enables image-only person detection")
+                        help="local verified ONNX model matching --vision-variant; enables person detection")
+    parser.add_argument("--vision-variant", choices=tuple(MODEL_CATALOG), default="tiny",
+                        help="pinned model variant: tiny (416px, default) or s (640px)")
+    parser.add_argument("--vision-threads", type=int, choices=range(1, 7), default=2,
+                        help="OpenCV CPU thread limit for the vision worker (default: 2)")
     parser.add_argument("--video-age", type=positive, default=1.)
     parser.add_argument("--mavlink-bind", type=address)
     parser.add_argument("--mavlink-peer", type=address)
@@ -61,6 +66,8 @@ def main():
             raise ValueError("HTTP port must be in 1..65535")
         config = ConsoleConfig(
             sim_control=args.sim_control, sim_framing=args.sim_framing, vision_model=args.vision_model,
+            vision_variant=args.vision_variant,
+            vision_threads=args.vision_threads,
             video_source=source, video_endpoint=args.gazebo_topic or args.camera_device,
             environment=environment, gazebo_python_path=args.gazebo_python_path,
             video_age=args.video_age, mavlink_bind=args.mavlink_bind,

@@ -1,5 +1,6 @@
 """Model integrity and image geometry, without installing OpenCV or weights."""
 import builtins
+from dataclasses import replace
 import hashlib
 import sys
 from types import SimpleNamespace
@@ -13,17 +14,22 @@ from argos.perception import yolox
 @pytest.fixture
 def model_bytes(tmp_path, monkeypatch):
     data = b"test-only model bytes"
-    monkeypatch.setattr(yolox, "MODEL_BYTES", len(data))
-    monkeypatch.setattr(yolox, "MODEL_SHA256", hashlib.sha256(data).hexdigest())
+    monkeypatch.setattr(yolox, "MODEL_CATALOG", {**yolox.MODEL_CATALOG,
+        "tiny": replace(yolox.get_model_spec(), size_bytes=len(data), sha256=hashlib.sha256(data).hexdigest())})
     path = tmp_path / "model.onnx"
     path.write_bytes(data)
     return path, data
 
 
-@pytest.fixture
-def detector(monkeypatch, model_bytes):
+@pytest.fixture(params=["tiny", "s"])
+def detector(request, monkeypatch, model_bytes):
+    variant = request.param
+    model = yolox.get_model_spec(variant)
+    monkeypatch.setattr(yolox, "MODEL_CATALOG", {**yolox.MODEL_CATALOG,
+        variant: replace(model, size_bytes=len(model_bytes[1]), sha256=hashlib.sha256(model_bytes[1]).hexdigest())})
     image = np.full((2, 4, 3), [11, 33, 77], dtype=np.uint8)
-    runtime = SimpleNamespace(image=image, output=np.zeros((1, 3549, 85), dtype=np.float32))
+    rows = sum((model.input_size // stride) ** 2 for stride in (8, 16, 32))
+    runtime = SimpleNamespace(image=image, output=np.zeros((1, rows, 85), dtype=np.float32))
     runtime.setInput = lambda value: setattr(runtime, "input", value)
     runtime.forward = lambda: runtime.output
     runtime.setPreferableBackend = lambda value: setattr(runtime, "backend", value)
@@ -40,13 +46,13 @@ def detector(monkeypatch, model_bytes):
         dnn=SimpleNamespace(readNetFromONNX=load, DNN_BACKEND_OPENCV=3, DNN_TARGET_CPU=0),
     )
     monkeypatch.setitem(sys.modules, "cv2", fake)
-    result = yolox.YoloXPersonDetector(model_bytes[0])
+    result = yolox.YoloXPersonDetector(model_bytes[0], variant=variant)
     return result, runtime
 
 
 def raw_box(detector, output, row, box, confidence=.8, width=4, height=2):
     left, top, box_width, box_height = box
-    ratio = min(416 / width, 416 / height)
+    ratio = min(detector.model.input_size / width, detector.model.input_size / height)
     centre = np.array([left + box_width / 2, top + box_height / 2]) * ratio
     size = np.array([box_width, box_height]) * ratio
     output[0, row, :2] = centre / detector._strides[row] - detector._grid[row]
@@ -87,10 +93,45 @@ def test_letterbox_preserves_bgr_range_and_dimensions(detector):
     assert result["detections"] == [] and result["inference_ms"] >= 0
     assert runtime.threads == 2 and runtime.backend == 3
     blob = runtime.input
-    assert blob.shape == (1, 3, 416, 416) and blob.dtype == np.float32
+    size = subject.model.input_size
+    assert blob.shape == (1, 3, size, size) and blob.dtype == np.float32
     np.testing.assert_array_equal(blob[0, :, 0, 0], [11, 33, 77])
-    np.testing.assert_array_equal(blob[0, :, 207, 415], [11, 33, 77])
-    np.testing.assert_array_equal(blob[0, :, 208, 0], [114, 114, 114])
+    np.testing.assert_array_equal(blob[0, :, size // 2 - 1, size - 1], [11, 33, 77])
+    np.testing.assert_array_equal(blob[0, :, size // 2, 0], [114, 114, 114])
+
+
+def test_verified_variant_does_not_accept_another_catalog_model(model_bytes, monkeypatch):
+    path, data = model_bytes
+    other = b"different verified model"
+    monkeypatch.setattr(yolox, "MODEL_CATALOG", {**yolox.MODEL_CATALOG,
+        "s": replace(yolox.get_model_spec("s"), size_bytes=len(other), sha256=hashlib.sha256(other).hexdigest())})
+    assert yolox.read_verified_model(path, variant="tiny") == data
+    with pytest.raises(ValueError, match="size/SHA-256"):
+        yolox.read_verified_model(path, variant="s")
+    path.write_bytes(other)
+    assert yolox.read_verified_model(path, variant="s") == other
+    with pytest.raises(ValueError, match="size/SHA-256"):
+        yolox.read_verified_model(path)  # A valid S file never silently changes the default.
+
+
+@pytest.mark.parametrize("variant", ["unknown", "S", "", None, [], True])
+def test_unsupported_variant_is_rejected_before_file_or_runtime_work(tmp_path, variant):
+    with pytest.raises(ValueError, match="variant must be"):
+        yolox.YoloXPersonDetector(tmp_path / "missing.onnx", variant=variant)
+
+
+@pytest.mark.parametrize("threads", [0, 7, -1, True, None, 2.0, "4", []])
+def test_invalid_thread_limit_is_rejected_before_runtime_work(tmp_path, threads):
+    with pytest.raises(ValueError, match="threads must be an integer between 1 and 6"):
+        yolox.YoloXPersonDetector(tmp_path / "missing.onnx", threads=threads)
+
+
+@pytest.mark.parametrize("threads", [1, 4, 6])
+def test_explicit_thread_limit_reaches_opencv(detector, model_bytes, threads):
+    subject, runtime = detector
+    assert subject.threads == 2
+    configured = yolox.YoloXPersonDetector(model_bytes[0], variant=subject.model.variant, threads=threads)
+    assert configured.threads == threads and runtime.threads == threads
 
 
 def test_grid_decode_person_score_and_nms(detector):

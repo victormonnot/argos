@@ -7,6 +7,7 @@ import re
 from argos.backends.mavlink import SequenceScope, TelemetryCache, TelemetryLimits
 from argos.backends.mavlink.link import _time
 from argos.backends.mavlink.transport import _address
+from argos.perception.yolox import get_model_spec, validate_inference_threads
 
 
 def default_recordings_dir():
@@ -37,8 +38,12 @@ class ConsoleConfig:
     battery_age: float = 2.
     recordings_dir: Path = field(default_factory=default_recordings_dir)
     limits: TelemetryLimits = field(default_factory=lambda: TelemetryLimits(1., .2, .4))
+    vision_variant: str = "tiny"
+    vision_threads: int = 2
 
     def __post_init__(self):
+        get_model_spec(self.vision_variant)
+        validate_inference_threads(self.vision_threads)
         if not isinstance(self.sim_framing, bool):
             raise ValueError("sim_framing must be a boolean")
         if self.sim_framing and (not self.sim_control or self.vision_model is None

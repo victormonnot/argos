@@ -32,6 +32,16 @@ the fixed Gazebo camera topic and a configured model. Default observation and
 ordinary manual launches leave framing disabled. No physical control transport
 is enabled by these flags.
 
+Tiny remains the default detector. To try the optional ground-computer S profile,
+first run `examples/setup_vision_model.py --variant s`, then replace the model
+path above with the printed S path and add `--vision-variant s`. See the
+[model profiles](vision.md#model-and-data-flow) and their
+[offline evidence](validation.md#optional-detector-profiles--september-9-2026).
+On the evaluated ground computer, S needed `--vision-threads 4` to complete
+the documented live framing trial; the default remains two threads. See the
+[live checks and their limits](validation.md#live-s-framing-checks) before choosing
+a profile. Freshness, clipping, identity and takeover rules remain unchanged.
+
 1. Open **Flight controls**, enable **Person detection**, and **Take control**.
 2. Prepare **AltHold**, arm and take off manually using the existing controls.
 3. Click or tap the person's detection box. Selection alone does not move the

@@ -24,6 +24,7 @@ class Process:
     pid = 123
 
     def __init__(self, **kwargs):
+        self.kwargs = kwargs
         self.alive = True
         self.terminated = False
         self.closed = False
@@ -254,3 +255,75 @@ def test_distinct_sequence_with_equal_receipt_does_not_disable_or_refresh_tracki
     assert vision._incoming.empty()
     assert vision.state(session)["state"] == "recent"
     assert vision.frame(session).sample.sequence == 1
+
+
+def test_selected_model_variant_reaches_process_worker_and_status(runtime):
+    from argos.console.vision import _worker
+    _, session, _ = runtime
+    vision = VisionService(Path("chosen.onnx"), variant="s", threads=4, process_context=Context())
+    try:
+        vision.start()
+        assert vision._process.kwargs["target"] is _worker
+        assert vision._process.kwargs["args"] == ("chosen.onnx", vision._incoming, vision._outgoing, "s", 4)
+        state = vision.state(session)
+        assert (state["model"], state["variant"], state["input_size"]) == ("YOLOX-S", "s", 640)
+        assert state["threads"] == 4
+    finally:
+        asyncio.run(vision.aclose())
+
+
+def test_worker_constructs_only_the_explicit_variant(monkeypatch):
+    from argos.perception import yolox
+    from argos.console.vision import _worker
+    seen = []
+    monkeypatch.setattr(yolox, "YoloXPersonDetector",
+                        lambda path, *, variant, threads: seen.append((path, variant, threads)))
+    incoming, outgoing = Queue(), Queue()
+    incoming.put(None)
+    _worker("chosen.onnx", incoming, outgoing, "s", 4)
+    assert seen == [("chosen.onnx", "s", 4)]
+    assert outgoing.get_nowait() == ("ready", None)
+
+
+def test_model_variant_survives_source_changes_and_reaches_app(tmp_path):
+    pytest.importorskip("fastapi")
+    from argos.console.app import create_app
+    config = ConsoleConfig(vision_model=tmp_path / "model.onnx", vision_variant="s",
+                           vision_threads=4, recordings_dir=tmp_path)
+    replaced = config.with_sources(config.public())
+    assert replaced.vision_variant == "s" and "vision_variant" not in config.public()
+    assert replaced.vision_threads == 4 and "vision_threads" not in config.public()
+    app = create_app(replaced)
+    assert app.state.vision.model.variant == "s"
+    assert app.state.vision.threads == 4
+    assert ConsoleConfig().vision_variant == "tiny"
+    assert ConsoleConfig().vision_threads == 2
+
+
+@pytest.mark.parametrize("variant", ["custom", "S", None, [], True])
+def test_unknown_vision_variant_is_rejected_in_config(variant):
+    with pytest.raises(ValueError, match="variant must be"):
+        ConsoleConfig(vision_variant=variant)
+
+
+@pytest.mark.parametrize("threads", [0, 7, -1, True, None, 2.0, "4", []])
+def test_invalid_thread_limit_is_rejected_in_config_and_service(threads):
+    with pytest.raises(ValueError, match="threads must be an integer between 1 and 6"):
+        ConsoleConfig(vision_threads=threads)
+    with pytest.raises(ValueError, match="threads must be an integer between 1 and 6"):
+        VisionService(None, threads=threads)
+
+
+def test_console_cli_passes_explicit_variant_to_config(tmp_path, monkeypatch):
+    pytest.importorskip("fastapi")
+    from argos.console import __main__ as cli
+    from argos.console import app
+    import sys
+    seen = []
+    monkeypatch.setattr(sys, "argv", ["argos.console", "--vision-model", str(tmp_path / "s.onnx"),
+                                     "--vision-variant", "s", "--vision-threads", "4"])
+    monkeypatch.setattr(app, "create_app", lambda config: seen.append(config) or "fake-app")
+    monkeypatch.setitem(sys.modules, "uvicorn", SimpleNamespace(run=lambda *a, **kw: None))
+    cli.main()
+    assert len(seen) == 1 and seen[0].vision_variant == "s"
+    assert seen[0].vision_threads == 4

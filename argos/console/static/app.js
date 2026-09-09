@@ -311,6 +311,7 @@
       detail = visible ? `${frame.vision.detections.length} ${frame.vision.detections.length === 1 ? "person" : "people"} · ${ageText(currentFrameAge(now))} · ${numeric(frame.vision.inference_ms, " ms")}` : imageFailure || view?.detail || (state === "recent" ? "Waiting for an analyzed image" : state);
       const assistance = visionSelection.active && document.body.dataset.view === "control";
       detail = `${assistance ? visionSelection.paused ? "Framing paused" : "Framing assistance active" : "Visual tracking only"} · ${detail}`;
+      if (visible && typeof view.model === "string") detail += ` · ${view.model}`;
     }
     text("vision-status", detail);
   }

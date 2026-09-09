@@ -30,7 +30,8 @@ FONT_FILES = frozenset({
 def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None):
     session = session or ConsoleSession(config or ConsoleConfig())
     archive = RecordingArchive(session.recorder.directory)
-    vision = vision or VisionService(session.config.vision_model)
+    vision = vision or VisionService(session.config.vision_model, variant=session.config.vision_variant,
+                                     threads=session.config.vision_threads)
     session.vision = vision
 
     def snapshot():
