@@ -67,6 +67,12 @@ control lease as it does during manual flight.
 ## Target loss and operator priority
 
 The controller requires an analyzed image received within **0.45 seconds**.
+Before evaluating flight control, the service collects an already completed
+vision result without waiting for inference. This also happens after telemetry
+polling, so a result completed during that work does not wait for another loop
+iteration. The original image receipt time is retained: collecting a result
+never makes an old image fresh or extends a takeover deadline.
+
 An empty detection frame or confidence below 0.5 immediately zeros corrections
 and displays **Framing paused**. Only the same valid target returning within
 **600 ms** can continue the current engagement. The pause deadline starts with

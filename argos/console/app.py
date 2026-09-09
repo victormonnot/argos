@@ -11,6 +11,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .config import ConsoleConfig
 from .context import capture_context
 from .control import ModeGenerationConflict
+from .http_compression import ConsoleJSONCompression
 from .archive import ArchiveError, RecordingArchive
 from .session import ConsoleSession
 from .vision import VisionService
@@ -70,6 +71,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.session = session
     app.state.vision = vision
+    app.add_middleware(ConsoleJSONCompression)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver"])
 
     @app.middleware("http")

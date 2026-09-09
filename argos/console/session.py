@@ -224,8 +224,13 @@ class ConsoleSession:
         if not self.camera.worker_stopped:
             raise RuntimeError("The previous camera reader has not released the device yet")
 
-    def _observe_vision(self):
+    def _observe_vision(self, *, refresh=False):
         try:
+            if refresh and self.vision is not None:
+                # Advance the bounded worker queues; never wait for inference.
+                # A queued observation must reach the flight decision before
+                # that decision evaluates the preceding image's receipt age.
+                self.vision.tick(self)
             candidate = self.vision.frame(self) if self.vision is not None else None
             observation = None if candidate is None else {
                 "run_id": candidate.context[0], "video_id": candidate.context[1],
@@ -241,9 +246,7 @@ class ConsoleSession:
     def tick(self):
         if self._closed:
             return
-        if self.vision is not None:
-            self.vision.tick(self)
-        self._observe_vision()
+        vision_refreshed = False
         now = self.clock()
         if self.link is not None and not self._error:
             try:
@@ -255,6 +258,8 @@ class ConsoleSession:
                     cache = self.health if event.message_id == 1 else self.cache
                     cache.update(event, now)
                     self.control.append(event, now=now)
+                self._observe_vision(refresh=True)
+                vision_refreshed = True
                 # Polling/recording may have stalled. Evaluate the input deadline
                 # at send time, never with the older receipt-batch timestamp.
                 now = self.clock()
@@ -265,6 +270,8 @@ class ConsoleSession:
             except Exception as exc:
                 self._error = f"MAVLink reception interrupted: {exc}"
                 self.link.close()
+        if not vision_refreshed:
+            self._observe_vision(refresh=True)
         if self.link is None or self._error:
             now = self.clock()
             self.control.tick(None, now)
@@ -352,7 +359,7 @@ class ConsoleSession:
         if not isinstance(values, dict):
             raise ValueError("This action requires a JSON object")
         if operation == "framing":
-            self._observe_vision()
+            self._observe_vision(refresh=True)
             def check_selection(body, now):
                 if self.vision is None:
                     raise RuntimeError("Vision unavailable")
@@ -365,6 +372,7 @@ class ConsoleSession:
                     "action": {"mode", "mode_generation", "input_seq"}}[operation]
         if not expected <= set(values) or not set(values) <= expected | optional:
             raise ValueError("Invalid command fields")
+        self._observe_vision(refresh=True)
         now = self.clock()
         if operation == "claim":
             return self.control.claim(self.link, now)

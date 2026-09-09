@@ -858,3 +858,67 @@ video and telemetry. All eight existing user journals retained identical byte
 sizes and SHA-256 hashes. No physical aircraft, radio, QGroundControl, GPS,
 tracking thresholds, detector model, controller gains or recording format
 were changed by this milestone.
+
+## Control-response and vision delivery — September 9, 2026
+
+Read-only diagnostics investigated the preceding remote interruptions before
+changing deadlines. Concurrent 25-second probes used state, analyzed JPEG and
+tiny HTTP responses over the existing Mac SSH tunnel and directly on the PC.
+All 500 PC requests completed within 5.31 ms. Mac state requests had a median
+of 21.71 ms and one 468.93 ms outlier. During that outlier, two independent Mac
+workers started their scheduled requests 380 and 392 ms late, while PC requests
+continued normally. This establishes a client scheduling component in that
+measurement; it does not isolate every earlier delay or prove an SSH/VPN fault.
+
+A separate 45-second read-only Chromium observation also recorded browser loop
+gaps exceeding one second and two aborted requests. Neither observation involved
+arming or a control claim. Results from a busy client cannot be described as
+network transit time alone.
+
+The implementation removes two avoidable costs. Large state/control JSON replies
+are compressed when negotiated, preserving their schema. For one pre-change
+snapshot, gzip level 1 reduced state from 30,957 to 5,955 bytes and the equivalent
+control reply from 4,106 to 1,406 bytes. Median compression cost on the PC was
+0.135 ms and 0.045 ms respectively over 50 iterations. These are fixed-payload
+measurements, not an end-to-end latency guarantee. JPEGs and archives are excluded.
+
+The flight path also collects a completed vision result before evaluating its
+observation, including after MAVLink polling and before control mutations.
+Previously, a newly finished analysis could remain queued while a mutation
+evaluated the preceding image. This sequencing issue is reproduced by integration
+tests; the earlier flight recording lacks worker completion times and cannot
+establish how much it contributed to that flight's 459 ms image-age interruption.
+
+The 500 ms browser response deadline, 650 ms input lease, 450 ms analyzed-image
+limit and two-second takeover deadline remain unchanged. An old image still
+cannot drive corrections; queued-result delivery cannot renew authority or
+recover an already latched takeover. The browser now retains its local timeout
+cause across a subsequent generic release, with a more specific service-side
+interruption taking precedence. No model, gain or tracking threshold changed.
+
+**Final software validation:** 1,838 Python tests passed with two existing
+deprecation warnings; all 114 Chromium tests passed on the PC with one worker.
+New integration cases cover ready-result delivery after a polling delay and
+before control mutations, genuine staleness, expired leases, source/authority
+fences, latched takeover and provider errors. Browser regressions exercise a
+stalled input body, retained timeout cause, stronger backend reasons and a
+subsequent lease.
+
+**Deployed simulation check:** the shipped UI completed five airborne mode
+changes and 15.046 seconds of sustained framing, followed by Land, confirmed
+disarming and Release. All 545 input requests returned HTTP 200 with no recorded
+input abort; maximum sampled owned-input age was 103 ms. Stabilize transfers
+seeded 49.3% and 50.0% pilot throttle. The browser ran on the PC's loopback, so
+this does not validate remote following through client scheduling stalls.
+
+A deployed reply read through the Mac tunnel used 3,583 wire bytes for 12,098
+decoded JSON bytes; the analyzed JPEG remained uncompressed at 21,417 bytes.
+That state read still took about 1.78 seconds at the client. Reduced wire size
+therefore must not be presented as a cure for the observed remote stalls.
+
+The subsequent Mac UI ground check retained neutral disarmed control for 20
+seconds, with 218 successful gzip input replies and no request failures, then
+released explicitly. It made no arming request. This nominal check is separate
+from the measured intermittent stalls and is not a remote-flight guarantee.
+Final simulation state was disarmed, unowned and recording-idle; all eight user
+journals retained identical byte sizes and SHA-256 hashes.

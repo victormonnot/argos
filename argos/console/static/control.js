@@ -20,7 +20,7 @@
   let framingFeedback = "", acknowledgedInputSeq = -1;
   let vision = { enabled: false, recent: false };
   let feedback = "", feedbackTone = "neutral";
-  let leaseStartedAt = null, leaseInterruption = null, interruptionPending = false;
+  let leaseStartedAt = null, leaseInterruption = null, clientInterruption = null, interruptionPending = false;
   const active = () => document.body.dataset.view === "control" && !document.hidden && focused;
   const sameOwnedLease = (value = control) => leaseStartedAt === null || value?.lease_started_at === leaseStartedAt;
   const owned = () => Boolean(token && control?.owned && sameOwnedLease() && fresh && control?.available);
@@ -109,6 +109,10 @@
       throw new Error("Invalid transferred Stabilize throttle.");
     }
     control = next;
+    if (clientInterruption && next.lease_started_at !== clientInterruption.lease_started_at) {
+      if (feedback === clientInterruption.reason) message("");
+      clientInterruption = null;
+    }
     if (modeChanged) {
       // Mode intent supersedes every pending framing reply, even if it arrives
       // after the transition has completed and normal controls are enabled.
@@ -151,15 +155,19 @@
   }
 
   function interruptionText() {
-    if (!leaseInterruption) return "";
+    const clientReason = clientInterruption?.lease_started_at === leaseStartedAt ? clientInterruption.reason : "";
+    if (!leaseInterruption) return clientReason;
+    // Our best-effort release can produce this generic server reason. Keep the
+    // client timeout that caused it, but let a specific server loss explain itself.
+    const reason = leaseInterruption.reason === "Control released" && clientReason ? clientReason : leaseInterruption.reason;
     const command = control?.command;
     // Keep the cause and the outcome of its LAND independently visible. A
     // later pilot's LAND, or an old successful Arm, does not describe this loss.
     if (control?.interruption?.at !== leaseInterruption.at || control.interruption.lease_started_at !== leaseStartedAt || command?.action !== "land"
-      || (command.observed && command.state === "observed")) return leaseInterruption.reason;
+      || (command.observed && command.state === "observed")) return reason;
     const outcome = ({ sent: "sent, awaiting confirmation", accepted: "accepted, awaiting confirmation",
       denied: "rejected by the drone", timeout: "confirmation not received", send_failed: "send failed" })[command.state] || "awaiting confirmation";
-    return `${leaseInterruption.reason} · Landing · ${outcome}.`;
+    return `${reason} · Landing · ${outcome}.`;
   }
 
   async function post(path, payload, { keepalive = false, timeout = 1800 } = {}) {
@@ -178,13 +186,20 @@
       }
       return body;
     } catch (error) {
-      if (error.name === "AbortError") throw new Error("The flight-control service did not respond in time.");
+      if (error.name === "AbortError") {
+        const timeoutError = new Error("The flight-control service did not respond in time.");
+        timeoutError.code = "control_response_timeout";
+        throw timeoutError;
+      }
       throw error;
     } finally { window.clearTimeout(timer); }
   }
 
-  function release(reason, { send = true } = {}) {
+  function release(reason, { send = true, clientTimeout = false } = {}) {
     const previous = token;
+    if (previous && clientTimeout && leaseStartedAt !== null && sameOwnedLease()) {
+      clientInterruption = { lease_started_at: leaseStartedAt, reason };
+    }
     token = null;
     epoch += 1;
     const releaseEpoch = epoch, releaseRun = runId;
@@ -232,7 +247,7 @@
       if (token === currentToken && epoch === currentEpoch) {
         if (error.status === 409 && (error.code === "stale_mode_generation" || (sentGeneration < generation() && owned()))) {
           await syncMode(currentToken, currentEpoch, error.code === "stale_mode_generation" ? error.control : null);
-        } else release(`${error.message} Control released.`);
+        } else release(`${error.message} Control released.`, { clientTimeout: error.code === "control_response_timeout" });
       }
     } finally {
       inputPending = false;
@@ -432,6 +447,7 @@
       adopt(body.control, { newLease: true });
       leaseStartedAt = Number.isFinite(body.control.lease_started_at) ? body.control.lease_started_at : null;
       leaseInterruption = null;
+      clientInterruption = null;
       interruptionPending = leaseStartedAt !== null;
       token = body.token;
       rememberInterruption(control);
@@ -603,6 +619,7 @@
       control = null;
       leaseStartedAt = null;
       leaseInterruption = null;
+      clientInterruption = null;
       interruptionPending = false;
       draftMode = 2;
     }

@@ -54,6 +54,7 @@ def flight(tmp_path):
     landed(control, 0.02, 2)
     control.input(token, 1, ZERO, link=link, now=0.03)
     vision = VisionService(None)
+    vision._context = session.run_id, session.video_source_id
     sequence = [0]
 
     def observe(*, at=None, detections=None):

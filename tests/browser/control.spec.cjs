@@ -46,6 +46,7 @@ async function installControl(page, model) {
       mock.token = `private-test-token-${mock.claims}`;
       control.owned = true; control.phase = 'claimed'; control.prepared = false; control.throttle = 0;
       control.lease_started_at = model.clock(); control.mode_generation = 0; control.mode_transition = null; control.mode_transfer = null;
+      control.interruption = null;
       value = { token: mock.token, control: snapshot() };
       if (mock.holdClaim) { mock.holdClaim.requested = true; await new Promise(resolve => { mock.holdClaim.release = resolve; }); }
     } else if (payload.token !== mock.token || !control.owned) {
@@ -94,7 +95,10 @@ async function installControl(page, model) {
       if (action === 'arm') { control.vehicle.armed = true; control.phase = 'armed'; }
       if (action === 'land') { control.vehicle.mode = 9; control.phase = 'landing'; control.throttle = 0; }
       if (action === 'disarm') { control.vehicle.armed = false; control.phase = 'prepared'; control.throttle = 0; }
-      if (action === 'release') { control.owned = false; control.phase = 'released'; control.throttle = 0; control.mode_transition = null; mock.token = null; }
+      if (action === 'release') {
+        control.owned = false; control.phase = 'released'; control.throttle = 0; control.mode_transition = null; mock.token = null;
+        if (mock.releaseReason) control.interruption = { at: model.clock(), lease_started_at: control.lease_started_at, reason: mock.releaseReason };
+      }
       control.command = { action, ...(action === 'prepare' ? { mode: payload.mode } : {}), command_id: 1, sent_at: model.clock(), transport: 'accepted', ack: 0, observed: true, state: 'observed', detail: '' };
       value = { control: snapshot() };
     } else throw new Error(`Unexpected control fixture route ${path}`);
@@ -457,6 +461,76 @@ test('input requests are serialized and coalesce changed axes without replaying 
   await page.keyboard.up('r');
   await expect.poll(() => lastAxes(mock)).toEqual(neutral);
 });
+
+async function delayNextInputBody(page) {
+  await page.evaluate(() => {
+    const fetch = window.fetch.bind(window);
+    let next = true;
+    window.inputBodyDelay = { entered: false, abortedAfter: null, resumed: false };
+    window.fetch = async (url, init) => {
+      if (!next || !String(url).endsWith('/api/control/input')) return fetch(url, init);
+      next = false;
+      const started = performance.now();
+      const response = await fetch(url, init);
+      const body = await response.json();
+      // Headers and the accepted sequence are already received. Delay the JSON
+      // promise to exercise the same deadline through complete body consumption.
+      response.json = () => new Promise((resolve, reject) => {
+        window.inputBodyDelay.entered = true;
+        window.inputBodyDelay.seq = body.control.input_seq;
+        window.inputBodyDelay.resume = () => { window.inputBodyDelay.resumed = true; resolve(body); };
+        init.signal.addEventListener('abort', () => {
+          window.inputBodyDelay.abortedAfter = performance.now() - started;
+          reject(new DOMException('Aborted', 'AbortError'));
+        }, { once: true });
+      });
+      return response;
+    };
+  });
+  await expect.poll(() => page.evaluate(() => window.inputBodyDelay.entered)).toBe(true);
+}
+
+test('a stalled input body keeps the 500 ms deadline and its cause after generic release', async ({ page, model }) => {
+  const mock = await ready(page, model);
+  mock.releaseReason = 'Control released';
+  await delayNextInputBody(page);
+  await expect.poll(() => mock.control.owned).toBe(false);
+  await expect(page.locator('#control-feedback')).toHaveText('The flight-control service did not respond in time. Control released.');
+  const delayed = await page.evaluate(() => ({ seq: window.inputBodyDelay.seq, elapsed: window.inputBodyDelay.abortedAfter }));
+  expect(delayed.seq).toBe(mock.seq); // The service accepted it; the response deadline still revokes locally.
+  expect(delayed.elapsed).toBeGreaterThanOrEqual(475);
+  expect(delayed.elapsed).toBeLessThan(650);
+  const inputs = mock.calls.filter(call => call.path.endsWith('/input')).length;
+  await page.evaluate(() => window.inputBodyDelay.resume());
+  await page.waitForTimeout(700);
+  expect(mock.calls.filter(call => call.path.endsWith('/input'))).toHaveLength(inputs);
+  expect(mock.calls.filter(call => call.payload.action === 'release')).toHaveLength(1);
+  expect(mock.claims).toBe(1);
+  await expect(page.getByRole('button', { name: 'Forward, hold', exact: true })).toBeDisabled();
+  await expect(page.locator('#control-feedback')).toContainText('did not respond in time');
+  // Observing another browser's later lease also closes this association.
+  mock.control.lease_started_at = model.clock();
+  await expect(page.locator('#control-feedback')).not.toContainText('did not respond in time');
+  mock.control.vehicle.armed = false;
+  await page.locator('#control-claim').click();
+  await expect(page.locator('#control-authority')).toHaveText('You have control');
+  await expect(page.locator('#control-feedback')).not.toContainText('did not respond in time');
+  expect(mock.claims).toBe(2);
+});
+
+for (const reason of ['Browser inputs expired', 'Selected target was lost; no manual takeover within 2 seconds. Landing requested']) {
+  test(`a specific service interruption stays visible after a client timeout: ${reason}`, async ({ page, model }) => {
+    const mock = await ready(page, model);
+    mock.releaseReason = reason;
+    await delayNextInputBody(page);
+    await expect.poll(() => mock.control.owned).toBe(false);
+    await expect(page.locator('#control-feedback')).toHaveText(reason);
+    await page.evaluate(() => window.inputBodyDelay.resume());
+    await page.waitForTimeout(200);
+    await expect(page.locator('#control-feedback')).toHaveText(reason);
+    expect(mock.claims).toBe(1);
+  });
+}
 
 test('mode selection requires a ground preparation and is locked after arming', async ({ page, model }) => {
   const mock = await installControl(page, model);

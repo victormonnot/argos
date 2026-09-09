@@ -182,6 +182,26 @@ expires a lease after **0.65 seconds** without a valid input update, checked on
 its next tick. Ordinary state polling cannot renew that lease, and a late input
 cannot revive it.
 
+Each input response, including its JSON body, must reach the browser within
+**500 ms**. A timeout does not prove that the service rejected the input: it may
+have accepted it before the return path or browser stalled. The browser releases
+control because confirmation is uncertain. Its local interruption message stays
+visible when the service subsequently reports a generic release; a more specific
+service-side loss still takes precedence.
+
+Large state and control responses use gzip when the client accepts it. This
+reduces repeated configuration and telemetry traffic without changing the JSON
+contract or either deadline. Camera JPEGs and recording downloads keep their
+existing representation. Compression cannot make an interrupted connection or
+a stalled browser suitable for flight control.
+
+If this repeats, finish the landing and compare the same interface on the
+simulation computer with access through the tunnel. Check whether the browser
+and computer are also freezing, and reduce unrelated load before explicitly
+taking control again. A visible person does not establish that command responses
+or the analyzed images are current. Do not increase the deadlines merely to
+silence the interruption.
+
 On release or expiry, the service requests neutral attitude and Land when armed
 or when arm execution is uncertain, then clears its stored inputs and stops its
 periodic pilot inputs and GCS heartbeat. Its one Stabilize handoff input retains
