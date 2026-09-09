@@ -183,3 +183,21 @@ def test_recorded_dropout_fixtures_reach_recovery_only_with_the_longer_pause(cas
     assert candidate["transitions"][-1]["at"] == window.end
     assert baseline["duration_s"]["unevaluated"] == candidate["duration_s"]["unevaluated"] == 0
     assert all("jpeg" not in record and record["kind"] != "state" for record in records)
+
+
+def test_recorded_nested_overlap_waits_for_two_fresh_sole_target_frames():
+    directory = Path(__file__).resolve().parents[1] / "examples/data/framing_overlap"
+    records = [json.loads(line) for line in (directory / "observations.jsonl").read_text().splitlines()]
+    window = Window(**json.loads((directory / "windows.json").read_text())[0])
+    result = replay(records, window, Candidate(.5, .6))
+    by_sequence = {row["sequence"]: row for row in records if row["kind"] == "frame"}
+    assert len(by_sequence[3069]["detections"]) == 2  # No measurement was discarded.
+    assert result["engaged"] and result["first_loss"] is None
+    assert result["pause_recoveries"] == 1
+    pause = next(row for row in result["transitions"] if row["phase"] == "paused")
+    recovery = result["transitions"][-1]
+    assert pause["at"] == by_sequence[3069]["at"]
+    assert recovery["phase"] == "valid" and recovery["at"] == by_sequence[3075]["at"]
+    assert by_sequence[3072]["at"] < recovery["at"]  # The first clean image cannot resume.
+    assert result["duration_s"]["paused"] == pytest.approx(recovery["at"] - pause["at"])
+    assert all(value == 0 for value in pause["axes"].values())

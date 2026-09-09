@@ -78,7 +78,23 @@ The pause was increased from 350 to 600 ms after recorded same-person recovery
 gaps of about 400–450 ms. See [validation](validation.md) for the comparison and
 [offline replay](../examples/replay_framing.py) for a reproducible policy check.
 
-Expiry of that pause, a changed track ID, multiple detected people, clipping,
+A narrowly bounded overlapping-detection ambiguity can also enter that same
+neutral pause: there must be exactly two boxes, the selected target must satisfy
+its normal confidence and geometry checks, and the other box must be below 0.5
+confidence and fully contained in the selected box. Both detections remain in
+the observation and overlay. Containment does not prove a duplicate; a real
+partially occluded second person can have this geometry too.
+
+After this ambiguity, recovery requires **two consecutive distinct fresh images**
+containing only the original selected ID. The first image keeps outputs at zero;
+only the second can resume within the original 600 ms budget. Repeated reads do
+not count as a second image. Another eligible bad observation clears the
+confirmation count without extending the deadline. A confident or disjoint
+second detection, missing selected ID, clipping, stale image or source/order
+problem still triggers takeover. Engagement always refuses a multi-box image.
+See the [recorded overlap replay](../examples/data/framing_overlap/README.md).
+
+Expiry of that pause, a changed track ID, other multiple detections, clipping,
 unsupported box size, stale image, changed camera context or provider failure
 latches a **two-second manual takeover** deadline with neutral outputs. Once
 latched, even a returning detection cannot resume assistance. Engagement accepts

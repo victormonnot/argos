@@ -24,6 +24,7 @@ AXES = ("forward", "right", "up", "yaw")
 # A broken guidance producer must not expand its own control authority.
 OUTPUT_LIMITS = {"forward": .35, "right": 0., "up": .3, "yaw": .5}
 DIAGNOSTIC_REASON_LIMIT = 1024
+NESTED_AMBIGUITY = "Selected target has a weak nested detection ambiguity"
 
 
 def _zero():
@@ -43,6 +44,26 @@ def _time(value):
     return float(value)
 
 
+def _nested_ambiguity(target, detections):
+    """A narrow reason to wait neutrally, never a duplicate classification.
+
+    Retain both measurements. A real second person can also overlap this way;
+    confidence and containment cannot establish identity or justify commands.
+    The tolerance is the observation boundary's numerical tolerance, not an
+    expanded association or overlap gate.
+    """
+    if len(detections) != 2 or target["confidence"] < MIN_CONFIDENCE:
+        return False
+    extra = next(item for item in detections if item["track_id"] != target["track_id"])
+    if extra["confidence"] >= MIN_CONFIDENCE:
+        return False
+    outer, inner = target["box"], extra["box"]
+    tolerance = 1e-6
+    return (inner[0] >= outer[0] - tolerance and inner[1] >= outer[1] - tolerance
+            and inner[0] + inner[2] <= outer[0] + outer[2] + tolerance
+            and inner[1] + inner[3] <= outer[1] + outer[3] + tolerance)
+
+
 class FramingControl:
     """A selected target, explicit engagement and a latched takeover deadline.
 
@@ -50,6 +71,8 @@ class FramingControl:
     It calls tick before sending a command, and invokes its existing landing
     path when takeover_due becomes true. An isolated detection miss permits a
     short neutral pause; only the same target may recover before its deadline.
+    A weak contained extra detection permits the same neutral budget, but needs
+    two distinct fresh sole-target images before commands may resume.
     Snapshot reads never renew deadlines, advance the guidance law or change
     lifecycle state.
     """
@@ -68,6 +91,8 @@ class FramingControl:
         self._pause_deadline = None
         self._pause_issue = ""
         self._pause_evidence = None
+        self._pause_ambiguity = False
+        self._pause_clean_count = 0
         self._last_loss = None
         self._reason = "Select a person in a recent analyzed image"
         self._output = _zero()
@@ -162,14 +187,18 @@ class FramingControl:
             return None, ("Selected target was lost; only different person IDs are detected"
                           if detections else "No person detection in the analyzed image")
         if limits is not None:
-            if len(detections) != 1:
-                return None, "Framing requires exactly one visible person"
             x, y, width, height = target["box"]
             if (x < EDGE_MARGIN or y < EDGE_MARGIN
                     or x + width > 1 - EDGE_MARGIN or y + height > 1 - EDGE_MARGIN):
                 return None, "Selected person is too close to the image edge"
             if not limits[0] <= height <= limits[1]:
                 return None, "Selected person is outside the supported image-size range"
+            if len(detections) != 1:
+                # Unsafe selected-target geometry has precedence over this
+                # count check. Never let multiplicity hide clipping or size.
+                if _nested_ambiguity(target, detections):
+                    return None, NESTED_AMBIGUITY
+                return None, "Framing requires exactly one visible person"
             if target["confidence"] < MIN_CONFIDENCE:
                 return None, "Selected target confidence is too low"
         return target, ""
@@ -178,11 +207,15 @@ class FramingControl:
         # _target already rejects source/order/staleness/geometry problems.
         # A different ID is never a substitute for the explicitly selected one.
         return (issue == "Selected target confidence is too low"
+                or issue == NESTED_AMBIGUITY
                 or (issue == "No person detection in the analyzed image" and self._observation is not None
                     and not self._observation["detections"]))
 
     def _pause(self, now, issue):
         self._output = _zero()
+        was_confirming = self._pause_clean_count > 0
+        self._pause_ambiguity = self._pause_ambiguity or issue == NESTED_AMBIGUITY
+        self._pause_clean_count = 0
         if self._pause_deadline is None:
             try:
                 self._law.pause()
@@ -193,6 +226,10 @@ class FramingControl:
             self._pause_issue = issue
             self._pause_evidence = self._evidence(now)
             self._reason = f"Image framing paused; {issue}; neutral input while waiting briefly for the selected person"
+            self.revision += 1
+        elif was_confirming:
+            self._reason = (f"Image framing paused; {self._pause_issue}; neutral input "
+                            "while waiting briefly for the selected person")
             self.revision += 1
         # Retain the latest bad image's identity too: an older good image must
         # never recover a pause or restore the command from before the gap.
@@ -239,6 +276,8 @@ class FramingControl:
         self._pause_deadline = None
         self._pause_issue = ""
         self._pause_evidence = None
+        self._pause_ambiguity = False
+        self._pause_clean_count = 0
         self._last_loss = None
         self.phase = "active"
         self._reason = "Image framing active"
@@ -252,6 +291,8 @@ class FramingControl:
         self._pause_deadline = None
         self._pause_issue = ""
         self._pause_evidence = None
+        self._pause_ambiguity = False
+        self._pause_clean_count = 0
 
     def _takeover(self, now, reason, *, evidence=None):
         if self._last_loss is None:
@@ -292,6 +333,16 @@ class FramingControl:
             return
         if sequence == self._last_sequence or received_at == self._last_received_at:
             return
+        if self._pause_deadline is not None and self._pause_ambiguity and not self._pause_clean_count:
+            # The first fresh sole-target image is confirmation only. Advancing
+            # its identity here prevents repeated ticks/receipts counting twice.
+            # A second distinct clean image must arrive within the SAME budget.
+            self._last_sequence, self._last_received_at = sequence, received_at
+            self._pause_clean_count = 1
+            self._reason = ("Image framing paused; waiting for a second fresh sole-target image "
+                            "after detection ambiguity")
+            self.revision += 1
+            return
         try:
             output = self._law.update(target["box"], received_at)
             if (not isinstance(output, dict) or set(output) != set(AXES)
@@ -307,6 +358,8 @@ class FramingControl:
             self._pause_deadline = None
             self._pause_issue = ""
             self._pause_evidence = None
+            self._pause_ambiguity = False
+            self._pause_clean_count = 0
             self._reason = "Image framing active"
             self.revision += 1
 

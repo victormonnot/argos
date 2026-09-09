@@ -3,7 +3,7 @@ from copy import deepcopy
 
 import pytest
 
-from argos.console.framing import AXES, DETECTION_PAUSE, FramingControl
+from argos.console.framing import AXES, DETECTION_PAUSE, NESTED_AMBIGUITY, FramingControl
 
 
 CONTEXT = ("run-one", "video-one")
@@ -19,6 +19,16 @@ def observation(at=10., sequence=1, *, context=CONTEXT, identity=7,
             "received_at": at, "detections": detections if detections is not None else [
                 {"track_id": identity, "confidence": confidence,
                  "box": list(box or (.4, .3, .1, .2))}]}
+
+
+def nested_observation(at=10.3, sequence=3, *, target_box=(.4, .3, .1, .2),
+                       target_confidence=.9, extra_box=None, extra_confidence=.4, **kwargs):
+    x, y, width, height = target_box
+    extra_box = list(extra_box or (x + .2 * width, y + .1 * height, .4 * width, .6 * height))
+    return observation(at, sequence, detections=[
+        {"track_id": 7, "box": list(target_box), "confidence": target_confidence},
+        {"track_id": 8, "box": extra_box, "confidence": extra_confidence},
+    ], **kwargs)
 
 
 class Law:
@@ -655,3 +665,208 @@ def test_retained_loss_has_bounded_metadata_without_raw_image_fields(control):
     assert len(loss["detections"]) == 16
     assert len(loss["reason"]) == 1024
     assert "raw_pixels" not in loss
+
+
+def test_nested_weak_ambiguity_keeps_both_boxes_and_needs_two_fresh_clean_images(control):
+    moving(control)
+    frame = nested_observation()
+    control.observe(frame)
+    assert control.axes(10.3) == zero()
+    control.tick(10.3)
+    assert control.state(10.3)["paused"] and NESTED_AMBIGUITY in control.state(10.3)["reason"]
+    assert control._observation["detections"] == frame["detections"]
+    assert control._law.pauses == 1 and len(control._law.updates) == 1
+    reference, deadline = control._law.reference_height, control._pause_deadline
+    control.observe(observation(10.5, 4))
+    control.tick(10.5)
+    assert control.state(10.5)["paused"] and "second fresh" in control.state(10.5)["reason"]
+    for now in (10.51, 10.6):
+        control.tick(now)
+        control.state(now)
+        assert control.axes(now) == zero()
+    control.observe(observation(10.5, 5))  # Different sequence with the same receipt is not confirmation.
+    control.tick(10.6)
+    assert control._pause_clean_count == 1 and len(control._law.updates) == 1
+    assert control._pause_deadline == deadline
+    control.observe(observation(10.7, 6, box=(.45, .3, .1, .19)))
+    control.tick(10.7)
+    assert control.phase == "active" and not control.state(10.7)["paused"]
+    assert control._law.reference_height == reference
+    assert control._law.updates[-1] == ([.45, .3, .1, .19], 10.7)
+    assert len(control._law.updates) == 2 and not control._pause_ambiguity
+
+
+def test_nested_ambiguity_never_allows_initial_engagement(control):
+    control.observe(nested_observation(10., 1))
+    control.select(7, CONTEXT, 10.)
+    with pytest.raises(RuntimeError, match="weak nested detection ambiguity"):
+        control.engage(10.)
+    assert control.phase == "selected" and not control.state(10.)["available"]
+    assert not control.state(10.)["paused"] and control.axes(10.) == zero()
+
+
+@pytest.mark.parametrize("change,reason", [
+    ({"target_box": (.001, .3, .1, .2)}, "edge"),
+    ({"target_box": (.4, .3, .1, .059)}, "size"),
+    ({"target_box": (.4, .1, .1, .651)}, "size"),
+    ({"context": ("another-run", "video-one")}, "source changed"),
+    ({"at": 9.8}, "stale"),
+    ({"at": 10.1}, "order changed"),
+    ({"sequence": 1}, "order changed"),
+    ({"target_confidence": .49}, "exactly one"),
+    ({"extra_confidence": .5}, "exactly one"),
+    ({"extra_confidence": .9}, "exactly one"),
+    ({"extra_box": (.7, .3, .05, .1)}, "exactly one"),
+    ({"extra_box": (.39, .32, .04, .12)}, "exactly one"),
+])
+def test_nested_shape_cannot_mask_other_loss_conditions(control, change, reason):
+    moving(control)
+    control.observe(nested_observation(**change))
+    control.tick(10.3)
+    assert control.phase == "takeover" and reason in control.state(10.3)["reason"]
+    assert control.axes(10.3) == zero() and not control.state(10.3)["paused"]
+
+
+def test_three_nested_detections_or_missing_selected_id_latch(control):
+    for missing in (False, True):
+        control.clear()
+        moving(control)
+        frame = nested_observation()
+        if missing:
+            frame["detections"][0]["track_id"] = 9
+        else:
+            frame["detections"].append({**frame["detections"][1], "track_id": 9})
+        control.observe(frame)
+        control.tick(10.3)
+        assert control.phase == "takeover" and control.axes(10.3) == zero()
+
+
+@pytest.mark.parametrize("middle", ["nested", "empty", "weak"])
+def test_bad_image_resets_clean_confirmation_without_extending_ambiguity_budget(control, middle):
+    moving(control)
+    control.observe(nested_observation())
+    control.tick(10.3)
+    deadline = control._pause_deadline
+    control.observe(observation(10.4, 4))
+    control.tick(10.4)
+    bad = (nested_observation(10.5, 5) if middle == "nested" else
+           observation(10.5, 5, detections=[]) if middle == "empty" else
+           observation(10.5, 5, confidence=.4))
+    control.observe(bad)
+    control.tick(10.5)
+    assert control._pause_clean_count == 0 and control._pause_ambiguity
+    assert control._pause_deadline == deadline and control._law.pauses == 1
+    control.observe(observation(10.6, 6))
+    control.tick(10.6)
+    assert control.state(10.6)["paused"] and control.axes(10.6) == zero()
+    control.observe(observation(10.8, 7))
+    control.tick(10.8)
+    assert not control.state(10.8)["paused"] and len(control._law.updates) == 2
+
+
+def test_ordinary_pause_upgrades_to_two_frame_confirmation_without_new_time(control):
+    moving(control)
+    first_bad = observation(10.3, 3, detections=[])
+    control.observe(first_bad)
+    control.tick(10.3)
+    deadline = control._pause_deadline
+    control.observe(nested_observation(10.5, 4))
+    control.tick(10.5)
+    control.observe(observation(10.7, 5))
+    control.tick(10.7)
+    assert control.state(10.7)["paused"] and control._pause_deadline == deadline
+    control.observe(observation(deadline, 6))
+    control.tick(deadline)
+    assert control.phase == "takeover" and control.axes(deadline) == zero()
+    assert control.last_loss["detections"] == first_bad["detections"]
+    assert control.last_loss["sequence"] == 3 and "No person detection" in control.last_loss["reason"]
+
+
+def test_second_clean_image_at_deadline_loses_and_preserves_both_original_boxes(control):
+    moving(control)
+    first_bad = nested_observation()
+    control.observe(first_bad)
+    control.tick(10.3)
+    deadline = control._pause_deadline
+    control.observe(observation(10.7, 4))
+    control.tick(10.7)
+    control.observe(observation(deadline, 5))
+    control.tick(deadline)
+    assert control.phase == "takeover" and len(control._law.updates) == 1
+    assert control.last_loss["at"] == deadline and control.last_loss["sequence"] == 3
+    assert control.last_loss["detections"] == first_bad["detections"]
+    assert NESTED_AMBIGUITY in control.last_loss["reason"]
+    assert not control.takeover_due(deadline + 1.999) and control.takeover_due(deadline + 2.)
+    assert not control._pause_ambiguity and control._pause_clean_count == 0
+
+
+@pytest.mark.parametrize("failure,reason", [
+    (observation(10.6, 5, identity=8), "different person IDs"),
+    (observation(10.6, 5, context=("other", "video-one")), "source changed"),
+    (nested_observation(10.6, 5, extra_confidence=.9), "exactly one"),
+    (nested_observation(10.6, 5, extra_box=(.7, .3, .05, .1)), "exactly one"),
+    (nested_observation(10.6, 5, target_box=(.001, .3, .1, .2)), "edge"),
+    (observation(10.3, 5), "order changed"),
+])
+def test_unsafe_second_confirmation_latches_immediately(control, failure, reason):
+    moving(control)
+    control.observe(nested_observation())
+    control.tick(10.3)
+    control.observe(observation(10.4, 4))
+    control.tick(10.4)
+    control.observe(failure)
+    control.tick(10.6)
+    assert control.phase == "takeover" and reason in control.state(10.6)["reason"]
+    assert len(control._law.updates) == 1 and control.axes(10.6) == zero()
+
+
+@pytest.mark.parametrize("vehicle_failure", [False, True])
+def test_first_confirmation_can_stale_or_lose_vehicle_before_second(control, vehicle_failure):
+    moving(control)
+    control.observe(nested_observation())
+    control.tick(10.3)
+    control.observe(observation(10.4, 4))
+    control.tick(10.4)
+    control.tick(10.851, vehicle_reason="Vehicle unavailable" if vehicle_failure else "")
+    assert control.phase == "takeover" and len(control._law.updates) == 1
+    assert ("Vehicle unavailable" if vehicle_failure else "stale") in control.state(10.851)["reason"]
+
+
+def test_persistently_contained_second_person_keeps_both_measurements_and_no_commands(control):
+    # The geometry could represent two real overlapping people. It authorizes
+    # waiting with zero commands, never suppressing the weaker measurement.
+    moving(control)
+    for sequence, at in enumerate((10.3, 10.4, 10.6, 10.8), 3):
+        frame = nested_observation(at, sequence, target_confidence=.5, extra_confidence=.499)
+        frame["detections"].reverse()  # List order conveys no preferred identity.
+        control.observe(frame)
+        control.tick(at)
+        assert control.state(at)["paused"] and control.axes(at) == zero()
+        assert control._observation["detections"] == frame["detections"]
+    deadline = control._pause_deadline
+    control.observe(nested_observation(deadline, 7))
+    control.tick(deadline)
+    assert control.phase == "takeover" and len(control._law.updates) == 1
+    assert len(control.last_loss["detections"]) == 2
+
+
+@pytest.mark.parametrize("operation", ["stop", "clear"])
+def test_manual_acknowledgement_clears_ambiguity_confirmation(control, operation):
+    moving(control)
+    control.observe(nested_observation())
+    control.tick(10.3)
+    control.observe(observation(10.4, 4))
+    control.tick(10.4)
+    getattr(control, operation)()
+    assert not control._pause_ambiguity and control._pause_clean_count == 0
+    assert control._pause_deadline is None and control.axes(10.4) == zero()
+    control.observe(observation(10.5, 5))
+    control.tick(10.5)
+    assert control.phase != "active"
+    control.select(7, CONTEXT, 10.5)
+    control.engage(10.5)
+    control.observe(observation(10.6, 6, detections=[]))
+    control.tick(10.6)
+    control.observe(observation(10.7, 7))
+    control.tick(10.7)
+    assert control.phase == "active" and not control.state(10.7)["paused"]

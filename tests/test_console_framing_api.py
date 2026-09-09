@@ -419,6 +419,98 @@ def test_four_hundred_ms_detection_gap_neutralizes_wire_then_resumes_only_same_t
     assert f['link'].messages('MANUAL_CONTROL')[-1].r > 0
 
 
+def test_nested_ambiguity_preserves_http_boxes_and_neutral_wire_until_second_clean_image(flight):
+    import json
+    f, c = flight, flight['control']
+    f['select']()
+    f['engage']()
+    f['now'][0] = .2
+    f['observe']()
+    c.tick(f['link'], .2)
+    assert f['link'].messages('MANUAL_CONTROL')[-1].r > 0
+    nested = [
+        {'track_id': 1, 'box': [.5, .3, .1, .2], 'confidence': .9},
+        {'track_id': 2, 'box': [.52, .32, .04, .12], 'confidence': .4},
+    ]
+    f['now'][0] = .3
+    f['observe'](detections=nested)
+    c.tick(f['link'], .3)
+    response = f['client'].get('/api/vision/frame.jpg')
+    assert response.status_code == 200
+    assert json.loads(response.headers['x-vision-result'])['detections'] == nested
+    c.input(f['token'], 2, ZERO, link=f['link'], now=.35)
+    f['now'][0] = .5
+    f['observe']()
+    for at in (.5, .56, .61):
+        c.tick(f['link'], at)
+        wire = f['link'].messages('MANUAL_CONTROL')[-1]
+        assert (wire.x, wire.y, wire.z, wire.r) == (0, 0, 500, 0)
+        assert c.framing.state(at)['paused']
+    f['now'][0] = .7
+    f['observe']()
+    c.tick(f['link'], .7)
+    assert c.framing.phase == 'active' and not c.framing.state(.7)['paused']
+    c.tick(f['link'], .751)
+    assert f['link'].messages('MANUAL_CONTROL')[-1].r > 0
+
+
+@pytest.mark.parametrize('manual_action', ['direction', 'stop'])
+def test_manual_takeover_between_ambiguity_confirmation_frames_cannot_auto_resume(flight, manual_action):
+    f, c = flight, flight['control']
+    f['select']()
+    f['engage']()
+    f['now'][0] = .3
+    f['observe'](detections=[
+        {'track_id': 1, 'box': [.5, .3, .1, .2], 'confidence': .9},
+        {'track_id': 2, 'box': [.52, .32, .04, .12], 'confidence': .4},
+    ])
+    c.tick(f['link'], .3)
+    c.input(f['token'], 2, ZERO, link=f['link'], now=.35)
+    f['now'][0] = .5
+    f['observe']()
+    c.tick(f['link'], .5)
+    assert c.framing.state(.5)['paused']
+    f['now'][0] = .6
+    if manual_action == 'direction':
+        c.input(f['token'], 3, {**ZERO, 'yaw': -1}, link=f['link'], now=.6)
+    else:
+        assert f['request']('stop').status_code == 200
+    c.tick(f['link'], .61)
+    assert f['link'].messages('MANUAL_CONTROL')[-1].r == (-300 if manual_action == 'direction' else 0)
+    f['now'][0] = .7
+    f['observe']()
+    c.tick(f['link'], .7)
+    assert c.framing.phase != 'active' and not c.framing.state(.7)['paused']
+    assert not c.framing.takeover_due(10.)
+
+
+def test_second_ambiguity_confirmation_at_absolute_deadline_still_neutralizes_wire(flight):
+    f, c = flight, flight['control']
+    f['select']()
+    f['engage']()
+    f['now'][0] = .3
+    nested = [
+        {'track_id': 1, 'box': [.5, .3, .1, .2], 'confidence': .9},
+        {'track_id': 2, 'box': [.52, .32, .04, .12], 'confidence': .4},
+    ]
+    f['observe'](detections=nested)
+    c.tick(f['link'], .3)
+    deadline = c.framing._pause_deadline
+    c.input(f['token'], 2, ZERO, link=f['link'], now=.35)
+    f['now'][0] = .7
+    f['observe']()
+    c.tick(f['link'], .7)
+    c.input(f['token'], 3, ZERO, link=f['link'], now=.71)
+    f['now'][0] = deadline
+    f['observe']()
+    c.tick(f['link'], deadline)
+    state = c.framing.state(deadline)
+    assert state['phase'] == 'takeover' and state['takeover_remaining_s'] == 2.
+    assert state['last_loss']['detections'] == nested
+    wire = f['link'].messages('MANUAL_CONTROL')[-1]
+    assert (wire.x, wire.y, wire.z, wire.r) == (0, 0, 500, 0)
+
+
 @pytest.mark.parametrize("manual_action", ["direction", "stop"])
 def test_manual_action_wins_during_the_extended_neutral_pause(flight, manual_action):
     f, c = flight, flight['control']
