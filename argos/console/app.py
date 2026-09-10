@@ -117,6 +117,10 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
     async def sessions_script():
         return FileResponse(STATIC / "sessions.js", media_type="text/javascript")
 
+    @app.get("/framing-report.js")
+    async def framing_report_script():
+        return FileResponse(STATIC / "framing-report.js", media_type="text/javascript")
+
     @app.get("/sessions.css")
     async def sessions_style():
         return FileResponse(STATIC / "sessions.css", media_type="text/css")
@@ -353,6 +357,16 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
             frame["sequence"] = frame.get("source_sequence")
             frame["url"] = (f"/api/recordings/{identifier}/visual/frames/{frame['index']}.jpg"
                             f"?revision={revision}&visual_revision={visual_revision}")
+        return JSONResponse(result)
+
+    @app.get("/api/recordings/{identifier}/framing-report")
+    async def recording_framing_report(identifier: str, revision: str, visual_revision: str):
+        metadata, binding = await checked_visual(identifier, revision)
+        result = await archive_call(lambda: visual_archive.framing_report(
+            identifier, revision=visual_revision, duration_s=metadata["duration_s"], **binding))
+        if result.get("state") == "missing":
+            raise HTTPException(404, "Visual recording not found; reopen this session")
+        result.update(id=identifier, revision=revision, visual_revision=visual_revision)
         return JSONResponse(result)
 
     @app.get("/api/recordings/{identifier}/visual/frames/{index}.jpg")

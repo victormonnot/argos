@@ -121,7 +121,7 @@ models or an existing observation session.
 | Flight controls | Opt-in manual Gazebo/SITL flight, held mouse/touch controls and optional keyboard, with the live camera visible. |
 | Incidents and recovery (incidents and recovery) | Available data, observed interruptions, receiver reopening and reception recovery. |
 | Live MAVLink (live MAVLink) | Received message types and components, counters, approximate rates, fields and bytes; the display can be frozen. |
-| Sessions | Captured video and matched boxes, sampled flight state and events, telemetry replay, raw messages, reception rates and gaps. |
+| Sessions | Captured video and matched boxes, framing intervals and centering/relative-size curves linked to replay, flight events, telemetry and reception analysis. |
 
 MAVLink transports include UDP, TCP and serial. The `ardupilotmega` dialect is
 used to decode MAVLink 1 and 2. Images come from a Gazebo sensor or a local V4L2
@@ -189,3 +189,8 @@ The pilot can explicitly engage experimental [visual framing](docs/framing.md)
 with `--framing`. Manual attitude input stops the assistance; in the Stabilize
 manual-throttle variant, throttle adjustments keep framing active. This does not
 establish outdoor following or horizontal position hold.
+
+**Gentle / Normal / Responsive** adjusts approach and retreat response while
+keeping centering settings and command limits unchanged. After a visual capture,
+open **Sessions → Flight replay → Framing report** to inspect the observed
+assistance intervals, relative-size error and interruptions against the video.

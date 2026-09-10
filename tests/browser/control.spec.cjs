@@ -223,6 +223,9 @@ test('an unrelated input 409 during transfer still releases control', async ({ p
   await page.locator('#control-mode-select').selectOption('0');
   await page.locator('#control-mode-switch').click();
   await expect.poll(() => mock.control.mode_generation).toBe(1);
+  // Inject into the current generation, after any pre-switch request has
+  // completed. A rejected older-generation request legitimately resynchronizes.
+  await expect.poll(() => mock.calls.filter(call => call.path.endsWith('/input')).at(-1).payload.mode_generation).toBe(1);
   mock.inputErrorOnce = 'Pilot input rejected.';
   await expect.poll(() => mock.calls.some(call => call.payload.action === 'release')).toBe(true);
   await expect(page.locator('#control-feedback')).toContainText('Pilot input rejected. Control released.');

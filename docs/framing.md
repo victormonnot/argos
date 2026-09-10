@@ -17,6 +17,22 @@ still stabilizes attitude and applies its ordinary throttle mapping and tilt
 compensation. These are web inputs in SITL; independent radio authority and a
 Betaflight adapter are later integrations.
 
+**Distance response** selects **Gentle / Normal / Responsive** for approach and
+retreat in either framing profile. Normal retains the original controller.
+The choice changes forward/back response and braking, including how quickly the
+command may change; it keeps the same distance step, reference and maximum pitch
+request. It does not change yaw or vertical-centering gains. Physical coupling
+still exists: pitch tilts the body-mounted camera and the pilot's height matters.
+
+Choose a response after taking control, before or during assistance. The selected
+response remains through Manual, target reselection and flight-mode changes in
+the same lease; taking control with a new lease starts at Normal. Active changes
+apply on the next distinct analyzed image, preserving the size filter, derivative
+history and reference. The selector is unavailable during a tracking pause,
+takeover, landing or mode transfer. It never acknowledges loss or extends a
+deadline. Responsive is a bounded command setting, not a guarantee of faster
+convergence or suitability for every target and video delay.
+
 This is an experimental simulation controller. It provides no position hold,
 obstacle avoidance, trajectory planning or reliable identity recognition through
 occlusions. Neutral inputs can leave horizontal drift. Changing a person's pose
@@ -175,6 +191,11 @@ vertical centering continue in Full framing; the pilot manages height in the
 manual-throttle profile. Commands have deadbands, caps and slew limits; the
 controller has no integral term. See [image_framing.py](../argos/guidance/image_framing.py).
 
+The distance-response factors are **0.65 / 1.0 / 1.35**. They multiply both terms
+of the forward proportional/derivative request and its 0.35/s axis slew rate.
+The absolute forward-axis cap stays 0.35; height/derivative filters, centering
+gates, target-size bounds and all perception/authority deadlines are unchanged.
+
 The explicit digital profile removes RC stick/throttle deadzones and checks
 channel mapping, reversal and RC calibration for manual flight and framing.
 Framing-enabled sessions additionally check yaw mapping, simple-mode settings
@@ -208,6 +229,7 @@ strictly increasing integer within the current lease.
 | `select` | `mode_generation`, `run_id`, `video_id`, `frame_sequence`, `track_id` from current control/displayed analysis |
 | `engage` | `mode_generation`, `revision`, `input_seq` from acknowledged control state; optional `profile`: `full` (default) or `pilot_throttle` |
 | `closer`, `farther` | `mode_generation` from current control state |
+| `response` | `mode_generation`, `range_response`: `gentle`, `normal` or `responsive` |
 | `stop`, `clear` | None |
 
 Mode-sensitive operations carry the current flight-mode generation. Omission
@@ -218,7 +240,7 @@ refused during a mode transfer. This prevents a delayed pre-switch Select from
 restoring the old target after returning to AltHold. Stop/Clear remain
 unversioned so manual cancellation retains priority.
 
-`control.framing` exposes the current `profile`, per-profile engagement eligibility
+`control.framing` exposes the current `profile`, `range_response`, per-profile engagement eligibility
 under `profiles`, phase, revision, selected target, eligibility/reason,
 normalized errors, current/reference height, pause status, derived axes, frame receipt age and
 remaining takeover time. `control.framing.last_loss` retains the first takeover's
@@ -254,6 +276,11 @@ New visual captures retain the framing profile in sampled state and first-loss
 evidence; Engage events name the manual-throttle variant. Replay displays the
 recorded profile. Older archives without this field remain readable and their
 profile is not inferred retroactively.
+
+New captures also retain `range_response` in sampled state and first-loss
+evidence, with discrete response-change events. Missing legacy settings remain
+unknown. The [session framing report](console.md#framing-report) groups observed
+assistance intervals and links centering/relative-size curves back to replay.
 
 ArduPilot references: [Stabilize](https://ardupilot.org/copter/docs/stabilize-mode.html)
 and [AltHold](https://ardupilot.org/copter/docs/altholdmode.html).

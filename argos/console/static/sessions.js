@@ -85,6 +85,7 @@
       node("archive-refresh").disabled = false;
     }
     notifyAnalysis();
+    notifyFramingReport();
   }
 
   function controls(busy = false) {
@@ -98,6 +99,7 @@
     node("replay-next").setAttribute("aria-label", flightView() ? "Forward 0.2 seconds" : "Next measurement");
     node("replay-measures").setAttribute("aria-busy", String(busy));
     node("recording-flight-view").setAttribute("aria-busy", String(busy));
+    notifyFramingReport();
   }
 
   function clearMeasures(message) {
@@ -304,7 +306,7 @@
     node("flight-replay-placeholder").hidden = false;
     text("flight-replay-placeholder", message);
     text("flight-replay-frame-status", "");
-    for (const name of ["mode", "armed", "control", "framing", "target", "reference"]) text(`flight-replay-${name}`, "—");
+    for (const name of ["mode", "armed", "control", "framing", "target", "reference", "response"]) text(`flight-replay-${name}`, "—");
     text("flight-replay-control-status", "No recorded control observation at this point.");
     text("flight-replay-events-status", "");
     node("flight-replay-events").replaceChildren();
@@ -377,6 +379,7 @@
       text("flight-replay-framing", `${framingPhase}${recordedProfile ? ` · ${recordedProfile}` : ""}`);
       text("flight-replay-target", Number.isSafeInteger(control.framing?.target_id) ? `Person #${control.framing.target_id}` : "None recorded");
       text("flight-replay-reference", finite(control.framing?.reference_height) ? numeric(control.framing.reference_height * 100, "% of image height") : "Not recorded");
+      text("flight-replay-response", ({ gentle: "Gentle", normal: "Normal", responsive: "Responsive" })[framing?.range_response] || "Not recorded");
       const controlAge = finite(value.sample?.at_s) ? Math.max(0, cursor - value.sample.at_s) : null;
       const controlStatus = value.state === "ended" ? "Video and flight-event capture ended · last recorded observation"
         : value.state === "gap" || controlAge > .35 ? "Recording gap · stale observation at the cursor" : "Recorded service observation";
@@ -507,6 +510,13 @@
     node("recording-analysis-view").hidden = detailView !== "analysis";
     node("replay-transport").hidden = !cursorReady();
     notifyAnalysis();
+    notifyFramingReport();
+  }
+
+  function notifyFramingReport() {
+    document.dispatchEvent(new CustomEvent("argos:archive-framing-report", {
+      detail: { visible: visible && flightView() && !document.hidden, metadata, cursor }
+    }));
   }
 
   function notifyAnalysis() {
@@ -643,6 +653,13 @@
     }
   }
 
+  document.addEventListener("argos:archive-framing-seek", (event) => {
+    const value = event.detail;
+    if (!visible || !flightView() || !visualReady() || !value || value.id !== selected
+      || value.revision !== metadata.revision || value.visual_revision !== metadata.visual.revision
+      || !finite(value.at_s) || value.at_s < 0 || value.at_s > metadata.duration_s) return;
+    void seek(value.at_s);
+  });
   document.addEventListener("argos:workspace-changed", (event) => setWorkspace(event.detail.view === "sessions"));
   node("archive-journal").addEventListener("click", () => {
     document.dispatchEvent(new Event("argos:show-observation"));
@@ -691,6 +708,7 @@
   node("replay-speed").addEventListener("change", () => { anchorAt = cursor; anchorTime = performance.now(); });
   document.addEventListener("visibilitychange", () => {
     notifyAnalysis();
+    notifyFramingReport();
     if (document.hidden) {
       if (playing) {
         cancelReplay();
@@ -702,6 +720,7 @@
   window.addEventListener("pagehide", () => {
     visible = false;
     notifyAnalysis();
+    notifyFramingReport();
     cancelReplay();
     catalogRequest?.abort();
   });

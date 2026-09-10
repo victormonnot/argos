@@ -24,6 +24,7 @@ import time
 from uuid import uuid4
 
 from .archive import ArchiveError
+from .framing_analysis import MAX_REPORT_EVENTS, framing_report
 
 
 MAX_BYTES = 256 * 1024 * 1024
@@ -134,9 +135,9 @@ def _public(value, *, top=False, depth=0):
     if isinstance(value, dict):
         allowed = CONTROL_FIELDS if top else PUBLIC_FIELDS
         return {key: _public(item, depth=depth + 1) for key, item in value.items()
-                if key in allowed or (not top and key == "profile"
-                                      and isinstance(item, str)
-                                      and item in ("full", "pilot_throttle"))}
+                if key in allowed or (not top and isinstance(item, str)
+                                      and ((key == "profile" and item in ("full", "pilot_throttle"))
+                                           or (key == "range_response" and item in ("gentle", "normal", "responsive"))))}
     if isinstance(value, (list, tuple)):
         return [_public(item, depth=depth + 1) for item in value[:64]]
     return None
@@ -390,6 +391,7 @@ class VisualRecorder:
             transition = [state.get("phase"), state.get("owned"), state.get("selected_mode"),
                           vehicle.get("mode"), vehicle.get("armed"), framing.get("phase"),
                           framing.get("target_id"), framing.get("reference_height"), framing.get("profile"),
+                          framing.get("range_response"),
                           framing.get("reason"), state.get("interruption")]
             if previous.get("transition") != transition and counters["events"] < self.max_events:
                 def mode_label(value):
@@ -409,6 +411,8 @@ class VisualRecorder:
                 parts.append(f"framing {framing.get('phase') or 'unavailable'}")
                 if framing.get("profile") in ("full", "pilot_throttle"):
                     parts.append("pilot throttle" if framing["profile"] == "pilot_throttle" else "full framing")
+                if framing.get("range_response") in ("gentle", "normal", "responsive"):
+                    parts.append(f"range response {framing['range_response']}")
                 if framing.get("target_id") is not None:
                     parts.append(f"person #{framing['target_id']}")
                 reference = framing.get("reference_height")
@@ -749,6 +753,39 @@ class VisualArchive:
                     "events": list(reversed(events)), "events_count": event_count,
                     "events_limit": 50, "previous_at_s": None if before is None else before - meta["started_at"],
                     "next_at_s": None if after is None else after - meta["started_at"]}
+        return self._use(identifier, started_at, run_id, revision, read)
+
+    def framing_report(self, identifier, *, revision, started_at, run_id, duration_s=None):
+        """Read an observation summary using the same bound file as replay.
+
+        The query never reads JPEG blobs or re-runs vision/guidance. Validation,
+        checksum/revision fencing and the final inode check stay inside _use.
+        """
+        if not isinstance(revision, str) or re.fullmatch("[0-9a-f]{64}", revision) is None:
+            raise VisualArchiveError("A visual revision is required", 409)
+        if duration_s is not None:
+            try:
+                duration_s = _number(duration_s)
+            except (ValueError, TypeError, OverflowError) as exc:
+                raise VisualArchiveError("Invalid recorded session duration") from exc
+
+        def read(db, meta, rev, path):
+            if duration_s is not None:
+                if duration_s < meta["ended_at"] - meta["started_at"] - 1e-8:
+                    raise VisualArchiveError("Visual recording ends after its journal", 409)
+                meta = {**meta, "session_duration_s": max(duration_s, meta["ended_at"] - meta["started_at"])}
+            samples = ((index, at, json.loads(control), received)
+                       for index, at, control, received in db.execute(
+                           "SELECT s.idx,s.at,s.control,f.received FROM samples s "
+                           "LEFT JOIN frames f ON f.idx=s.frame_idx ORDER BY s.idx"))
+            events = [{"index": index, "at_s": at - meta["started_at"], "kind": kind,
+                       "detail": detail, "status": status, "source": "event"}
+                      for index, at, kind, detail, status in db.execute(
+                          "SELECT idx,at,kind,detail,status FROM events ORDER BY idx DESC LIMIT ?",
+                          (MAX_REPORT_EVENTS,))]
+            result = framing_report(samples, events, meta)
+            result.update(id=identifier, revision=rev)
+            return result
         return self._use(identifier, started_at, run_id, revision, read)
 
     def frame(self, identifier, index, *, revision, started_at, run_id):

@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from copy import deepcopy
 
-from argos.guidance.image_framing import FramingLaw
+from argos.guidance.image_framing import FramingLaw, RANGE_RESPONSES
 
 
 FRAME_MAX_AGE = .45
@@ -82,6 +82,7 @@ class FramingControl:
         self.enabled = bool(enabled)
         self.revision = 0
         self.profile = "full"
+        self.range_response = "normal"
         self.phase = "idle" if self.enabled else "disabled"
         self._observation = None
         self._observation_error = "No recent analyzed image"
@@ -276,7 +277,7 @@ class FramingControl:
             raise RuntimeError(issue)
         observation = self._observation
         self._law.start(target["box"], observation["received_at"],
-                        vertical_control=profile == "full")
+                        vertical_control=profile == "full", range_response=self.range_response)
         self.profile = profile
         self._output = _zero()
         self._last_sequence = observation["sequence"]
@@ -311,6 +312,7 @@ class FramingControl:
             # cannot be misrepresented as the image which caused the failure.
             self._last_loss = {"at": now, "reason": str(reason)[:DIAGNOSTIC_REASON_LIMIT],
                                "target_id": self._target_id, "profile": self.profile,
+                               "range_response": self.range_response,
                                **deepcopy(evidence if evidence is not None else self._evidence(now))}
         self._reset_output()
         self.phase = "takeover"
@@ -390,14 +392,30 @@ class FramingControl:
         self._reason = str(reason)
         self.revision += 1
 
-    def clear(self, reason="Selection cleared", *, reset_loss=False):
+    def clear(self, reason="Selection cleared", *, reset_loss=False, reset_response=False):
         self._reset_output()
         self.profile = "full"
+        if reset_response:
+            self.range_response = "normal"
         if reset_loss:
             self._last_loss = None
         self._target_id = self._context = None
         self.phase = "idle" if self.enabled else "disabled"
         self._reason = str(reason)
+        self.revision += 1
+
+    def set_range_response(self, value, now):
+        now = _time(now)
+        if not isinstance(value, str) or value not in RANGE_RESPONSES:
+            raise ValueError("Choose gentle, normal or responsive distance response")
+        # A preference change is not a new observation or a manual takeover.
+        self.tick(now)
+        if not self.enabled or self.phase not in ("idle", "selected", "active"):
+            raise RuntimeError("Take manual control before changing distance response")
+        if self._pause_deadline is not None:
+            raise RuntimeError("Framing is paused; wait before changing distance response")
+        self._law.set_range_response(value)
+        self.range_response = value
         self.revision += 1
 
     def adjust(self, direction, now):
@@ -449,6 +467,7 @@ class FramingControl:
         age = None if observation is None else max(0., now - observation["received_at"])
         return {"enabled": self.enabled, "revision": self.revision, "phase": self.phase,
                 "profile": self.profile,
+                "range_response": self.range_response,
                 "active": self.phase == "active", "paused": self._pause_deadline is not None,
                 "target_id": self._target_id,
                 "available": available, "reason": reason,

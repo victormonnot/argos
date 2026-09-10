@@ -37,6 +37,10 @@ body[data-view=control] #inspector,body[data-view=control] #focus-button { displ
 .framing-modes small { color:var(--muted); font-size:10px; font-weight:400; }
 .framing-profile-note { margin-bottom:7px; }
 .framing-distance { grid-template-columns:1fr 1fr; }
+.framing-response { display:flex; align-items:center; gap:10px; margin-top:6px; }
+.framing-response label { color:var(--muted); font-size:11px; }
+.framing-response select { flex:1; min-width:0; min-height:44px; padding:8px; border:1px solid var(--line); border-radius:0; background:var(--page); color:var(--ink); font:11px var(--font); }
+.framing-response select:disabled { color:var(--muted); }
 .framing-metrics { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:7px; }
 .framing-metrics dt { color:var(--muted); font-size:10px; }
 .framing-metrics dd { margin-top:2px; font:11px var(--mono); }

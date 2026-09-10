@@ -9,7 +9,7 @@ async function installFraming(page, model) {
     const context = canvas.getContext('2d'); context.fillStyle = '#536950'; context.fillRect(0, 0, 640, 360);
     return canvas.toDataURL('image/jpeg').split(',')[1];
   }), 'base64');
-  const framing = { profile: 'full', profiles: {}, enabled: true, revision: 0, phase: 'idle', active: false, paused: false, target_id: null, available: false,
+  const framing = { profile: 'full', range_response: 'normal', profiles: {}, enabled: true, revision: 0, phase: 'idle', active: false, paused: false, target_id: null, available: false,
     reason: 'Select a person in the image.', error_x: null, error_y: null, height: null, reference_height: null,
     axes: zero(), frame_age_s: 0, takeover_remaining_s: null };
   const control = { at: 0, enabled: true, available: true, reason: '', owned: false, phase: 'idle', last_input_age: 0,
@@ -71,7 +71,7 @@ async function installFraming(page, model) {
       control.owned = true; control.phase = 'claimed'; mock.token = `private-framing-${mock.calls.length}`; mock.intent = 0;
       control.interruption = null; control.last_error = '';
       control.lease_started_at = model.clock();
-      Object.assign(framing, { profile: 'full', active: false, paused: false, phase: 'idle', target_id: null,
+      Object.assign(framing, { profile: 'full', range_response: 'normal', active: false, paused: false, phase: 'idle', target_id: null,
         reason: 'New control lease; select a person', reference_height: null });
       return reply(200, { token: mock.token, control: snapshot() });
     }
@@ -121,7 +121,7 @@ async function installFraming(page, model) {
     if (hold) mock.hold = null;
     if (hold && !hold.afterApply) await holdFor(hold);
     if (payload.token !== mock.token || !control.owned) return reply(409, { detail: 'Control unavailable.' });
-    if (['select', 'engage', 'closer', 'farther'].includes(payload.operation)) {
+    if (['select', 'engage', 'closer', 'farther', 'response'].includes(payload.operation)) {
       const generation = payload.mode_generation ?? (control.mode_generation === 0 ? 0 : null);
       if (generation !== control.mode_generation) {
         mock.framingGenerationConflicts.push(payload);
@@ -137,6 +137,10 @@ async function installFraming(page, model) {
       framing.target_id = payload.track_id; framing.phase = 'selected'; framing.active = false;
       framing.error_x = .12; framing.error_y = -.03; framing.height = .2; framing.reference_height = .2;
       framing.reason = 'Selected. Engage after manual takeoff.';
+    } else if (payload.operation === 'response') {
+      expect(['gentle', 'normal', 'responsive']).toContain(payload.range_response);
+      if (framing.paused || framing.phase === 'takeover') return reply(409, { detail: 'Framing interrupted; response unchanged.' });
+      framing.range_response = payload.range_response;
     } else if (payload.operation === 'engage') {
       if (payload.revision !== framing.revision || payload.input_seq > control.input_seq || payload.input_seq < mock.manualSeq) return reply(409, { detail: 'Manual input superseded engagement.' });
       expect(['full', 'pilot_throttle']).toContain(payload.profile);
@@ -733,7 +737,7 @@ for (const viewport of [{ width: 1366, height: 768 }, { width: 768, height: 1024
   test(`all three assistance choices and held throttle remain touch reachable at ${viewport.width}x${viewport.height}`, async ({ page, model }) => {
     await page.setViewportSize(viewport);
     await ready(page, model, { mode: 0, engage: true, profile: 'pilot_throttle' });
-    for (const selector of [operation('stop'), operation('engage'), pilotEngage, '#control-throttle', increaseThrottle, decreaseThrottle]) {
+    for (const selector of [operation('stop'), operation('engage'), pilotEngage, '#control-throttle', increaseThrottle, decreaseThrottle, '#framing-response']) {
       const button = page.locator(selector);
       await button.scrollIntoViewIfNeeded();
       const box = await button.boundingBox();
@@ -794,3 +798,58 @@ for (const profile of ['full', 'pilot_throttle']) {
     await expect.poll(() => mock.framing.active).toBe(false);
   });
 }
+
+for (const profile of ['full', 'pilot_throttle']) {
+  test(`distance response changes retain ${profile} assistance and chosen size`, async ({ page, model }) => {
+    const mock = await ready(page, model, { mode: profile === 'full' ? 2 : 0, profile, engage: true });
+    const response = page.getByLabel('Distance response', { exact: true });
+    await expect(response).toHaveValue('normal');
+    const reference = mock.framing.reference_height;
+    for (const value of ['gentle', 'responsive', 'normal']) {
+      await response.selectOption(value);
+      await expect(response).toHaveValue(value);
+      await expect(response).toBeEnabled();
+      expect(mock.framing.active).toBe(true);
+      expect(mock.framing.reference_height).toBe(reference);
+      expect(mock.framing.profile).toBe(profile);
+      const request = operations(mock).at(-1).payload;
+      expect(request.operation).toBe('response');
+      expect(request.range_response).toBe(value);
+      expect(request.mode_generation).toBe(mock.control.mode_generation);
+    }
+    await response.selectOption('gentle');
+    await expect(response).toBeEnabled();
+    await page.locator(operation('stop')).click();
+    await expect(response).toHaveValue('gentle');
+    expect(mock.framing.active).toBe(false);
+  });
+}
+
+test('distance response is unavailable without ownership and throughout a tracking pause or takeover', async ({ page, model }) => {
+  const mock = await installFraming(page, model);
+  await open(page);
+  await page.locator('#view-control').click();
+  const response = page.getByLabel('Distance response', { exact: true });
+  await expect(response).toBeDisabled();
+  await page.locator('#control-claim').click();
+  await expect(response).toBeEnabled();
+  Object.assign(mock.framing, { active: true, paused: true, phase: 'active' });
+  await expect(response).toBeDisabled();
+  Object.assign(mock.framing, { active: false, paused: false, phase: 'takeover' });
+  await expect(response).toBeDisabled();
+  expect(operations(mock)).toHaveLength(0);
+});
+
+test('a late distance response reply cannot restore active framing after Manual', async ({ page, model }) => {
+  const mock = await ready(page, model, { engage: true });
+  const held = { operation: 'response', afterApply: true }; mock.hold = held;
+  await page.locator('#framing-response').selectOption('responsive');
+  await expect.poll(() => held.requested).toBe(true);
+  await page.locator(operation('stop')).click();
+  await expect(page.locator(operation('stop'))).toHaveAttribute('aria-pressed', 'true');
+  held.release();
+  await expect(page.locator('#framing-response')).toHaveValue('responsive');
+  await expect(page.locator(operation('stop'))).toHaveAttribute('aria-pressed', 'true');
+  expect(mock.framing.active).toBe(false);
+  expect(mock.control.owned).toBe(true);
+});

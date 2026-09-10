@@ -1133,3 +1133,49 @@ the Land request, followed by disarming; that diagnostic remains in the archive.
 Its actual replay displayed the recorded manual-throttle profile. The twelve
 pre-existing recording files retained
 their sizes and SHA-256 hashes. The supplied visitor fixture was not replaced.
+
+## Distance response and session framing reports — September 10, 2026
+
+- **2,043 Python tests passed**, including exact Normal-law regression,
+  Gentle/Responsive approach and braking, unchanged centering/axis bounds,
+  preserved state during response changes, ownership and mode/intent fencing,
+  recorded coverage, legacy choices and archive revisions. The two existing
+  dependency warnings remain.
+- **154 Chromium browser tests passed** with Node.js 22, including both framing
+  profiles, response selection, touchscreen layouts, lazy report loading,
+  null-status events, explicit retry after a failed report, obsolete responses,
+  plot segmentation and keyboard/pointer replay navigation. An existing test
+  now waits for a current-generation input before injecting its generic 409;
+  a pre-switch request legitimately follows the separate resynchronization path.
+- A rebuilt wheel passed isolated installed-resource checks and `pip check`.
+  Both supplied recording verifiers passed. Report layouts were inspected at
+  1366, 768 and 390 pixels; plot tick labels retain readable sizing on mobile.
+- A **30.093-second captured Gazebo/SITL session** exercised Full framing and
+  Gentle → Normal → Responsive, using Closer then Farther under each setting,
+  followed by Manual, Land, observed disarming and Release. All 17 discrete
+  control requests returned HTTP 200. The capture retains 1,567 MAVLink
+  receptions, 145 JPEGs, 289 control samples, 34 visual events and zero reported
+  visual drops. There are 22 Gentle, 23 Normal and 23 Responsive active samples;
+  no sampled pause or takeover. Recorded axis magnitudes stayed within existing
+  limits. This brief sequence checks integration, not comparative settling time
+  or universally suitable tuning.
+- The new report accounts for 7.149 seconds of sampled active Full framing in
+  that session. Exact interval links and time-control navigation were checked
+  against recorded image/state through the real HTTP service, along with the
+  supplied visitor archive, without sending flight commands. The latter retains
+  its missing historical profile/response values. Fourteen pre-existing local
+  recording files retained their exact hashes.
+
+The first attempt after restarting the simulator remained on the ground:
+ArduPilot refused Arm with `Accels inconsistent`. That capture was retained;
+a later ordinary Arm succeeded without changing arming checks or parameters.
+The flight harness subsequently needed its replay interaction corrected: native
+range-input decimal serialization can place an exact sample boundary just before
+that sample. Exact interval-link seeking and a slider position inside the
+interval were verified separately; the flight was not repeated for that check.
+
+Normal retains the preceding controller; the two alternatives scale only the
+forward/back request and slew. The unchanged maximum pitch demand, centering
+settings, relative size step and loss rules remain authoritative. No physical
+radio, camera adapter, firmware, outdoor flight or GPS-free position estimator
+was validated by this software milestone.

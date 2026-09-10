@@ -73,6 +73,10 @@ def capture_action(session, operation, values, *, status, error=""):
             label = FRAMING_LABELS.get(requested, "Framing request") if isinstance(requested, str) else "Framing request"
             if requested == "engage" and values.get("profile") == "pilot_throttle":
                 label = "Engage framing with manual throttle"
+            if requested == "response":
+                response = values.get("range_response")
+                label = "Distance response" + (f": {response.title()}" if isinstance(response, str)
+                    and response in ("gentle", "normal", "responsive") else "")
         elif operation == "action":
             requested = values.get("action")
             label = ACTION_LABELS.get(requested, "Flight action") if isinstance(requested, str) else "Flight action"

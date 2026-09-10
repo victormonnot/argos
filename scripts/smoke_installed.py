@@ -25,13 +25,13 @@ def main():
         with TestClient(create_app(config)) as client:
             for path in ("/", "/app.css", "/app.js", "/sessions.css", "/sessions.js",
                          "/live.css", "/live.js", "/analysis.css", "/analysis.js",
-                         "/control.css", "/control.js",
+                         "/control.css", "/control.js", "/framing-report.js",
                          "/fonts/ibm-plex-sans-400-500-latin.woff2"):
                 response = client.get(path)
                 if response.status_code != 200 or not response.content:
                     raise RuntimeError(f"unavailable packaged resource: {path}")
                 if path == "/":
-                    for element in ("control-mode-select", "control-throttle", "control-throttle-value", "vision-toggle", "vision-layer", "framing-controls"):
+                    for element in ("control-mode-select", "control-throttle", "control-throttle-value", "vision-toggle", "vision-layer", "framing-controls", "framing-response"):
                         if f'id="{element}"' not in response.text:
                             raise RuntimeError(f"missing packaged flight control: {element}")
             state = client.get("/api/state").json()

@@ -43,6 +43,7 @@
       || (view.paused !== undefined && typeof view.paused !== "boolean")
       || typeof view.available !== "boolean" || !Number.isSafeInteger(view.revision) || view.revision < 0
       || (view.profile !== undefined && !["full", "pilot_throttle"].includes(view.profile))
+      || (view.range_response !== undefined && !["gentle", "normal", "responsive"].includes(view.range_response))
       || (view.profiles !== undefined && (!view.profiles || typeof view.profiles !== "object"
         || !["full", "pilot_throttle"].every(profile => typeof view.profiles[profile]?.available === "boolean" && typeof view.profiles[profile]?.reason === "string")))
       || !["disabled", "idle", "selected", "active", "takeover"].includes(view.phase)
@@ -290,13 +291,13 @@
   }
 
   async function requestFraming(operation, values = {}, { urgent = false } = {}) {
-    const modeFenced = ["select", "engage", "closer", "farther"].includes(operation);
+    const modeFenced = ["select", "engage", "closer", "farther", "response"].includes(operation);
     if (!active() || !owned() || (modeFenced && modeChanging()) || !framingView()?.enabled || (framingBusy && !urgent)) return;
     const currentToken = token, currentEpoch = epoch, intent = ++framingIntent, capturedGeneration = generation();
     framingBusy = true;
     framingOperation = operation;
     if (operation === "stop" || operation === "clear") framingSuppressed = true;
-    framingFeedback = ({ select: "Selecting person…", engage: "Engaging framing…", stop: "Returning to manual…", clear: "Clearing selection…", closer: "Adjusting closer…", farther: "Adjusting farther…" })[operation];
+    framingFeedback = ({ select: "Selecting person…", engage: "Engaging framing…", stop: "Returning to manual…", clear: "Clearing selection…", closer: "Adjusting closer…", farther: "Adjusting farther…", response: "Updating distance response…" })[operation];
     render();
     const current = () => intent === framingIntent && token === currentToken && epoch === currentEpoch && active() && owned()
       && (!modeFenced || (!modeChanging() && generation() === capturedGeneration));
@@ -352,6 +353,9 @@
     } }));
     if (!framing?.enabled) return;
     text("framing-target", framing.target_id === null ? "No target" : `Person #${framing.target_id}`);
+    node("framing-response").value = framing.range_response ?? "normal";
+    node("framing-response").disabled = !hasControl || framingBusy || paused || takeover
+      || control.phase === "landing" || framing.range_response === undefined;
     const motion = Object.values(axes()).some(Boolean);
     const engage = hasControl && vision.enabled && vision.recent && framing.target_id !== null
       && control.vehicle?.armed === true && control.vehicle?.landed === false
@@ -628,6 +632,9 @@
   for (const button of framingButtons) button.addEventListener("click", () => {
     if (!button.disabled) void requestFraming(button.dataset.framingOperation,
       button.dataset.framingProfile ? { profile: button.dataset.framingProfile } : {}, { urgent: button.dataset.framingOperation === "stop" });
+  });
+  node("framing-response").addEventListener("change", event => {
+    if (!event.target.disabled) void requestFraming("response", { range_response: event.target.value });
   });
   document.addEventListener("argos:select-person", event => {
     const framing = framingView();

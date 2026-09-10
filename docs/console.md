@@ -582,3 +582,45 @@ Radio/HITL integration, autonomous target tracking and GPS-free horizontal
 position hold are not implemented by the manual-control panel.
 
 C++ and the custom MAVLink dialect remain deferred as agreed.
+
+## Framing report
+
+Open **Sessions → Flight replay → Framing report** in a completed visual session.
+The report is read on demand and uses the existing archive; it does not require
+Gazebo, detector inference or connected hardware. The supplied recorded flight
+can be used immediately. The separate **Analysis** tab still describes MAVLink
+reception timing.
+
+The assistance timeline and durations distinguish Manual, Full framing,
+manual-throttle framing, pauses, takeover requests, inactive control and unknown
+coverage. These are sampled service states, not measured airborne durations.
+Intervals separate changes of target, profile, distance response, size reference
+and recorded pause/loss reason. Select an interval, an event or a curve to seek
+the corresponding recorded moment. A time slider and **View this moment in
+replay** provide the same navigation from the keyboard or touch screen.
+
+The horizontal curve expresses signed center error as a percentage of half the
+image width: zero is centered, −100% is the left edge and +100% the right edge.
+The apparent-size curve shows `100 × (height − reference) / reference`; zero
+matches the selected size. A positive value means a larger box, not a measured
+metric distance. The report does not score vertical centering, which belongs to
+the pilot in manual-throttle framing. Legacy recordings with no profile or
+response value retain that uncertainty.
+
+A sampled control state supports a duration only up to the next sample and the
+recorded sample-age limit (currently 0.35 seconds). Longer gaps and time after
+visual recording ends are unknown. Curves use valid active framing observations
+with recent recorded image evidence and split at gaps or setting changes. They
+summarize sampled image measurements; they cannot establish correct identity,
+physical tracking accuracy or every transition between samples.
+
+Reports retain at most 1,200 chart points, 1,500 intervals and the latest 500
+session/control events. For long sessions, chart reduction preserves signed
+extrema in time bins and keeps separate segment identities. Totals use the full
+validated sample sequence; reductions and omitted intervals/events are stated
+in the interface. Downloading the original session preserves its full archive.
+
+The read-only route is
+`GET /api/recordings/{id}/framing-report?revision=…&visual_revision=…`.
+It requires both revisions from current session metadata and the same verified
+journal/visual binding as replay. Reopen the session if its files have changed.

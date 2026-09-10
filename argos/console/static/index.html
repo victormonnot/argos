@@ -16,6 +16,7 @@
     <script defer="" src="/app.js">
     </script>
     <script defer="" src="/sessions.js"></script>
+    <script defer="" src="/framing-report.js"></script>
     <script defer="" src="/analysis.js"></script>
     <script defer="" src="/live.js"></script>
     <script defer="" src="/control.js"></script>
@@ -316,6 +317,15 @@
             <button class="button button-outline" data-framing-operation="farther" disabled type="button">Farther</button>
             <button class="button button-outline" data-framing-operation="closer" disabled type="button">Closer</button>
           </div>
+          <div class="framing-response">
+            <label for="framing-response">Distance response</label>
+            <select id="framing-response" disabled aria-describedby="framing-response-note">
+              <option value="gentle">Gentle</option>
+              <option value="normal" selected>Normal</option>
+              <option value="responsive">Responsive</option>
+            </select>
+          </div>
+          <p class="control-instructions" id="framing-response-note">Approach and retreat response. Centering and each distance step stay the same.</p>
           <dl class="framing-metrics" aria-label="Image framing measurements">
             <div><dt>Center error X / Y</dt><dd id="framing-error">— / —</dd></div>
             <div><dt>Image height / reference</dt><dd id="framing-height">— / —</dd></div>
@@ -1130,10 +1140,14 @@
               </div>
               <div class="flight-replay-state">
                 <h3>Recorded flight state</h3>
-                <dl class="detail-list"><div><dt>Mode</dt><dd id="flight-replay-mode">—</dd></div><div><dt>Arming</dt><dd id="flight-replay-armed">—</dd></div><div><dt>Control</dt><dd id="flight-replay-control">—</dd></div><div><dt>Framing</dt><dd id="flight-replay-framing">—</dd></div><div><dt>Selected target</dt><dd id="flight-replay-target">—</dd></div><div><dt>Relative size reference</dt><dd id="flight-replay-reference">—</dd></div></dl>
+                <dl class="detail-list"><div><dt>Mode</dt><dd id="flight-replay-mode">—</dd></div><div><dt>Arming</dt><dd id="flight-replay-armed">—</dd></div><div><dt>Control</dt><dd id="flight-replay-control">—</dd></div><div><dt>Framing</dt><dd id="flight-replay-framing">—</dd></div><div><dt>Selected target</dt><dd id="flight-replay-target">—</dd></div><div><dt>Relative size reference</dt><dd id="flight-replay-reference">—</dd></div><div><dt>Distance response</dt><dd id="flight-replay-response">—</dd></div></dl>
                 <p class="microcopy" id="flight-replay-control-status"></p>
               </div>
             </div>
+            <details class="framing-report" id="framing-report">
+              <summary><span>Framing report</span><span class="microcopy">Assistance, interruptions and target size over the session</span></summary>
+              <div id="framing-report-root"></div>
+            </details>
             <section class="flight-replay-events"><h3>Flight events</h3><p class="microcopy" id="flight-replay-events-status"></p><ol id="flight-replay-events"></ol></section>
           </section>
           <section aria-label="Recorded reception analysis" hidden="" id="recording-analysis-view"><div id="recording-analysis-root"></div></section>

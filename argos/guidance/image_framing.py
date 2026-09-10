@@ -34,6 +34,8 @@ MAX_LOG_HEIGHT_RATE = 1.0
 MAX_SLEW_INTERVAL = .25
 AXIS_LIMITS = {"forward": .35, "right": 0., "up": .3, "yaw": .5}
 AXIS_SLEW_PER_SECOND = {"forward": .35, "up": .4, "yaw": .9}
+# Scale approach and braking together; never expand the existing axis cap.
+RANGE_RESPONSES = {"gentle": .65, "normal": 1., "responsive": 1.35}
 
 
 def _finite(value) -> bool:
@@ -102,22 +104,36 @@ class FramingLaw:
         self._height_rate = 0.
         self._height_usable = False
         self._vertical_control = True
+        self.range_response = "normal"
         self._axes = dict.fromkeys(AXIS_LIMITS, 0.)
 
-    def start(self, box: list, received_at: float, *, vertical_control=True) -> None:
+    def start(self, box: list, received_at: float, *, vertical_control=True,
+              range_response="normal") -> None:
         box, received_at = _observation(box, received_at)
         if type(vertical_control) is not bool:
             raise ValueError("vertical control must be explicitly enabled or disabled")
+        self._validate_response(range_response)
         if not MIN_REFERENCE_HEIGHT <= box[3] <= MAX_REFERENCE_HEIGHT:
             raise ValueError("initial target height must be between 8% and 45% of the image")
         # Validation precedes reset: a bad request cannot corrupt an active law.
         self.reset()
         self._vertical_control = vertical_control
+        self.range_response = range_response
         self.reference_height = self.height = box[3]
         self.error_x, self.error_y = _errors(box)
         self._received_at = received_at
         self._log_height = math.log(box[3])
         self._height_usable = _forward_usable(box, self.error_x, self.error_y)
+
+    @staticmethod
+    def _validate_response(value):
+        if not isinstance(value, str) or value not in RANGE_RESPONSES:
+            raise ValueError("Choose gentle, normal or responsive distance response")
+
+    def set_range_response(self, value) -> None:
+        """Apply on the next distinct image, keeping reference and filter history."""
+        self._validate_response(value)
+        self.range_response = value
 
     def pause(self) -> None:
         """Neutralize output while retaining the operator's chosen reference.
@@ -175,7 +191,11 @@ class FramingLaw:
             "up": -UP_GAIN * _deadband(error_y, UP_DEADBAND) if self._vertical_control else 0.,
             "yaw": YAW_GAIN * _deadband(error_x, YAW_DEADBAND),
         }
+        scale = RANGE_RESPONSES[self.range_response]
+        requested["forward"] *= scale
         for axis, rate in AXIS_SLEW_PER_SECOND.items():
+            if axis == "forward":
+                rate *= scale
             target = _clip(requested[axis], AXIS_LIMITS[axis])
             change = _clip(target - self._axes[axis], rate * min(dt, MAX_SLEW_INTERVAL))
             self._axes[axis] += change

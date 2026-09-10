@@ -448,7 +448,7 @@ class FlightControl:
         self._last_manual_seq = -1
         self._last_mode_input_seq = -1
         self._framing_intent = 0
-        self.framing.clear("New control lease; select a person", reset_loss=True)
+        self.framing.clear("New control lease; select a person", reset_loss=True, reset_response=True)
         self._axes = dict.fromkeys(AXES, 0.)
         self._selected_mode = ALT_HOLD
         self._mode_generation = 0
@@ -595,7 +595,8 @@ class FlightControl:
         operation = values.get("operation")
         extra = {"select": {"run_id", "video_id", "frame_sequence", "track_id"},
                  "engage": {"revision", "input_seq"}, "stop": set(),
-                 "clear": set(), "closer": set(), "farther": set()}
+                 "clear": set(), "closer": set(), "farther": set(),
+                 "response": {"range_response"}}
         if not isinstance(operation, str) or operation not in extra:
             raise ValueError("Unknown framing operation")
         expected = {"token", "operation", "intent"} | extra[operation]
@@ -637,6 +638,14 @@ class FlightControl:
                 raise ValueError("A valid camera frame and person ID are required")
             selection_check(values, now)
             self.framing.select(values["track_id"], (values["run_id"], values["video_id"]), now)
+        elif operation == "response":
+            if self._phase == "landing" or self._mode_transition is not None:
+                raise RuntimeError("Wait for landing or the flight mode change before changing distance response")
+            if self.framing.phase == "active":
+                reason = self._framing_vehicle_reason(now)
+                if reason:
+                    raise RuntimeError(reason)
+            self.framing.set_range_response(values["range_response"], now)
         elif operation == "engage":
             profile = values.get("profile", "full")
             if not isinstance(profile, str) or profile not in FRAMING_PROFILES:
