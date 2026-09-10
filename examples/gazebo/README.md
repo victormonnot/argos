@@ -1,4 +1,4 @@
-# Walking-person scene
+# Outdoor example scenes
 
 This fragment adds an animated person to the launcher's isolated runway world.
 The person walks a short loop 8–10 metres ahead of the vehicle's initial position,
@@ -66,5 +66,41 @@ its [actor guide](https://gazebosim.org/docs/harmonic/actors/).
 
 The route is deliberately repeatable for inspecting the pixel-processing
 pipeline. Neither its coordinates nor the person's model dimensions may be used
-as operational tracking or metric-distance inputs. A manual pilot still controls
-every flight command.
+as operational tracking or metric-distance inputs. A pilot retains manual
+priority and supervises any explicitly engaged framing assistance.
+
+## Civilian inspection yard
+
+`--scene inspection` adds a compact civilian yard: one enclosed steel shed,
+one weatherproof utility cabinet, a concrete apron with ordinary expansion
+joints and a rough ground surround. The shed has a pitched roof, fascia,
+gutters, a shut roller door and high windows. Directional daylight gives the
+surfaces and edges readable depth; the scene is intentionally modest rather
+than a large photorealistic environment.
+
+```bash
+python examples/setup_vision_scene.py
+python examples/run_web_control.py --scene inspection
+```
+
+The existing person cache is its only external asset. Add the same
+`--vision-model`, `--vision-variant`, `--vision-threads` and `--framing` arguments
+used for `--scene person` when desired. No new download or setup is needed for
+the yard itself. The original runway and person scenes remain available.
+
+Only scenery and lighting change. The launcher copies the yard's small local
+mesh into the run directory, replaces the runway surface and adds the authored
+static structures. It retains the vehicle spawn, world name and onboard camera
+topic, 640 × 480 fixed optics, unchanged walking-person animation and route,
+and existing detector/control settings. Neither building appearance nor ground
+joints are inputs to navigation; there are no recognition markers, pose
+publishers, depth sensors or automatically generated target boxes.
+
+The building and cabinet have simple solid collision geometry. They stand
+behind the walking route, leaving the foreground open for manual flight. This
+does not add collision avoidance or make the animated actor physical. The shed
+is closed scenery, not a traversable interior. Surface materials and geometry
+in `inspection_yard.sdf` and `inspection_assets/shed_gable.obj`/`.mtl` were authored
+for ARGOS and use the repository's MIT license. There are no new third-party mesh
+or texture dependencies. These simple simulation materials do not establish
+perception performance against real buildings or outdoor terrain.

@@ -37,8 +37,21 @@ def add_person_scene(world_element: ET.Element, models: Path, mesh: Path) -> Non
         world_element.append(actor)
 
 
+def add_inspection_scene(world_element: ET.Element, models: Path) -> None:
+    """Replace runway scenery in this run; vehicle/physics stay unchanged."""
+    source = Path(__file__).parent / "gazebo"
+    fragment = ET.parse(source / "inspection_yard.sdf")
+    shutil.copytree(source / "inspection_assets", models / "argos_inspection_assets")
+    for item in list(world_element):
+        if item.tag in {"scene", "light"} or (
+                item.tag == "include" and item.findtext("uri") == "model://runway"):
+            world_element.remove(item)
+    for item in fragment.getroot().find("world"):
+        world_element.append(item)
+
+
 def copy_fixed_camera(gazebo: Path, models: Path) -> None:
-    """Keep the person scene's declared optics fixed in this private model copy.
+    """Keep the person scenes' declared optics fixed in this private model copy.
 
     The pinned upstream zoom plugin starts with a 2.0-radian goal even though
     the sensor declares 1.2 radians. Removing that optional plugin preserves
@@ -106,9 +119,9 @@ def main():
     parser.add_argument("--physics-port", type=int, default=9004)
     parser.add_argument("--gui", action="store_true")
     parser.add_argument("--framing", action="store_true",
-                        help="enable opt-in visual framing for the fixed-camera person scene")
-    parser.add_argument("--scene", choices=("runway", "person"), default="runway",
-                        help="optional walking person in the onboard camera's view")
+                        help="enable opt-in visual framing for a fixed-camera person scene")
+    parser.add_argument("--scene", choices=("runway", "person", "inspection"), default="runway",
+                        help="runway, walking person, or a civilian inspection yard with the same person")
     parser.add_argument("--person-assets", type=Path, default=default_assets_dir(),
                         help="asset root populated by examples/setup_vision_scene.py")
     parser.add_argument("--vision-model", type=Path,
@@ -118,8 +131,8 @@ def main():
     parser.add_argument("--vision-threads", type=int, choices=range(1, 7), default=2,
                         help="CPU threads for the detector worker (default: 2)")
     args = parser.parse_args()
-    if args.framing and (args.scene != "person" or args.vision_model is None):
-        parser.error("--framing requires --scene person and --vision-model")
+    if args.framing and (args.scene not in {"person", "inspection"} or args.vision_model is None):
+        parser.error("--framing requires --scene person or inspection and --vision-model")
     for port in (args.port, args.mavlink_port, args.physics_port):
         if not 1024 <= port <= 65535:
             parser.error("ports must be between 1024 and 65535")
@@ -132,7 +145,7 @@ def main():
     if not shutil.which("gz"):
         parser.error("Gazebo Harmonic is required")
     mesh = None
-    if args.scene == "person":
+    if args.scene in {"person", "inspection"}:
         try:
             mesh = verified_mesh(args.person_assets.expanduser().resolve())
         except ValueError as exc:
@@ -165,6 +178,8 @@ def main():
     for item in list(world_element):
         if item.tag == "model" and item.get("name") == "axes":
             world_element.remove(item)
+    if args.scene == "inspection":
+        add_inspection_scene(world_element, models)
     if mesh is not None:
         copy_fixed_camera(gazebo, models)
         add_person_scene(world_element, models, mesh)

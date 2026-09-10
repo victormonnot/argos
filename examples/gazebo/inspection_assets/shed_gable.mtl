@@ -1,0 +1,7 @@
+# Original ARGOS painted-steel material, MIT license. No texture dependency.
+newmtl painted_steel
+Ka 0.31 0.40 0.44
+Kd 0.31 0.40 0.44
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
