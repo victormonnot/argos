@@ -1,12 +1,12 @@
 # ARGOS console
 
 A local console for receiving the drone camera feed and telemetry, configuring
-sources, and recording MAVLink. The interface is in English, works without
+sources, and recording sessions. The interface is in English, works without
 external web resources, and displays the entire image.
 The **Observation** view uses the graphite Forge style: a main camera area,
 measurements grouped under their source, and a side inspector. Fonts are bundled
 with the application. The **Sessions** view lets you find local recordings,
-verify their integrity, and replay their telemetry in the browser.
+verify their integrity, and replay their telemetry and optional captured video in the browser.
 The console remains passive by default. **Flight controls** adds explicitly enabled
 manual Gazebo/SITL control with held mouse/touch buttons and optional keyboard
 shortcuts. The [web-control guide](web-control.md) documents that separate
@@ -143,12 +143,14 @@ reception age is independent of heartbeat reception age.
   navigation to other panels; the Sources button retains the **modified**
   (modified) indicator. Canceling the changes reloads the active settings without
   sending a request to the service.
-- **MAVLink recording**: a single button in the top bar opens
+- **Session recording**: a single button in the top bar opens
   the recording panel. **Start**, **Stop**, and **Download**
   (download) are grouped at the top of this panel, followed by the identifier,
   duration, message count, and any errors. Capture state remains visible on the
-  top button while another panel is open. Capture covers subsequent MAVLink
-  receptions, not outgoing pilot commands or video. The panel refers to this process's latest recording.
+  top button while another panel is open. **Include video and flight events**
+  is selected by default; clear it for a telemetry-only journal. Visual capture
+  records images already received, matched detections and sampled flight state.
+  The panel refers to this process's latest recording.
   In Sessions, new recordings expose their stored original configuration; older
   recordings without context explicitly indicate that this information is
   unavailable. The current configuration is never presented as their provenance.
@@ -210,9 +212,10 @@ access through Sessions.
 
 Original frames are recorded before display filtering: other sources and
 payloads rejected by the caches remain inspectable. Stopping finalizes the
-JSONL recording and its integrity check. An error reported by the MAVLink
-transport closes the receptions already written with an explicit end reason:
-they remain downloadable and available for analysis. Capture also stops
+JSONL recording and its integrity check. For telemetry-only capture, a MAVLink
+transport error closes the receptions already written with an explicit end reason.
+With visual capture enabled, recording continues so an available camera can
+still be reviewed; absent telemetry remains absent. Capture also stops
 automatically at **100,000 frames** or before **32 MiB**, reserving space to
 finish the file. The reason is visible; no subsequent capture starts
 automatically. A period without messages does not, by itself, close the capture.
@@ -234,8 +237,8 @@ Replace `RECORDING_ID` with the identifier of the recording to inspect.
 
 This reader validates the frames and the entire recording; its historical
 telemetry view covers heartbeat, attitude, and NED. The recording also contains
-received battery messages. Web replay includes those battery measurements;
-video recording is not provided. See the
+received battery messages. Web replay includes those battery measurements.
+The CLI reads JSONL telemetry; visual sidecars are replayed in Sessions. See the
 [recording limits](mavlink-transport.md#recording-and-offline-inspection).
 
 ## Sessions and replay
@@ -244,11 +247,13 @@ video recording is not provided. See the
    modification date, which is not the capture start time. **Refresh**
    (refresh) rereads the directory. A file is only presented as valid after its
    frames, ending, and checksum have all been verified.
-2. Select the system/component found in the frames. If the recording contains
-   multiple components, none is selected automatically. An empty file remains
-   inspectable and downloadable, with no measurements to replay.
+2. **Flight replay** opens when a completed visual capture is available.
+   **Measurements** opens for older telemetry-only journals. Select a
+   system/component for telemetry; if several are present, none is selected
+   automatically. Camera-only sessions still support video playback, with
+   no telemetry measurements invented.
 3. Move the cursor, use **Previous / Next** to jump to an
-   accepted measurement reception, or **Play / Pause** to advance
+   captured visual sample or accepted measurement reception, or **Play / Pause** to advance
    at ×0.5, ×1, ×2, or ×4. The slider's native keyboard controls also work. Time
    starts at the beginning of the recording and includes silence before and
    after receptions.
@@ -262,7 +267,7 @@ video recording is not provided. See the
    Sessions or hiding the browser tab pauses replay; unapplied source settings
    are preserved.
 
-**Three views of the same file.** **Measurements** reconstructs the four telemetry
+**Telemetry views of the same journal.** **Measurements** reconstructs the four telemetry
 views at the cursor. **Reception summary at this point** (reception summary at
 this instant) gives the counts of messages received, used, ignored, or rejected
 up to that instant; it is not a message list. **MAVLink messages** (MAVLink
@@ -340,8 +345,8 @@ directory and reports the total count. Only console-generated filenames—a
 32-character hexadecimal identifier followed by `.jsonl`—can be opened. Arbitrary paths, symbolic links, and special files
 are not accepted. Web replay and download are limited to **32 MiB and 100,000
 frames per file**; older files exceeding these limits remain on disk. New
-captures are closed automatically before exceeding these bounds. This release
-includes no import, deletion, or video recording.
+captures are closed automatically before exceeding these bounds. The interface
+has no import or deletion action. Visual sidecars have their own limits below.
 
 Validation and indexing run outside the reception loop. The cache retains at
 most one file and one component's index. Each access rechecks the file's identity
@@ -352,10 +357,76 @@ actually verified, without reopening a path that may have changed in the
 meantime. Captures active in the process or marked as failed by it are not
 offered as completed recordings.
 
+## Visual flight replay
+
+Open **Session recording**, leave **Include video and flight events** selected,
+and start before the part of the flight you want to retain. Stop, wait for visual
+finalization, then open the session in **Sessions → Flight replay**. Video,
+matched detection boxes, sampled control/framing state and recent events follow
+the same cursor. Replay never sends flight commands. It pauses on navigation,
+manual seeking and hidden browser tabs; obsolete requests and image loads are
+cancelled when the cursor or selected session changes.
+
+Capture works with recent video even without an open MAVLink link. This supports
+an analog receiver connected through a Linux/V4L2 USB capture device, once the
+actual adapter has been tested. Analog OSD text remains pixels in the image;
+it does not populate the ARGOS telemetry HUD. Telemetry requires a separate
+MAVLink connection. Real-camera control remains disabled by the existing
+simulation restrictions.
+
+Visual recording samples at **up to 10 Hz**, without encoding a movie or running
+extra detector inference. It saves JPEG images already received, and boxes only
+when they belong to that exact image and source. With analysis active, retained
+images follow completed detector results (currently up to 5 Hz); the sampling
+ceiling is not a guaranteed video frame rate. The timeline uses local receipt
+and availability times, not synchronized camera exposure timestamps. An image
+may have arrived shortly before Start; its original age is preserved. A detection
+that completed later never appears at an earlier cursor position. Missing video,
+stale images, sampling gaps and media ending before the journal are explicit.
+No frames, measurements or boxes are interpolated to fill those gaps.
+
+Control state is sampled, so events between samples can be absent. Discrete
+operator requests record service acceptance/refusal; sampled state transitions
+are labelled separately. Neither proves execution or replaces autopilot logs.
+The event panel shows the latest **50 events at or before the cursor**, with a
+count when earlier events are omitted; the downloaded sidecar retains all events
+within its capture limit. Owner tokens and request bodies are excluded.
+
+Each session has an unchanged `<id>.jsonl` journal and, when enabled, an
+`<id>.visual.sqlite3` sidecar in the same recording directory. Download both from
+Sessions to retain the full session. Keep their names together when copying them
+to another console's recording directory. The sidecar is bound to the journal's
+identifier, original start and run identity. Older journals without it remain
+readable; an invalid sidecar does not invalidate independent telemetry replay.
+This first version has no MP4 export, audio, bundle import or 3D reconstruction.
+
+A dedicated writer thread receives a bounded queue of **8 items**. It never waits
+for disk on the control loop. Queue overflow visibly ends media capture;
+telemetry and flight control continue. Visual limits are **256 MiB**, **one hour**,
+**36,000 samples**, **20,000 events**, and **2 MiB per JPEG** (at most 4096 pixels
+per dimension and 8,388,608 total pixels). Reaching a limit preserves a completed
+partial capture and reports its end reason. A write/finalization failure leaves
+media unavailable; it never silently starts a replacement recording. Normal Stop
+finalizes asynchronously; reopening while it finishes asks you to wait.
+
+Sidecar validation and JPEG reads run outside the reception loop. Files are read
+without database writes, with bounded rows, dimensions and counts. Symlinks,
+wrong session bindings and incomplete or changed content are rejected. Separate
+journal and media revisions keep metadata, seeking, images and downloads tied to
+the content opened by the browser.
+
+`POST /api/recordings/start` accepts `{"include_visual": true}`; an empty object
+retains telemetry-only behavior for existing clients. Session metadata includes
+`visual`. The read-only routes are:
+
+- `GET /api/recordings/{id}/visual?revision=…&visual_revision=…&at=…`
+- `GET /api/recordings/{id}/visual/frames/{index}.jpg?revision=…&visual_revision=…`
+- `GET /api/recordings/{id}/visual/download?revision=…&visual_revision=…`
+
 ## Reception incidents and recovery
 
 In Observation, the permanent **Incidents and recovery**
-button, next to Video reception and MAVLink recording, opens reception status even
+button, next to Video reception and Session recording, opens reception status even
 when there is no incident. It indicates what remains available, missing
 measurements, elapsed time since detection, and recovery. A compact banner also
 appears when reception needs attention. Shortcuts from **Video** and
@@ -392,10 +463,11 @@ open waits for new receptions before reporting recovery. These buttons do not
 apply draft settings in Sources.
 
 The recording must be stopped before deliberately reopening MAVLink. A
-transport failure closes the recording already written if storage remains
-available; a file error leaves an incomplete capture. Reopening does not start
-a new capture automatically. Reopening the camera can preserve an ongoing
-MAVLink recording. Incompatible concurrent actions are rejected. If a native
+transport failure closes telemetry-only captures if storage remains available;
+visual sessions can continue without telemetry. A journal file error leaves an
+incomplete capture. Reopening does not start a new capture automatically.
+Reopening the camera can preserve an ongoing session, with a new video source
+identity so old detections cannot label its images. Incompatible concurrent actions are rejected. If a native
 V4L2 reader remains blocked, the console refuses to accumulate more readers;
 hardware tests remain to be done.
 
@@ -444,7 +516,9 @@ to the separate MAVLink Fault Lab project.
 
 `argos/console/config.py` validates sources; `session.py` owns MAVLink reception
 and events; `video.py` acquires and retains the latest image. `recording.py`
-owns the capture file; `archive.py` verifies and indexes recordings;
+owns the JSONL capture; `visual_capture.py` samples existing observations and
+`visual_recording.py` writes and reads the bounded visual sidecar;
+`archive.py` verifies and indexes telemetry recordings;
 `analysis.py` calculates curves and periods without reception; `context.py`
 validates the configuration embedded in captures. `views.py` shares the
 presentation of admitted measurements and MAVLink fields. `incidents.py` groups

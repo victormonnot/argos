@@ -75,7 +75,7 @@
   }
 
   function renderPanel() {
-    const titles = { telemetry: "MAVLink telemetry", video: "Video", recording: "MAVLink recording", reception: "Reception status", sources: "Configure sources" };
+    const titles = { telemetry: "MAVLink telemetry", video: "Video", recording: "Session recording", reception: "Reception status", sources: "Configure sources" };
     text("inspector-kind", inspectorPanel === "sources" ? "SETTINGS" : "INSPECTION");
     text("inspector-title", titles[inspectorPanel] || "Inspector");
     element("inspector-empty").hidden = inspectorPanel !== null;
@@ -340,6 +340,9 @@
     if (value.end_reason !== undefined && ![null, "stopped", "transport_error", "event_limit", "size_limit", "shutdown"].includes(value.end_reason)) return false;
     if (value.end_detail !== undefined && typeof value.end_detail !== "string") return false;
     if (["max_events", "max_bytes", "size_bytes"].some((key) => value[key] !== undefined && (!Number.isSafeInteger(value[key]) || value[key] < 0))) return false;
+    if (value.visual != null && (typeof value.visual !== "object" || Array.isArray(value.visual) || !["idle", "recording", "finalizing", "complete", "error"].includes(value.visual.state)
+      || ["frames", "samples", "events", "dropped", "size_bytes", "max_bytes"].some(key => value.visual[key] !== undefined && (!Number.isSafeInteger(value.visual[key]) || value.visual[key] < 0))
+      || (value.visual.detail !== undefined && typeof value.visual.detail !== "string"))) return false;
     // Only the local, completed journal endpoint may become a download link.
     return value.download_url === null || (value.state === "complete" && typeof value.id === "string" && value.download_url === `/api/recordings/${value.id}/download`);
   }
@@ -594,13 +597,18 @@
     const journalVisible = document.body.dataset.view === "observation" && inspectorPanel === "recording" && !document.body.classList.contains("focus-mode");
     const recording = current?.recording;
     const active = recording?.state === "recording";
+    const visual = recording?.visual, finalizing = visual?.state === "finalizing";
+    const includeVisual = element("recording-include-visual").checked;
+    const cameraReady = current?.video?.state === "recent";
+    const telemetryReady = current && !["unconfigured", "error", "reconnecting"].includes(current.telemetry.state);
     const blocked = !fresh || mutation !== null || Boolean(current?.reconnecting);
     if (current && !sourcesDirty && !mutation && configurationSignature !== JSON.stringify(current.configuration)) fillSourcesForm();
     configureFormVisibility();
     element("sources-apply").disabled = blocked || active || !sourcesDirty;
     element("sources-reset").disabled = blocked || !sourcesDirty;
-    text("sources-form-hint", !fresh ? "Connect to the service to change sources." : mutation === "sources" ? "Applying sources…" : active ? "Stop the MAVLink recording before changing sources." : sourcesDirty ? "Settings changed, not yet applied." : "These settings match the active configuration.");
-    element("recording-start").disabled = blocked || active || !current || ["unconfigured", "error", "reconnecting"].includes(current.telemetry.state);
+    text("sources-form-hint", !fresh ? "Connect to the service to change sources." : mutation === "sources" ? "Applying sources…" : active ? "Stop the session recording before changing sources." : sourcesDirty ? "Settings changed, not yet applied." : "These settings match the active configuration.");
+    element("recording-start").disabled = blocked || active || finalizing || !(telemetryReady || (includeVisual && cameraReady));
+    element("recording-include-visual").disabled = blocked || active || finalizing;
     // Stopping stays available after a telemetry fault while the service is
     // reachable; the server decides whether the journal can be finalized.
     element("recording-stop").disabled = blocked || !active;
@@ -609,13 +617,13 @@
     const interrupted = recording?.state === "complete" && ["transport_error", "shutdown"].includes(recording.end_reason);
     const atLimit = recording?.state === "complete" && ["event_limit", "size_limit"].includes(recording.end_reason);
     const labels = { idle: "Ready", recording: "Recording", complete: interrupted ? "Interrupted" : atLimit ? "Limit reached" : "Complete", error: "Error" };
-    const tone = !fresh ? "neutral" : recording.state === "error" ? "error" : interrupted || atLimit ? "warning" : active ? "positive" : "neutral";
+    const tone = !fresh ? "neutral" : recording.state === "error" || visual?.state === "error" ? "error" : interrupted || atLimit ? "warning" : active ? "positive" : "neutral";
     badge("recording-state", fresh ? labels[recording.state] : "Not refreshed", tone);
-    const globalLabel = !fresh ? "Capture · not refreshed" : active ? "Capture in progress" : recording.state === "error" ? "Capture error" : interrupted ? "Capture interrupted" : atLimit ? "Capture · limit reached" : recording.state === "complete" ? "Capture complete" : "Capture ready";
+    const globalLabel = !fresh ? "Capture · not refreshed" : finalizing ? "Capture finalizing" : active ? "Capture in progress" : recording.state === "error" ? "Capture error" : visual?.state === "error" ? "Video capture error" : interrupted ? "Capture interrupted" : atLimit ? "Capture · limit reached" : recording.state === "complete" ? "Capture complete" : "Capture ready";
     badge("global-recording-state", globalLabel, tone);
     element("global-recording").dataset.tone = tone;
     element("global-recording-dot").dataset.tone = tone;
-    element("global-recording").title = !fresh ? "Capture status is no longer refreshed. Open the MAVLink recording panel." : `${globalLabel}${recording.end_detail || recording.error ? ` · ${recording.end_detail || recording.error}` : ""}. Open the MAVLink recording panel.`;
+    element("global-recording").title = !fresh ? "Capture status is no longer refreshed. Open the session recording panel." : `${globalLabel}${recording.end_detail || recording.error ? ` · ${recording.end_detail || recording.error}` : ""}. Open the session recording panel.`;
     text("recording-limits", fresh && Number.isSafeInteger(recording.max_events) && Number.isSafeInteger(recording.max_bytes) ? `Automatically closes at ${integer.format(recording.max_events)} messages or ${numeric(recording.max_bytes / 1048576, " MiB")}. Current size: ${numeric(recording.size_bytes / 1048576, " MiB")}.` : "");
     badge("detail-recording-state", element("recording-state").textContent, element("recording-state").dataset.tone);
     badge("archive-live-recording", !fresh ? "Capture status not refreshed" : active ? `Capture in progress · ${integer.format(recording.events)} frames` : recording.state === "error" ? "Capture error · inspect recording" : interrupted || atLimit ? `${globalLabel} · recording available` : "No capture in progress", element("recording-state").dataset.tone);
@@ -624,7 +632,12 @@
     text("recording-events", fresh ? integer.format(recording.events) : "—");
     const end = active ? runTime(now) : recording?.ended_at;
     text("recording-duration", fresh && finite(recording.started_at) && finite(end) ? ageText(end - recording.started_at) : "—");
+    text("recording-contents", visual && visual.state !== "idle" ? "Available video, flight events and MAVLink frames" : "Received MAVLink frames");
+    const visualLabels = { idle: "Video capture not active", recording: "Video and flight events recording", finalizing: "Finalizing video and flight events…", complete: "Video and flight events ready in Sessions", error: "Video and flight events could not be finalized" };
+    text("recording-visual-status", !fresh ? "" : visual ? `${visualLabels[visual.state]}${Number.isSafeInteger(visual.frames) ? ` · ${integer.format(visual.frames)} ${visual.frames === 1 ? "image" : "images"}` : ""}${Number.isSafeInteger(visual.events) ? ` · ${integer.format(visual.events)} ${visual.events === 1 ? "event" : "events"}` : ""}${Number.isSafeInteger(visual.dropped) && visual.dropped ? ` · ${integer.format(visual.dropped)} samples dropped` : ""}${finite(visual.size_bytes) ? ` · ${numeric(visual.size_bytes / 1048576, " MiB")}` : ""}${visual.detail ? ` · ${visual.detail}` : ""}` : includeVisual ? "The next session will include available camera images and flight events." : "The next session will contain received telemetry only.");
     text("recording-hint", !fresh ? "Connect to the service to control recording." : mutation?.startsWith("recording") ? "Request in progress…" : recording.state === "error" ? `Write failed: ${recording.error || "the recording cannot be finalized."}` : active ? "Capture in progress. Stop finalizes the downloadable recording." : interrupted || atLimit ? `${interrupted ? "Capture interrupted" : "Capture limit reached"}. ${recording.end_detail || ""} The finalized recording remains available for download and viewing in Sessions.` : current.telemetry.state === "unconfigured" ? "Configure a MAVLink source in Sources to record incoming data." : current.telemetry.state === "error" ? "Restore the MAVLink link before starting a new capture." : recording.state === "complete" ? "Recording finalized. It remains available in Sessions, even after a new capture." : "Ready to record incoming MAVLink data.");
+    if (fresh && !mutation && finalizing) text("recording-hint", "Finishing the recording. Video and flight events will be available in Sessions once finalized.");
+    else if (fresh && !mutation && !active && !finalizing && includeVisual && cameraReady && !telemetryReady) text("recording-hint", "Camera available · telemetry unavailable. You can record the camera without MAVLink measurements.");
     const download = element("recording-download");
     const downloadable = fresh && recording.state === "complete" && typeof recording.download_url === "string" && recording.download_url === `/api/recordings/${recording.id}/download`;
     download.hidden = !downloadable;
@@ -1022,6 +1035,7 @@
       render();
     }
   });
+  element("recording-include-visual").addEventListener("change", render);
   for (const action of ["start", "stop"]) element(`recording-${action}`).addEventListener("click", async () => {
     if (!serviceFresh() || mutation || element(`recording-${action}`).disabled) return;
     const actionButton = element(`recording-${action}`);
@@ -1032,13 +1046,13 @@
     text("recording-action-status", "");
     render();
     try {
-      const body = await postJson(`/api/recordings/${action}`, {});
+      const body = await postJson(`/api/recordings/${action}`, action === "start" ? { include_visual: element("recording-include-visual").checked } : {});
       if (!validRecording(body)) throw new Error("Invalid service response.");
       if (current.run_id === requestedRun) current.recording = body;
       text("recording-action-status", body.state === "error" ? `Capture : ${body.error || "incomplete recording."}` : "");
       text("action-status", body.state === "error" ? "" : action === "start" ? "Recording started." : "Recording complete.");
     } catch (error) {
-      text("recording-action-status", `MAVLink recording : ${error.message}`);
+      text("recording-action-status", `Session recording : ${error.message}`);
     } finally {
       mutation = null;
       pollResumeAt = performance.now();

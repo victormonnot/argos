@@ -253,6 +253,9 @@ body:not([data-view=observation]) .reception-bar { display:none; }
 body[data-view=messages] #sources-button { display:none; }
 .journal-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:0 0 18px; margin-bottom:18px; border-bottom:1px solid var(--line); }
 .journal-actions .button { min-height:36px; white-space:nowrap; }
+.recording-visual-option { display:flex; align-items:center; gap:10px; min-height:44px; font-size:13px; cursor:pointer; }
+.recording-visual-option input { width:18px; height:18px; min-height:18px; padding:0; margin:0; accent-color:var(--accent); }
+#recording-visual-status { margin:12px 0; overflow-wrap:anywhere; }
 .action-status {
   flex-shrink:0;
   padding:7px 18px;

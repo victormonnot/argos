@@ -205,13 +205,15 @@ framing loss until a new claim. Its `lease_started_at` matches the claim's publi
 lease's diagnosis even when responses arrive out of order. It is a session time,
 not the secret capability token. It survives later command errors and disarming;
 `control.command` continues to report the landing command's separate outcome.
-These bounded snapshots are available from state reads, not an event archive.
+These bounded snapshots are available from state reads and, when enabled,
+sampled by visual session recording.
 Manual `control.axes` remains the browser's input;
 neutral browser updates do not overwrite active derived commands. A valid newer
 intent is consumed even if its requested transition is refused, preventing an
 older request from taking precedence later.
 
-Journals still contain received MAVLink frames only. Framing intents, outgoing
-commands, images and detections are not recorded or replayed. Existing Sessions
-views can inspect received vehicle telemetry from a framing flight, but cannot
-reconstruct its complete visual-control history.
+The JSONL journal retains received MAVLink frames. Optional
+[visual flight replay](console.md#visual-flight-replay) adds camera images,
+matched detections, sampled framing/control state and discrete service requests.
+It does not retain every outgoing command or establish exact aircraft motion.
+No absent video, box, input update or measurement is reconstructed.

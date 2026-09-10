@@ -82,7 +82,7 @@
       <button aria-controls="inspector" aria-expanded="false" class="reception-button journal-inspect" data-panel="recording" type="button">
         <span>
           <span class="control-label">
-            MAVLink recording
+            Session recording
           </span>
           <span class="state-label" id="recording-state">
             Waiting
@@ -855,7 +855,7 @@
           </button>
         </section>
         <section class="inspector-content inspector-scroll" data-panel-content="recording" hidden="">
-          <div aria-label="MAVLink recording controls" class="journal-actions">
+          <div aria-label="Session recording controls" class="journal-actions">
             <button class="button button-primary" disabled="" id="recording-start" type="button">
               Start
             </button>
@@ -866,6 +866,8 @@
               Download
             </a>
           </div>
+          <label class="recording-visual-option" for="recording-include-visual"><input checked="" id="recording-include-visual" type="checkbox"/> Include video and flight events</label>
+          <p class="microcopy">Records available camera images and control observations alongside received telemetry.</p>
           <div class="detail-heading">
             <h3 id="journal-detail-title">
               Service recording
@@ -906,14 +908,15 @@
               <dt>
                 Contents
               </dt>
-              <dd>
+              <dd id="recording-contents">
                 Received MAVLink frames
               </dd>
             </div>
           </dl>
           <p class="microcopy" id="recording-limits"></p>
+          <p class="section-note" id="recording-visual-status" role="status"></p>
           <p class="microcopy">
-            Video is not recorded. The last finalized recording remains downloadable after a source change; it is not reassigned to the new observation.
+            Video and flight events have a separate download in Sessions. The last finalized recording remains available after a source change.
           </p>
         </section>
         <section class="inspector-content inspector-scroll" data-panel-content="sources" hidden="">
@@ -1072,7 +1075,7 @@
           <button class="button button-outline" id="archive-refresh" type="button">Refresh</button>
         </header>
         <p class="archive-feedback" id="archive-status" role="status"></p>
-        <ul aria-label="Available MAVLink recordings" class="archive-list" id="archive-list"></ul>
+        <ul aria-label="Available recordings" class="archive-list" id="archive-list"></ul>
         <div class="archive-bottom">
           <details class="archive-storage"><summary>Recording location</summary><p id="archive-directory"></p></details>
           <div><p class="state-label" id="archive-live-recording">Capture status not refreshed</p><p class="section-note">Viewing a recording does not stop an active capture.</p></div>
@@ -1081,16 +1084,16 @@
       </section>
       <section aria-label="Recording replay" class="replay-panel">
         <div class="archive-empty" id="replay-empty">
-          <span class="eyebrow">SESSIONS · MAVLINK</span>
+          <span class="eyebrow">SESSIONS · RECORDED DATA</span>
           <h2>Find a recording</h2>
           <p>Select a recording to verify its integrity and browse received measurements.</p>
-          <p class="section-note">Captures contain telemetry, with no recorded video.</p>
+          <p class="section-note">Explore recorded video, flight events and telemetry where available. Playback never controls a vehicle.</p>
         </div>
         <p class="archive-feedback" id="replay-status" role="status"></p>
         <div class="replay-content" hidden="" id="replay-content">
           <header class="replay-heading">
             <div><span class="eyebrow">REPLAY · RECORDED DATA</span><h2 id="replay-title"></h2></div>
-            <a class="button button-outline" download="" id="archive-download">Download JSONL</a>
+            <div class="replay-downloads"><a class="button button-outline" download="" id="archive-download">Download JSONL</a><a class="button button-outline" download="" hidden="" id="archive-visual-download">Download video &amp; events</a></div>
           </header>
           <div class="replay-metadata">
             <span id="replay-duration"></span><span id="replay-events"></span><span>Integrity verified</span>
@@ -1098,17 +1101,11 @@
           <p class="section-note replay-provenance" id="replay-provenance"></p>
           <p class="section-note replay-end-detail" hidden="" id="replay-end-detail"></p>
           <div aria-label="Recording overview" class="recording-view-controls">
+            <button aria-controls="recording-flight-view" aria-pressed="false" id="recording-view-flight" type="button">Flight replay</button>
             <button aria-controls="recording-measure-view" aria-pressed="true" id="recording-view-measures" type="button">Measurements</button>
             <button aria-controls="recording-message-view" aria-pressed="false" id="recording-view-messages" type="button">MAVLink messages</button>
             <button aria-controls="recording-analysis-view" aria-pressed="false" id="recording-view-analysis" type="button">Analysis</button>
           </div>
-          <section aria-label="Recorded reception analysis" hidden="" id="recording-analysis-view"><div id="recording-analysis-root"></div></section>
-          <div id="recording-measure-view">
-          <div class="replay-source-row">
-            <label for="replay-source">Component to inspect</label>
-            <select id="replay-source"></select>
-          </div>
-          <p class="section-note" hidden="" id="replay-no-source">No component has measurements available. MAVLink messages and the file remain accessible.</p>
           <section aria-label="Replay cursor" class="replay-transport" id="replay-transport">
             <div class="replay-controls">
               <button class="button button-primary" disabled="" id="replay-play" type="button">Play</button>
@@ -1120,6 +1117,28 @@
             <input disabled="" id="replay-cursor" max="0" min="0" step="any" type="range" value="0"/>
             <p class="microcopy" id="replay-cursor-status">Playback paused.</p>
           </section>
+          <section aria-label="Recorded flight replay" hidden="" id="recording-flight-view">
+            <p class="section-note flight-replay-note" id="flight-replay-note">Historical recording · playback never controls a vehicle.</p>
+            <div class="flight-replay-layout">
+              <div>
+                <div class="flight-replay-camera" id="flight-replay-camera"><img alt="Archived onboard camera image" hidden="" id="flight-replay-image"/><div aria-hidden="true" id="flight-replay-boxes"></div><p id="flight-replay-placeholder">No recorded video in this session.</p></div>
+                <p class="microcopy" id="flight-replay-frame-status" role="status"></p>
+              </div>
+              <div class="flight-replay-state">
+                <h3>Recorded flight state</h3>
+                <dl class="detail-list"><div><dt>Mode</dt><dd id="flight-replay-mode">—</dd></div><div><dt>Arming</dt><dd id="flight-replay-armed">—</dd></div><div><dt>Control</dt><dd id="flight-replay-control">—</dd></div><div><dt>Framing</dt><dd id="flight-replay-framing">—</dd></div><div><dt>Selected target</dt><dd id="flight-replay-target">—</dd></div><div><dt>Relative size reference</dt><dd id="flight-replay-reference">—</dd></div></dl>
+                <p class="microcopy" id="flight-replay-control-status"></p>
+              </div>
+            </div>
+            <section class="flight-replay-events"><h3>Flight events</h3><p class="microcopy" id="flight-replay-events-status"></p><ol id="flight-replay-events"></ol></section>
+          </section>
+          <section aria-label="Recorded reception analysis" hidden="" id="recording-analysis-view"><div id="recording-analysis-root"></div></section>
+          <div id="recording-measure-view">
+          <div class="replay-source-row">
+            <label for="replay-source">Component to inspect</label>
+            <select id="replay-source"></select>
+          </div>
+          <p class="section-note" hidden="" id="replay-no-source">No recorded telemetry component. Video and flight events, when captured, remain available in Flight replay.</p>
           <div aria-busy="false" id="replay-measures">
             <div class="replay-measure-grid">
               <section class="replay-measure" id="history-heartbeat">

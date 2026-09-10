@@ -1,12 +1,16 @@
 """Local observation HTTP surface, with source settings and journal controls."""
 import asyncio
 import json
+import math
+import os
+import stat
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.background import BackgroundTask
 
 from .config import ConsoleConfig
 from .context import capture_context
@@ -15,6 +19,8 @@ from .http_compression import ConsoleJSONCompression
 from .archive import ArchiveError, RecordingArchive
 from .session import ConsoleSession
 from .vision import VisionService
+from .visual_capture import capture_visual
+from .visual_recording import MAX_SAMPLES as VISUAL_MAX_SAMPLES, VisualArchive
 
 STATIC = Path(__file__).with_name("static")
 FONT_FILES = frozenset({
@@ -32,6 +38,7 @@ FONT_FILES = frozenset({
 def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None):
     session = session or ConsoleSession(config or ConsoleConfig())
     archive = RecordingArchive(session.recorder.directory)
+    visual_archive = VisualArchive(session.recorder.directory)
     vision = vision or VisionService(session.config.vision_model, variant=session.config.vision_variant,
                                      threads=session.config.vision_threads)
     session.vision = vision
@@ -247,14 +254,22 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
 
     @app.post("/api/recordings/start")
     async def start_recording(request: Request):
-        if await mutation_body(request) != {}:
-            raise HTTPException(422, "This action requires an empty object")
-        if (not session.config.has_telemetry or session.link is None or session._error
-                or session._closed or session.recorder.active or session.replacing
-                or session.reconnecting == "mavlink"):
-            raise HTTPException(409, "An open link without an active recording is required")
+        values = await mutation_body(request)
+        if (not isinstance(values, dict) or set(values) - {"include_visual"}
+                or type(values.get("include_visual", False)) is not bool):
+            raise HTTPException(422, "Use an optional include_visual boolean")
+        include_visual = values.get("include_visual", False)
+        telemetry_ready = session.config.has_telemetry and session.link is not None and not session._error
+        video_ready = include_visual and session.video.latest(session.clock()) is not None
+        if (not (telemetry_ready or video_ready) or session._closed
+                or session.recorder.active or session.replacing or session.reconnecting == "mavlink"
+                or session.recorder.visual.snapshot()["state"] == "finalizing"):
+            raise HTTPException(409, "A recent video or open telemetry link without an active recording is required")
         context = capture_context(session.config, session.run_id, session._endpoint)
-        result = session.recorder.start(session.clock(), context=context)
+        result = session.recorder.start(session.clock(), context=context, include_visual=include_visual)
+        if result["state"] != "error":
+            capture_visual(session, session.clock())
+            result = session.recorder.snapshot()
         return JSONResponse(result, status_code=500 if result["state"] == "error" else 200)
 
     @app.post("/api/recordings/stop")
@@ -263,6 +278,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
             raise HTTPException(422, "This action requires an empty object")
         if not session.recorder.active:
             raise HTTPException(409, "No recording in progress")
+        capture_visual(session, session.clock())
         result = session.recorder.stop(session.clock())
         return JSONResponse(result, status_code=500 if result["state"] == "error" else 200)
 
@@ -279,6 +295,37 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
         if status["id"] == identifier and status["state"] in ("recording", "error"):
             raise HTTPException(404, "Completed recording unavailable")
 
+    def visual_binding(metadata):
+        context = metadata.get("context")
+        if not isinstance(context, dict) or not context.get("run_id"):
+            return None
+        return {"started_at": metadata["started_at"], "run_id": context["run_id"]}
+
+    async def visual_metadata(identifier, metadata):
+        binding = visual_binding(metadata)
+        if binding is None:
+            return {"state": "missing", "detail": "This journal has no visual capture"}
+        current = session.recorder.snapshot()
+        if current["id"] == identifier and current.get("visual", {}).get("state") == "finalizing":
+            return {**current["visual"], "detail": "Visual recording is finishing; reopen the session shortly"}
+        try:
+            return await asyncio.to_thread(visual_archive.metadata, identifier, **binding)
+        except ArchiveError as exc:
+            return {"state": "invalid", "detail": str(exc)}
+
+    async def checked_visual(identifier, revision):
+        require_closed(identifier)
+        metadata = await archive_call(archive.metadata, identifier)
+        if metadata["revision"] != revision:
+            raise HTTPException(409, "The file changed; reopen the recording")
+        binding = visual_binding(metadata)
+        if binding is None:
+            raise HTTPException(404, "This journal has no visual capture")
+        current = session.recorder.snapshot()
+        if current["id"] == identifier and current.get("visual", {}).get("state") == "finalizing":
+            raise HTTPException(409, "Visual recording is still finishing")
+        return metadata, binding
+
     @app.get("/api/recordings")
     async def recordings():
         return await archive_call(archive.catalog, session.recorder.snapshot())
@@ -286,7 +333,68 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
     @app.get("/api/recordings/{identifier}")
     async def recording(identifier: str):
         require_closed(identifier)
-        return await archive_call(archive.metadata, identifier)
+        metadata = await archive_call(archive.metadata, identifier)
+        metadata["visual"] = await visual_metadata(identifier, metadata)
+        return metadata
+
+    @app.get("/api/recordings/{identifier}/visual")
+    async def visual_replay(identifier: str, revision: str, visual_revision: str, at: float = 0.):
+        metadata, binding = await checked_visual(identifier, revision)
+        if not math.isfinite(at) or not 0 <= at <= metadata["duration_s"]:
+            raise HTTPException(422, "The cursor must be within the recording")
+        result = await archive_call(lambda: visual_archive.replay(
+            identifier, at, revision=visual_revision, **binding))
+        if result.get("state") == "missing":
+            raise HTTPException(404, "Visual recording not found; reopen this session")
+        result.update(id=identifier, revision=revision, visual_revision=visual_revision, at_s=at)
+        result["control"] = result.get("sample", {}).get("control") if result.get("sample") else None
+        frame = result.get("frame")
+        if frame is not None:
+            frame["sequence"] = frame.get("source_sequence")
+            frame["url"] = (f"/api/recordings/{identifier}/visual/frames/{frame['index']}.jpg"
+                            f"?revision={revision}&visual_revision={visual_revision}")
+        return JSONResponse(result)
+
+    @app.get("/api/recordings/{identifier}/visual/frames/{index}.jpg")
+    async def visual_frame(identifier: str, index: int, revision: str, visual_revision: str):
+        if not 0 <= index < VISUAL_MAX_SAMPLES:
+            raise HTTPException(422, "Invalid archived image index")
+        _, binding = await checked_visual(identifier, revision)
+        data = await archive_call(lambda: visual_archive.frame(
+            identifier, index, revision=visual_revision, **binding))
+        return Response(data, media_type="image/jpeg")
+
+    @app.get("/api/recordings/{identifier}/visual/download")
+    async def visual_download(identifier: str, revision: str, visual_revision: str):
+        _, binding = await checked_visual(identifier, revision)
+        stream = await archive_call(lambda: visual_archive.open_download(
+            identifier, revision=visual_revision, **binding))
+        expected = stream.visual_signature
+        size_bytes = stream.visual_size_bytes
+
+        def chunks():
+            try:
+                remaining = size_bytes
+                while remaining:
+                    current = os.fstat(stream.fileno())
+                    actual = (current.st_dev, current.st_ino, current.st_size,
+                              current.st_mtime_ns, current.st_ctime_ns)
+                    if not stat.S_ISREG(current.st_mode) or actual != expected:
+                        raise RuntimeError("Visual recording changed during download")
+                    data = stream.read(min(128 * 1024, remaining))
+                    if not data:
+                        raise RuntimeError("Visual recording ended during download")
+                    after = os.fstat(stream.fileno())
+                    if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) != expected:
+                        raise RuntimeError("Visual recording changed during download")
+                    remaining -= len(data)
+                    yield data
+            finally:
+                stream.close()
+
+        return StreamingResponse(chunks(), media_type="application/vnd.sqlite3", background=BackgroundTask(stream.close), headers={
+            "Content-Length": str(size_bytes),
+            "Content-Disposition": f'attachment; filename="{identifier}.visual.sqlite3"'})
 
     @app.get("/api/recordings/{identifier}/replay")
     async def replay(identifier: str, revision: str, at: float = 0., system: int = 1, component: int = 1):

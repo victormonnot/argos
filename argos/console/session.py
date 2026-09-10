@@ -18,6 +18,7 @@ from .live import LiveMessages
 from .status import StatusTexts, system_status_view
 from .video import DeviceCamera, GazeboCamera, VideoStore
 from .views import battery_view, mode_view, reception_view, safe_text
+from .visual_capture import capture_action, capture_visual
 
 
 class ConsoleSession:
@@ -93,6 +94,11 @@ class ConsoleSession:
     def _event(self, at, level, message):
         self._event_id += 1
         self._events.append({"id": self._event_id, "at": at, "level": level, "message": safe_text(message)})
+        if self.recorder.active and self.recorder._visual_enabled:
+            try:
+                self.recorder.visual.event(at, "reception", safe_text(message))
+            except Exception:
+                pass
 
     def _check_reconnect(self, source):
         if source not in {"video", "mavlink"}:
@@ -275,7 +281,7 @@ class ConsoleSession:
         if self.link is None or self._error:
             now = self.clock()
             self.control.tick(None, now)
-        if self._error and self.recorder.active:
+        if self._error and self.recorder.active and not self.recorder._visual_enabled:
             self.recorder.stop(now, reason="transport_error", detail=self._error)
         snapshot = self.state(now)
         video, telemetry = snapshot["video"], snapshot["telemetry"]
@@ -285,6 +291,7 @@ class ConsoleSession:
         if rejected != self._last_rejected:
             self._last_rejected = rejected
             self._event(now, "warning", f"Telemetry rejected ({rejected} in total) : {telemetry['last_rejection']}")
+        capture_visual(self, self.clock())
 
     def state(self, now=None):
         now = self.clock() if now is None else now
@@ -353,6 +360,15 @@ class ConsoleSession:
                 **self.messages.snapshot(now)}
 
     def control_request(self, operation, values):
+        try:
+            result = self._control_request(operation, values)
+        except Exception as exc:
+            capture_action(self, operation, values, status="refused", error=str(exc))
+            raise
+        capture_action(self, operation, values, status="accepted")
+        return result
+
+    def _control_request(self, operation, values):
         if (self._closed or not self._started or self.replacing or self.reconnecting
                 or self.link is None or self._error):
             raise RuntimeError("An open simulation link is required")
@@ -405,6 +421,8 @@ class ConsoleSession:
     async def aclose(self):
         """Retire first, then drain the owned worker before its loop disappears."""
         self.close()
+        if self.recorder._visual_enabled:
+            await asyncio.to_thread(self.recorder.visual.wait, 3.)
         task = self._reconnect_task
         if task is not None:
             await asyncio.shield(task)

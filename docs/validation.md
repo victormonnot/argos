@@ -975,3 +975,69 @@ body size or simulator range supplied the controller or these measurements.
 The flight ended disarmed and unowned. Existing journals were unchanged. The
 JPEG/state capture used for this evaluation was separate test instrumentation;
 Sessions still stores received MAVLink only, not visual-control replay.
+
+
+## Visual session replay and compact inspection yard — 2026-09-10
+
+This addition keeps the existing received-MAVLink JSONL format and adds an
+optional bounded SQLite sidecar containing received JPEG images, matched boxes,
+sampled flight state and discrete request/reception events. Capture works with
+recent video and no telemetry. Replay uses original receipt and later result
+availability times; it never sends commands or reconstructs missing measurements.
+The [recording guide](console.md#visual-flight-replay) describes limits and files.
+
+### Automated and rendered checks
+
+- Full Python suite on the PC: **1,916 tests passed**, no skips. The final suite
+  ran in the deployed main checkout after the event text was made readable.
+- Full Chromium suite: **130 tests passed**, one worker. It includes 16 new
+  replay/capture cases plus the existing manual, mode-switching, vision and
+  framing cases. Desktop, tablet and narrow-phone replay layouts were inspected.
+- The 54 visual-recorder cases and 22 HTTP integration cases exercise queue and
+  disk failures, asynchronous finalization/abort/restart, size/count/time bounds,
+  exact JPEG/source matching, delayed inference and backward seeking, camera-only
+  sessions, unchanged old journals, corrupt-media isolation, and content changes
+  between download validation and reading. Replay uses fail-fast acquisition and
+  command-emission spies. Optional recording failures preserve the independent
+  journal/control outcome.
+- The 32 scene/provenance cases pass. Gazebo validates the generated SDF; actual
+  rendered forward and overview images were inspected, including the authored
+  gable material. No new third-party asset was downloaded. These checks are not
+  a perception benchmark or physical-flight test.
+
+### Integrated simulation capture and replay
+
+The actual console ran on PC loopback with `--scene inspection`, YOLOX-S and
+four inference threads. The new shed/cabinet/ground/light content retains the
+walking actor, optics and route. Detector thresholds, framing gains, GPS-free
+profile and control deadlines are unchanged. Scenery coordinates were not used
+for target selection, guidance, distance estimates or replay.
+
+The first short capture ended on the ground: ArduPilot refused arming with
+`Arm: Accels inconsistent` during initialization. That capture was finalized and
+replayed successfully. No arming check or parameter was bypassed. A subsequent
+trial after initialization completed the actual UI sequence: AltHold takeoff,
+select person, Engage, Closer, Farther, Manual, Land, confirmed disarming and
+Release. The three framing observation stages were about four seconds each;
+this is a short integration check, not a long-duration following claim.
+
+The completed flight journal covers **36.580 s**, with **1,970 MAVLink frames**,
+**177 archived images**, **353 sampled observations**, **24 visual events** and
+**zero reported media drops**. The sidecar is **5,660,672 bytes**. Ten discrete
+control requests returned HTTP 200. No browser error or flight-control
+interruption was observed in that trial; those observations do not establish
+performance under arbitrary disk or rendering load.
+
+The real captured session was opened through Sessions. Playback advanced,
+backward/forward seeks returned the corresponding archived image and boxes,
+and the event times did not exceed the cursor. JPEG retrieval, full sidecar
+size, telemetry view and desktop/tablet layout were checked. All eight preexisting
+user journals retained their exact byte sizes and SHA-256 hashes. The two new QA
+journals are separate from those originals. The final event-label-only change
+was subsequently covered by the final Python suite; it changes neither stored
+schema nor sampling/flight behavior.
+
+The runtime was left disarmed with control released and no active capture.
+No native Mac portability test, physical video adapter test, firmware flash,
+radio/HITL integration or outdoor flight was performed. Camera-only HTTP tests
+validate the common replay path, not the RC832/USB adapter itself.

@@ -323,11 +323,12 @@ clock `control.at` allows older replies to be discarded. HTTP success reports
 the service's handling, not proof that a requested vehicle action executed;
 the `command` fields separate transmission, acknowledgement and observation.
 
-ARGOS journals still record **received MAVLink frames only**. Received mode,
-arming, acknowledgements and status reports can be inspected in Sessions, but
-outgoing pilot commands and their browser timing are not recorded. Video is not
-recorded either. A replay therefore cannot reconstruct the exact operator input
-sequence or absent video. Recording continues if the browser disconnects.
+The JSONL journal records **received MAVLink frames only**. Optional
+[visual capture](console.md#visual-flight-replay) adds received camera images,
+matched detections, sampled control state and discrete operator-request events.
+HTTP acceptance means the service handled a request, not that the aircraft
+executed it. The sidecar is not an exhaustive wire-command log and cannot
+reconstruct every stick update. Recording continues if the browser disconnects.
 
 ## Verification boundaries
 

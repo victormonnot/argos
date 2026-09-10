@@ -199,6 +199,14 @@ class VideoStore:
         with self._lock:
             return self._sample if self._status(now)[0] == "recent" else None
 
+    def latest_with_dimensions(self, now: float):
+        """Keep a recorded JPEG and its dimensions from the same acquisition."""
+        now = _time(now)
+        with self._lock:
+            if self._status(now)[0] != "recent":
+                return None
+            return self._sample, self._width, self._height
+
 
 class GazeboCamera:
     """Subscribe to one gz.msgs.Image topic; never publish or call services."""

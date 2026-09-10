@@ -4,8 +4,8 @@
 
 ARGOS brings camera images, received measurements and reception incidents into
 one operator interface. **Live MAVLink** exposes protocol
-details; **Sessions** lets you replay a recording, inspect its frames and
-examine reception rates and gaps.
+details; **Sessions** lets you replay captured video, matched detections and
+sampled flight state alongside telemetry, or inspect MAVLink messages and reception gaps.
 **Flight controls** adds mouse, touch and optional keyboard controls for a dedicated
 GPS-free Gazebo/ArduPilot SITL session.
 
@@ -70,6 +70,9 @@ covers shutdown, restart, tmux and access from another computer over SSH.
 
 ### Fly the simulation with mouse or touch
 
+One supported Linux PC can run the simulator, console and browser together.
+A second computer and SSH tunnel are optional; the commands below are local.
+
 After installing the pinned simulator dependencies from the SITL guide, start
 the separate web-control session from the ARGOS repository root:
 
@@ -88,6 +91,9 @@ confirms the change from the autopilot and transfers the vertical input; enterin
 Stabilize resumes manual throttle. Keyboard shortcuts are optional. The [web-control guide](docs/web-control.md)
 explains the flight sequence, input release, GPS-free profile and current limits.
 
+For the compact hangar scene, use `--scene inspection` with the person assets
+and vision options documented in the [Gazebo scene guide](examples/gazebo/README.md).
+
 The launcher uses its own model copy, Gazebo partition, ports and SITL files;
 **Ctrl-C** stops its three child processes. It does not modify the installed
 models or an existing observation session.
@@ -100,12 +106,14 @@ models or an existing observation session.
 | Flight controls | Opt-in manual Gazebo/SITL flight, held mouse/touch controls and optional keyboard, with the live camera visible. |
 | Incidents and recovery (incidents and recovery) | Available data, observed interruptions, receiver reopening and reception recovery. |
 | Live MAVLink (live MAVLink) | Received message types and components, counters, approximate rates, fields and bytes; the display can be frozen. |
-| Sessions | Verified recordings, replay at a selected time, raw messages, reception rates, age and gaps. |
+| Sessions | Captured video and matched boxes, sampled flight state and events, telemetry replay, raw messages, reception rates and gaps. |
 
 MAVLink transports include UDP, TCP and serial. The `ardupilotmega` dialect is
 used to decode MAVLink 1 and 2. Images come from a Gazebo sensor or a local V4L2
-device. MAVLink journals record received frames, not outgoing pilot commands or
-video. A recent reception does not measure
+device. The JSONL journal retains received MAVLink frames. Optional visual capture
+adds JPEG images, matched detections, sampled control state and operator-request
+events in a separate SQLite file; it is not a complete outgoing-command log.
+Analog video alone supplies no MAVLink measurements. A recent reception does not measure
 radio latency or the physical age of a sensor measurement; an interruption alone
 does not identify its cause.
 

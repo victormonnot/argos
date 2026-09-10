@@ -2,6 +2,10 @@
 
 ## On the local machine
 
+A single supported Linux PC runs Gazebo, ArduPilot SITL, the console and its
+browser. The remote-laptop setup below is optional. macOS simulator portability
+has not been validated.
+
 From the repository, activate `.venv` and start the console with its source options.
 The [SITL guide](sitl-observation.md) covers Gazebo, the autopilot and the console.
 `--port 8081` runs a second independent console; do not give it the same UDP
@@ -55,6 +59,20 @@ describes the separate process/link-loss fallback.
 To use tmux remotely, open a separate terminal with `ssh user@host`
 and attach to the session there.
 
+For the all-in-one manual web-control launcher (remote port **8081**), use
+this command on the laptop instead:
+
+```sh
+ssh -N \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=15 \
+  -o ServerAliveCountMax=3 \
+  -L 127.0.0.1:18081:127.0.0.1:8081 user@host
+```
+
+Open **http://127.0.0.1:18081**. Use an SSH hostname configured on that laptop;
+an alias does not automatically exist on the simulation computer.
+
 This setup uses existing SSH authentication. The console itself is a local
 service, with no account management or intended public HTTP exposure.
 
@@ -64,7 +82,8 @@ When using Flight controls, land and wait for confirmed disarming before the fol
 shutdown sequence. With the all-in-one web-control launcher, Ctrl-C stops its
 three children and retains its printed run directory.
 
-1. Stop any active capture from **MAVLink recording** and verify that it has been finalized.
+1. Stop any active capture from **Session recording** and wait for the journal
+   and optional visual capture to finish.
 2. Press **Ctrl-C** in the console terminal and wait for it to exit.
 3. Stop SITL, then Gazebo, with **Ctrl-C** in their terminals.
 4. Close the tmux windows that have returned to a shell with `exit`.
