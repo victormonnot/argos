@@ -1083,3 +1083,53 @@ comes from that run. These are new checks of the real fixture; the previous
 The existing live simulator and personal recording directory were left intact.
 The example replays a completed simulated flight; it provides no live piloting,
 new inference or physical-flight validation.
+
+
+## Pilot-throttle framing — September 10, 2026
+
+The web simulation now offers Manual, Full framing in AltHold, and Framing +
+manual throttle in Stabilize. The last profile retains the pilot's explicit gas
+input while ARGOS supplies bounded yaw and apparent-size pitch corrections.
+Both the guidance producer and the command boundary enforce zero autonomous
+vertical input. Existing image geometry, gains, detection thresholds and loss
+deadlines are unchanged; this does not implement radio sharing or Betaflight.
+
+**Automated checks.** All 1,977 Python cases passed without skips, including 29
+new HTTP integration cases. The full Chromium suite passed 145 cases with one
+worker. Tests cover throttle changes before/during engagement, zero and full gas,
+pause/recovery, latched takeover, exact gas retention on Manual, rejected or stale
+mode/profile requests and delayed browser replies. The mode-switch rejection
+regression also checks that confirmed continuing assistance is displayed as
+active. Desktop/tablet/mobile layouts were checked using browser fixtures.
+
+Both shipped example verifiers passed. A wheel was built and installed into a
+fresh environment; isolated imports, CLI, web resources, default passive state
+and pip check passed. Packaged source/assets matched the tested candidate hashes.
+The Python suite retains its two existing dependency deprecation warnings.
+
+**Actual Gazebo/SITL check.** One recorded 28.927-second flight used the existing
+inspection scene and YOLOX-S/four-thread profile. Through the actual web UI it
+completed manual AltHold takeoff, Full framing, transfer to Stabilize, shared
+framing, throttle +/− buttons and R/F keys, Closer/Farther, Manual, explicit shared
+re-engagement, transfer back to AltHold, Full framing, Manual and Land. Disarming
+and release were confirmed. The transferred pilot throttle was 49.5%; the trial
+changed it to 51.5% and back without cancelling the shared engagement. This value
+is a received-output-based handoff for that flight, not a prescribed hover setting.
+
+All 19 discrete control requests returned HTTP 200. Of 307 input replies, 304
+returned 200 and three returned 409 during mode handovers; the UI resynchronized
+and both transfers completed. Error response bodies were not retained, so this
+capture alone does not establish their exact rejection reason. No browser error
+was recorded. This is a short workflow check, not long-duration tracking,
+altitude regulation, accurate range control or physical-flight validation.
+
+Recording `de3ee4f8cc2545d5943b9a72c7d14054` retains 1,533 MAVLink receptions,
+140 JPEGs, 279 control observations and 39 events, with zero reported visual
+queue drops. All 59 sampled shared-active observations report Stabilize and zero
+derived vertical input; 47 record 49.5% pilot throttle and 12 record 51.5%. No
+sampled pause or takeover occurred; the only recorded control interruption is the
+intended final Release. Received text includes `GCS Failsafe` 4.28 seconds after
+the Land request, followed by disarming; that diagnostic remains in the archive.
+Its actual replay displayed the recorded manual-throttle profile. The twelve
+pre-existing recording files retained
+their sizes and SHA-256 hashes. The supplied visitor fixture was not replaced.

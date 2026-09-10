@@ -596,3 +596,35 @@ def test_public_snapshot_is_detached_from_later_caller_mutation(tmp_path, monkey
 def test_resource_limits_cannot_be_relaxed_by_constructor(options, tmp_path):
     with pytest.raises(ValueError):
         VisualRecorder(tmp_path, **options)
+
+
+@pytest.mark.parametrize("profile", ["full", "pilot_throttle"])
+def test_recorded_framing_profile_survives_replay_and_loss_without_arbitrary_data(tmp_path, profile):
+    recorder = capture(tmp_path)
+    control = {"phase": "armed", "throttle": .463,
+               "framing": {"phase": "active", "profile": profile,
+                           "profiles": {"pilot_throttle": {"secret": "not-public"}},
+                           "last_loss": {"profile": profile, "reason": "Target lost"}},
+               "profile": {"secret": "not-public"}}
+    recorder.append(START + .1, frame=image(), control=control)
+    finish(recorder)
+    archive = VisualArchive(tmp_path)
+    meta = archive.metadata(IDENTIFIER, **BINDING)
+    replay = query(archive, meta, .2)
+    saved = replay["sample"]["control"]
+    assert saved == {"phase": "armed", "throttle": .463,
+                     "framing": {"phase": "active", "profile": profile,
+                                 "last_loss": {"profile": profile, "reason": "Target lost"}}}
+    label = "pilot throttle" if profile == "pilot_throttle" else "full framing"
+    assert label in replay["events"][0]["detail"]
+    assert b"not-public" not in path(tmp_path).read_bytes()
+
+
+@pytest.mark.parametrize("value", [{"reason": "private-profile"}, "unknown-profile", ["full"]])
+def test_arbitrary_nested_profile_is_not_archived(tmp_path, value):
+    recorder = capture(tmp_path)
+    recorder.append(START + .1, frame=image(), control={"framing": {"phase": "idle", "profile": value}})
+    finish(recorder)
+    archive = VisualArchive(tmp_path)
+    meta = archive.metadata(IDENTIFIER, **BINDING)
+    assert query(archive, meta, .2)["sample"]["control"] == {"framing": {"phase": "idle"}}

@@ -16,7 +16,8 @@ The console remains passive by default. Manual flight requires the explicit
 It is not enabled for physical hardware. Neutral controls do not hold horizontal
 position: the simulated drone can drift without GPS.
 Optional [person detection](docs/vision.md) and [visual framing](docs/framing.md)
-add image observations and explicit AltHold centering/apparent-size assistance.
+add image observations, Full framing in AltHold and framing with pilot-controlled
+throttle in Stabilize.
 Other experimental perception, guidance and simulation modules are tested
 separately. Onboard autonomy and swarm coordination are research directions,
 not capabilities delivered by this interface.
@@ -185,5 +186,6 @@ ArduPilot and its Gazebo plugin are external projects with their own licenses.
 Optional [camera-based person detection and tracking](docs/vision.md) adds a
 walking-person Gazebo scene and CPU inference during manual simulated flight.
 The pilot can explicitly engage experimental [visual framing](docs/framing.md)
-with `--framing`; manual input immediately stops that assistance. This does not
+with `--framing`. Manual attitude input stops the assistance; in the Stabilize
+manual-throttle variant, throttle adjustments keep framing active. This does not
 establish outdoor following or horizontal position hold.

@@ -20,6 +20,7 @@ MIN_CONFIDENCE = .5
 ENGAGE_HEIGHT = (.08, .45)
 ACTIVE_HEIGHT = (.06, .65)
 AXES = ("forward", "right", "up", "yaw")
+PROFILES = frozenset(("full", "pilot_throttle"))
 # Independent acceptance bounds at the lifecycle/flight-command boundary.
 # A broken guidance producer must not expand its own control authority.
 OUTPUT_LIMITS = {"forward": .35, "right": 0., "up": .3, "yaw": .5}
@@ -80,6 +81,7 @@ class FramingControl:
     def __init__(self, enabled=False):
         self.enabled = bool(enabled)
         self.revision = 0
+        self.profile = "full"
         self.phase = "idle" if self.enabled else "disabled"
         self._observation = None
         self._observation_error = "No recent analyzed image"
@@ -225,16 +227,20 @@ class FramingControl:
             self._pause_deadline = now + DETECTION_PAUSE
             self._pause_issue = issue
             self._pause_evidence = self._evidence(now)
-            self._reason = f"Image framing paused; {issue}; neutral input while waiting briefly for the selected person"
+            self._reason = f"Image framing paused; {issue}; {self._pause_input_reason()}"
             self.revision += 1
         elif was_confirming:
-            self._reason = (f"Image framing paused; {self._pause_issue}; neutral input "
-                            "while waiting briefly for the selected person")
+            self._reason = f"Image framing paused; {self._pause_issue}; {self._pause_input_reason()}"
             self.revision += 1
         # Retain the latest bad image's identity too: an older good image must
         # never recover a pause or restore the command from before the gap.
         self._last_sequence = self._observation["sequence"]
         self._last_received_at = self._observation["received_at"]
+
+    def _pause_input_reason(self):
+        if self.profile == "pilot_throttle":
+            return "neutral attitude while waiting briefly for the selected person; keep controlling throttle"
+        return "neutral input while waiting briefly for the selected person"
 
     def select(self, track_id, context: tuple[str, str], now):
         now = _time(now)
@@ -259,15 +265,19 @@ class FramingControl:
         self._reason = "Person selected"
         self.revision += 1
 
-    def engage(self, now):
+    def engage(self, now, *, profile="full"):
         now = _time(now)
+        if not isinstance(profile, str) or profile not in PROFILES:
+            raise ValueError("Choose full or pilot_throttle framing")
         if not self.enabled or self.phase != "selected":
             raise RuntimeError("Select a person before starting image framing")
         target, issue = self._target(now, limits=ENGAGE_HEIGHT)
         if issue:
             raise RuntimeError(issue)
         observation = self._observation
-        self._law.start(target["box"], observation["received_at"])
+        self._law.start(target["box"], observation["received_at"],
+                        vertical_control=profile == "full")
+        self.profile = profile
         self._output = _zero()
         self._last_sequence = observation["sequence"]
         self._last_received_at = observation["received_at"]
@@ -300,7 +310,7 @@ class FramingControl:
             # at remains the actual takeover time. A late good image therefore
             # cannot be misrepresented as the image which caused the failure.
             self._last_loss = {"at": now, "reason": str(reason)[:DIAGNOSTIC_REASON_LIMIT],
-                               "target_id": self._target_id,
+                               "target_id": self._target_id, "profile": self.profile,
                                **deepcopy(evidence if evidence is not None else self._evidence(now))}
         self._reset_output()
         self.phase = "takeover"
@@ -346,7 +356,8 @@ class FramingControl:
         try:
             output = self._law.update(target["box"], received_at)
             if (not isinstance(output, dict) or set(output) != set(AXES)
-                    or any(not _number(output[key]) or abs(output[key]) > limit
+                    or any(not _number(output[key]) or abs(output[key]) >
+                           (0. if key == "up" and self.profile == "pilot_throttle" else limit)
                            for key, limit in OUTPUT_LIMITS.items())):
                 raise ValueError("invalid framing output")
             self._output = {key: float(output[key]) for key in AXES}
@@ -381,6 +392,7 @@ class FramingControl:
 
     def clear(self, reason="Selection cleared", *, reset_loss=False):
         self._reset_output()
+        self.profile = "full"
         if reset_loss:
             self._last_loss = None
         self._target_id = self._context = None
@@ -436,6 +448,7 @@ class FramingControl:
         observation = self._observation
         age = None if observation is None else max(0., now - observation["received_at"])
         return {"enabled": self.enabled, "revision": self.revision, "phase": self.phase,
+                "profile": self.profile,
                 "active": self.phase == "active", "paused": self._pause_deadline is not None,
                 "target_id": self._target_id,
                 "available": available, "reason": reason,

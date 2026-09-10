@@ -99,10 +99,17 @@ requires observed preparation, the checked profile and zero manual throttle.
 AltHold maps vertical input to climb/descent; Stabilize maps explicit throttle
 to pilot gas and retains it when a direction is released. Neither holds position.
 
-With `--sim-framing`, explicit airborne AltHold engagement uses server-owned
-detection boxes to center a person and regulate apparent height. Manual input
-stops assistance. Neutral browser keepalives preserve authority but do not
-overwrite derived axes or acknowledge target loss. An isolated missing or
+With `--sim-framing`, explicit airborne engagement uses server-owned detection
+boxes for yaw and apparent-height assistance. The `full` profile requires AltHold
+and also requests vertical centering. The `pilot_throttle` profile requires
+Stabilize: both the law and lifecycle output boundary enforce zero derived
+vertical input, while `FlightControl` retains the latest explicit pilot throttle.
+Manual attitude input stops either profile; Stabilize throttle changes preserve
+assistance and do not acknowledge a target-loss takeover. Those changes still
+invalidate stale mode-transfer input evidence. Firmware-mode switching clears
+framing and requires explicit reselection/engagement afterward. Neutral browser
+keepalives preserve authority but do not overwrite derived axes or acknowledge
+target loss. An isolated missing or
 low-confidence detection zeros corrections and permits same-ID recovery within
 an absolute 600 ms pause. Expiry or other invalid observations latch a two-second
 takeover deadline; no manual acknowledgement invokes the existing

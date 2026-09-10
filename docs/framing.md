@@ -1,10 +1,21 @@
 # Visual framing in GPS-free SITL
 
-The optional **Visual framing** control uses a selected person's camera box to
-request yaw, climb/descent and small forward/backward pitch inputs in AltHold.
-It tries to center the person and retain their apparent height in the image.
+The optional **Visual framing** control uses a selected person's camera box for
+bounded yaw and forward/backward pitch assistance. The panel offers three choices:
+
+| Assistance | Required flight mode | Who controls vertical movement? |
+| --- | --- | --- |
+| **Manual** | AltHold or Stabilize | The pilot, through that mode's normal controls. |
+| **Full framing** | AltHold | ARGOS requests climb/descent to center the person vertically. |
+| **Framing + manual throttle** | Stabilize | The pilot uses the web throttle slider, +/− buttons or R/F keys. |
+
+Both framing profiles try to retain the person's apparent height in the image.
 **Closer** multiplies that reference by 1.1; **Farther** divides it by 1.1. Neither
-button specifies a distance in metres.
+button specifies a distance in metres. With manual throttle, ARGOS never requests
+vertical correction: the pilot manages height and ground clearance. ArduPilot
+still stabilizes attitude and applies its ordinary throttle mapping and tilt
+compensation. These are web inputs in SITL; independent radio authority and a
+Betaflight adapter are later integrations.
 
 This is an experimental simulation controller. It provides no position hold,
 obstacle avoidance, trajectory planning or reliable identity recognition through
@@ -43,26 +54,36 @@ the documented live framing trial; the default remains two threads. See the
 a profile. Freshness, clipping, identity and takeover rules remain unchanged.
 
 1. Open **Flight controls**, enable **Person detection**, and **Take control**.
-2. Prepare **AltHold**, arm and take off manually using the existing controls.
+2. Prepare **AltHold** for Full framing, or **Stabilize** for manual-throttle
+   framing. Arm and take off manually using the existing controls.
 3. Click or tap the person's detection box. Selection alone does not move the
    vehicle. Wait for a recent, confident, fully visible detection of one person.
-4. Release manual directions and select **Engage framing**. The autopilot must report
-   armed AltHold and a fresh `IN_AIR` state; takeoff, landing and unknown landed
-   states do not qualify. The current box height becomes the reference.
+4. Release direction inputs and select the matching framing button. In Stabilize,
+   continue managing throttle; it does not need to be zero or 50% to engage.
+   The autopilot must report the prepared mode, armed, and a fresh `IN_AIR` state.
+   The current box height becomes the reference.
 5. Use **Closer** or **Farther** while framing is active. The panel shows current
    and reference image heights as percentages, plus normalized centering errors.
-6. Any manual direction or **Manual** stops assistance immediately. **Clear**
-   removes a stopped selection. **Land** and **Release** retain their usual
-   landing behavior. Another engagement always requires an explicit request.
+6. **Manual** or a roll/pitch/yaw direction stops assistance immediately. In Full
+   framing, a manual climb/descent input also stops it. In manual-throttle
+   framing, throttle changes preserve assistance; keep adjusting them as needed.
+   **Clear** removes a stopped selection. **Land** and **Release** retain their
+   usual landing behavior.
 
-Stabilize remains available for manual flight; framing requires AltHold. After
-a Stabilize takeoff, release directions and use **Switch mode** to enter AltHold
-before selecting and engaging. An in-flight mode change stops framing and clears
-the selection. Returning to AltHold does not resume it: select the person and
-engage explicitly again. See [mode transitions](web-control.md#change-mode-in-flight).
-Turning Person detection off stops
-framing. Leaving the flight view or losing browser/service context releases the
-control lease as it does during manual flight.
+To change between framing profiles in flight, choose the other **Flight mode**,
+release direction inputs, and use **Switch mode**. Wait for confirmation, then
+select the person and explicitly engage the matching profile. Switching stops
+framing and clears the selection. The transfer to Stabilize seeds the slider
+from recent autopilot output; it does not assume hover at 50%. See
+[mode transitions](web-control.md#change-mode-in-flight).
+
+Manual throttle does not automatically center the person vertically. Large
+vertical or horizontal image errors inhibit forward/backward correction in
+both profiles, so Closer/Farther may wait until the pilot restores suitable
+framing. Size changes cannot establish distance to the ground.
+
+Turning Person detection off stops framing. Leaving the flight view or losing
+browser/service context releases the control lease as during manual flight.
 
 ## Target loss and operator priority
 
@@ -74,7 +95,8 @@ iteration. The original image receipt time is retained: collecting a result
 never makes an old image fresh or extends a takeover deadline.
 
 An empty detection frame or confidence below 0.5 immediately zeros corrections
-and displays **Framing paused**. Only the same valid target returning within
+and displays **Framing paused**. In the manual-throttle profile, this zeros
+ARGOS attitude corrections while the latest fresh pilot throttle continues. Only the same valid target returning within
 **600 ms** can continue the current engagement. The pause deadline starts with
 the first unusable detection and cannot be extended by later misses or browser
 traffic. No previous box drives the vehicle during a pause; reference height is
@@ -110,8 +132,11 @@ latches a **two-second manual takeover** deadline with neutral outputs. Once
 latched, even a returning detection cannot resume assistance. Engagement accepts
 person heights from 8% to 45% of the image; active tracking allows 6% to 65%.
 
-Select **Manual** or use a manual direction to acknowledge takeover. Neutral
-browser keepalives, state polling and size adjustments do not acknowledge it.
+Select **Manual** or use a manual direction to acknowledge takeover. In
+manual-throttle framing, throttle changes alone do not acknowledge target loss:
+the pilot retains gas control during the deadline and must explicitly take over
+the other axes. Neutral browser keepalives, state polling and size adjustments
+do not acknowledge it.
 Without acknowledgement by the deadline, the service revokes the lease and
 requests Land, then stops pilot inputs and GCS heartbeats using the existing
 fallback path. Browser input loss still has its independent **0.65-second**
@@ -140,11 +165,14 @@ history tolerates a recently displayed frame, provided the target still exists
 in the latest fresh analysis. There are no predicted boxes or automatic target
 substitutions.
 
-Horizontal image error requests yaw; vertical error requests climb or descent.
+Horizontal image error requests yaw. Full framing converts vertical error into
+climb/descent; manual-throttle framing fixes its derived vertical axis at zero
+and sends the pilot's current throttle through the normal Stabilize input path.
 Forward pitch uses the log ratio of reference/current apparent height and a
 filtered image-height derivative for damping. Reference changes do not create a
 derivative kick. Large centering errors inhibit forward pitch while yaw and
-vertical centering continue. Commands have deadbands, caps and slew limits; the
+vertical centering continue in Full framing; the pilot manages height in the
+manual-throttle profile. Commands have deadbands, caps and slew limits; the
 controller has no integral term. See [image_framing.py](../argos/guidance/image_framing.py).
 
 The explicit digital profile removes RC stick/throttle deadzones and checks
@@ -160,6 +188,7 @@ mode before reads complete does not bypass the arming check.
 With the pinned mapping, maximum framing requests are approximately 2.1 degrees
 of pitch, 30.4 degrees/second of yaw and +0.30/−0.21 m/s of climb/descent. These
 are autopilot demands, not measured motion or tracking-accuracy bounds. The
+climb/descent figures apply only to Full framing in AltHold, not manual throttle. The
 body-mounted camera makes pitch affect vertical framing as well as travel.
 The controller does not compensate arbitrary camera mounts.
 
@@ -177,7 +206,7 @@ strictly increasing integer within the current lease.
 | Operation | Additional fields |
 | --- | --- |
 | `select` | `mode_generation`, `run_id`, `video_id`, `frame_sequence`, `track_id` from current control/displayed analysis |
-| `engage` | `mode_generation`, `revision`, `input_seq` from acknowledged control state |
+| `engage` | `mode_generation`, `revision`, `input_seq` from acknowledged control state; optional `profile`: `full` (default) or `pilot_throttle` |
 | `closer`, `farther` | `mode_generation` from current control state |
 | `stop`, `clear` | None |
 
@@ -189,7 +218,8 @@ refused during a mode transfer. This prevents a delayed pre-switch Select from
 restoring the old target after returning to AltHold. Stop/Clear remain
 unversioned so manual cancellation retains priority.
 
-`control.framing` exposes phase, revision, selected target, eligibility/reason,
+`control.framing` exposes the current `profile`, per-profile engagement eligibility
+under `profiles`, phase, revision, selected target, eligibility/reason,
 normalized errors, current/reference height, pause status, derived axes, frame receipt age and
 remaining takeover time. `control.framing.last_loss` retains the first takeover's
 cause, selected ID and bounded detection metadata through landing and disarming.
@@ -208,7 +238,9 @@ not the secret capability token. It survives later command errors and disarming;
 These bounded snapshots are available from state reads and, when enabled,
 sampled by visual session recording.
 Manual `control.axes` remains the browser's input;
-neutral browser updates do not overwrite active derived commands. A valid newer
+neutral browser updates do not overwrite active derived commands. Stabilize
+throttle updates leave target selection and framing intent intact, while still
+superseding an older queued flight-mode handoff when their throttle changes. A valid newer
 intent is consumed even if its requested transition is refused, preventing an
 older request from taking precedence later.
 
@@ -217,3 +249,11 @@ The JSONL journal retains received MAVLink frames. Optional
 matched detections, sampled framing/control state and discrete service requests.
 It does not retain every outgoing command or establish exact aircraft motion.
 No absent video, box, input update or measurement is reconstructed.
+
+New visual captures retain the framing profile in sampled state and first-loss
+evidence; Engage events name the manual-throttle variant. Replay displays the
+recorded profile. Older archives without this field remain readable and their
+profile is not inferred retroactively.
+
+ArduPilot references: [Stabilize](https://ardupilot.org/copter/docs/stabilize-mode.html)
+and [AltHold](https://ardupilot.org/copter/docs/altholdmode.html).

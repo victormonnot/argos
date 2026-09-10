@@ -370,7 +370,11 @@
       text("flight-replay-mode", ({ 0: "Stabilize", 2: "AltHold", 9: "Land", 20: "Guided NoGPS" })[mode] || (Number.isSafeInteger(mode) ? `Mode ${mode}` : "Not recorded"));
       text("flight-replay-armed", control.vehicle?.armed === true ? "Armed" : control.vehicle?.armed === false ? "Disarmed" : "Not recorded");
       text("flight-replay-control", typeof control.phase === "string" ? control.phase : "Not recorded");
-      text("flight-replay-framing", control.framing?.active ? "Active" : control.framing?.paused ? "Paused" : typeof control.framing?.phase === "string" ? control.framing.phase : "Not recorded");
+      const framing = control.framing;
+      const framingPhase = framing?.paused ? "Paused" : framing?.active ? "Active" : typeof framing?.phase === "string" ? framing.phase : "Not recorded";
+      const recordedProfile = framing?.profile === "pilot_throttle" ? "Manual throttle"
+        : framing?.profile === "full" ? "Full framing" : "";
+      text("flight-replay-framing", `${framingPhase}${recordedProfile ? ` · ${recordedProfile}` : ""}`);
       text("flight-replay-target", Number.isSafeInteger(control.framing?.target_id) ? `Person #${control.framing.target_id}` : "None recorded");
       text("flight-replay-reference", finite(control.framing?.reference_height) ? numeric(control.framing.reference_height * 100, "% of image height") : "Not recorded");
       const controlAge = finite(value.sample?.at_s) ? Math.max(0, cursor - value.sample.at_s) : null;

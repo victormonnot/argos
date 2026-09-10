@@ -257,3 +257,18 @@ for (const viewport of [{ width: 1366, height: 768 }, { width: 768, height: 1024
     await page.screenshot({ path: testInfo.outputPath('flight-replay.png'), fullPage: true });
   });
 }
+
+
+test('replay shows recorded framing authority and leaves legacy authority unspecified', async ({ page, model }) => {
+  const mock = await installReplay(page, model);
+  mock.override = value => { value.control.framing = { active: true, paused: true, phase: 'active', profile: 'pilot_throttle' }; };
+  await openFlight(page);
+  await expect(page.locator('#flight-replay-framing')).toHaveText('Paused · Manual throttle');
+  mock.override = value => { value.control.framing = { active: true, phase: 'active', profile: 'full' }; };
+  await seek(page, 2);
+  await expect(page.locator('#flight-replay-framing')).toHaveText('Active · Full framing');
+  mock.override = null;
+  await seek(page, 1.9);
+  await expect(page.locator('#flight-replay-framing')).toHaveText('Active');
+  expect(model.calls.some(call => call.method === 'POST')).toBe(false);
+});

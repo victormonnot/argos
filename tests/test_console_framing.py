@@ -43,7 +43,7 @@ class Law:
         self.reference_height = self.height = None
         self.error_x = self.error_y = 0.
 
-    def start(self, box, received_at):
+    def start(self, box, received_at, *, vertical_control=True):
         self.reference_height = self.height = box[3]
         self.error_x = self.error_y = 0.
 

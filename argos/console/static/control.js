@@ -42,6 +42,9 @@
     if (!view || typeof view !== "object" || typeof view.enabled !== "boolean" || typeof view.active !== "boolean"
       || (view.paused !== undefined && typeof view.paused !== "boolean")
       || typeof view.available !== "boolean" || !Number.isSafeInteger(view.revision) || view.revision < 0
+      || (view.profile !== undefined && !["full", "pilot_throttle"].includes(view.profile))
+      || (view.profiles !== undefined && (!view.profiles || typeof view.profiles !== "object"
+        || !["full", "pilot_throttle"].every(profile => typeof view.profiles[profile]?.available === "boolean" && typeof view.profiles[profile]?.reason === "string")))
       || !["disabled", "idle", "selected", "active", "takeover"].includes(view.phase)
       || !(view.target_id === null || (Number.isSafeInteger(view.target_id) && view.target_id > 0))
       || ![view.error_x, view.error_y, view.height, view.reference_height, view.frame_age_s, view.takeover_remaining_s].every(finiteOrNull)) return null;
@@ -76,7 +79,9 @@
 
   function setThrottle(value) {
     if (!movingAllowed() || selectedMode() !== 0) return;
-    manualIntent();
+    // Raw Stabilize throttle always belongs to the pilot. Adjusting it keeps
+    // selection, pending engagement and paused assistance intact; it is not
+    // an acknowledgement of a manual-takeover prompt.
     throttle = Math.round(Math.max(0, Math.min(100, value)) * 10) / 1000;
     inputChanged = true;
     render();
@@ -305,7 +310,7 @@
         if (!current() || Object.values(axes()).some(Boolean)) return;
         await sendInput();
         if (!current() || Object.values(axes()).some(Boolean) || !vision.enabled || !vision.recent) return;
-        extra = { revision: framingView().revision, input_seq: acknowledgedInputSeq };
+        extra = { profile: values.profile ?? "full", revision: framingView().revision, input_seq: acknowledgedInputSeq };
       }
       if (!current()) return;
       const body = await post("framing", { token: currentToken, operation, intent, ...extra,
@@ -332,9 +337,15 @@
     node("framing-controls").hidden = !framing?.enabled;
     const effectiveActive = hasControl && framing?.active && !framingSuppressed;
     const paused = effectiveActive && framing.paused === true;
+    const pilotThrottle = framing?.profile === "pilot_throttle";
     const takeover = framing?.phase === "takeover";
-    document.querySelector(".control-heading .eyebrow").textContent = takeover ? "MANUAL TAKEOVER" : paused ? "FRAMING PAUSED" : effectiveActive ? "ASSISTED FRAMING" : "MANUAL FLIGHT";
-    if (document.body.dataset.view === "control") text("view-context", paused ? "Framing paused · GPS-free" : effectiveActive ? "Assisted framing · GPS-free" : "Manual flight · GPS-free");
+    const modeProfile = selectedMode() === 0 ? "pilot_throttle" : "full";
+    const modeReadiness = framing?.profiles?.[modeProfile];
+    const inactiveReason = (framing?.profile ?? "full") !== modeProfile && modeReadiness
+      ? modeReadiness.reason || (modeReadiness.available ? "Selected. Engage framing with manual throttle." : "Select a person, then engage framing after manual takeoff.")
+      : framing?.reason;
+    document.querySelector(".control-heading .eyebrow").textContent = takeover ? "MANUAL TAKEOVER" : paused ? "FRAMING PAUSED" : effectiveActive && pilotThrottle ? "FRAMING · MANUAL THROTTLE" : effectiveActive ? "ASSISTED FRAMING" : "MANUAL FLIGHT";
+    if (document.body.dataset.view === "control") text("view-context", paused ? "Framing paused · GPS-free" : effectiveActive && pilotThrottle ? "Framing + manual throttle · GPS-free" : effectiveActive ? "Assisted framing · GPS-free" : "Manual flight · GPS-free");
     document.dispatchEvent(new CustomEvent("argos:framing-ui", { detail: {
       allowed: Boolean(hasControl && framing?.enabled && vision.enabled && vision.recent && !framingBusy && !framing.active && !takeover),
       target_id: hasControl ? framing?.target_id ?? null : null, active: Boolean(effectiveActive), paused: Boolean(paused),
@@ -342,23 +353,37 @@
     if (!framing?.enabled) return;
     text("framing-target", framing.target_id === null ? "No target" : `Person #${framing.target_id}`);
     const motion = Object.values(axes()).some(Boolean);
-    const engage = hasControl && vision.enabled && vision.recent && framing.available && framing.target_id !== null
-      && selectedMode() === 2 && control.vehicle?.armed === true && control.vehicle?.landed === false
+    const engage = hasControl && vision.enabled && vision.recent && framing.target_id !== null
+      && control.vehicle?.armed === true && control.vehicle?.landed === false
       && !framing.active && !takeover && !framingBusy && !motion && !actionPending;
     for (const button of framingButtons) {
       const operation = button.dataset.framingOperation;
-      button.disabled = operation === "engage" ? !engage : operation === "stop" ? !hasControl || !(framing.active || takeover || framingBusy)
+      const profile = button.dataset.framingProfile;
+      const profileStatus = framing.profiles?.[profile];
+      const profileAvailable = profileStatus?.available ?? (profile === "full" && framing.available);
+      const matchingMode = selectedMode() === (profile === "pilot_throttle" ? 0 : 2);
+      button.disabled = operation === "engage" ? !engage || !profileAvailable || !matchingMode : operation === "stop" ? !hasControl || !(framing.active || takeover || framingBusy)
         : operation === "clear" ? !hasControl || framing.target_id === null || framing.active || takeover || framingBusy
         : !hasControl || !effectiveActive || paused || framingBusy || !vision.recent;
+      if (operation === "engage") {
+        button.setAttribute("aria-pressed", String(Boolean(effectiveActive && (framing.profile ?? "full") === profile)));
+        button.title = profileStatus?.reason || (matchingMode ? "Select a person and engage after manual takeoff." : `Switch to ${profile === "pilot_throttle" ? "Stabilize" : "AltHold"}, then select and engage.`);
+      }
     }
     document.querySelector('[data-framing-operation="stop"]').setAttribute("aria-pressed", String(!effectiveActive && !takeover));
-    let status = interruptionText() || (active() && owned() && modeChanging() ? "Framing off during flight-mode transfer. Select and engage again in AltHold."
+    let status = interruptionText() || (active() && owned() && modeChanging() ? "Framing off during flight-mode transfer. After confirmation, select a person and engage the matching profile."
       : !hasControl ? "Take control to select a person in the image." : !vision.enabled ? "Enable person detection, then select a person in the image."
       : takeover ? `${framing.reason || "Tracking lost"} · Manual takeover required${Number.isFinite(framing.takeover_remaining_s) ? ` within ${Math.max(0, framing.takeover_remaining_s).toFixed(1)} s` : ""}.`
-      : paused ? `Framing paused · ${framing.reason || "Detection interrupted; corrections paused"}`
-      : framingFeedback || (effectiveActive ? "Framing active · Any manual direction returns control to you." : framing.reason || "Select a person, then engage framing after manual takeoff."));
+      : paused ? `Framing paused · ${framing.reason || "Detection interrupted; corrections paused"}${pilotThrottle ? " · Keep managing throttle." : ""}`
+      : framingFeedback || (effectiveActive ? pilotThrottle ? "Framing active · You manage throttle. Tilt, yaw or Manual ends assistance." : "Framing active · Any manual direction returns control to you." : inactiveReason || "Select a person, then engage framing after manual takeoff."));
     if (framingFeedback && !leaseInterruption && !takeover && !paused && hasControl) status = framingFeedback;
     text("framing-status", status);
+    text("framing-profile-note", effectiveActive && pilotThrottle
+      ? "ARGOS controls yaw and relative size, with level roll. You control throttle; vertical centering is manual."
+      : effectiveActive ? "Full framing controls image centering and relative size in AltHold."
+      : selectedMode() === 0
+        ? "Stabilize: engage framing with manual throttle. For full framing, switch to AltHold, then select and engage again."
+        : "AltHold: engage full framing. For manual throttle, switch to Stabilize, then select and engage again.");
     node("framing-status").dataset.phase = takeover ? "lost" : effectiveActive ? "active" : framing.phase;
     const recent = hasControl && vision.recent && !paused && !takeover && Number.isFinite(framing.frame_age_s) && framing.frame_age_s <= 1;
     const error = value => recent && Number.isFinite(value) && Math.abs(value) <= 1 ? `${value >= 0 ? "+" : ""}${value.toFixed(2)}` : "—";
@@ -469,7 +494,7 @@
     const currentToken = token, currentEpoch = epoch, startGeneration = generation(), targetMode = draftMode;
     const current = () => token === currentToken && epoch === currentEpoch && active() && owned();
     modeSwitchPending = true;
-    framingIntent += 1;
+    const switchIntent = ++framingIntent;
     framingBusy = false;
     framingOperation = null;
     framingSuppressed = true;
@@ -493,6 +518,11 @@
         // Never retry a mode-changing action after an uncertain reply. Resync
         // its state and let the backend's fixed deadline determine the outcome.
         await syncMode(currentToken, currentEpoch, error.code === "stale_mode_generation" ? error.control : null);
+        // A refused transfer can leave the existing assistance running. A
+        // confirmed unchanged generation describes that actual state; a newer
+        // Manual or other action still wins and must not be visually undone.
+        if (current() && generation() === startGeneration && framingIntent === switchIntent
+          && framingView()?.active && !control.mode_transition && control.phase !== "switching") framingSuppressed = false;
       }
     } finally {
       if (token === currentToken && epoch === currentEpoch) {
@@ -596,7 +626,8 @@
     render();
   });
   for (const button of framingButtons) button.addEventListener("click", () => {
-    if (!button.disabled) void requestFraming(button.dataset.framingOperation, {}, { urgent: button.dataset.framingOperation === "stop" });
+    if (!button.disabled) void requestFraming(button.dataset.framingOperation,
+      button.dataset.framingProfile ? { profile: button.dataset.framingProfile } : {}, { urgent: button.dataset.framingOperation === "stop" });
   });
   document.addEventListener("argos:select-person", event => {
     const framing = framingView();

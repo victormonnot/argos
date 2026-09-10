@@ -9,7 +9,7 @@ async function installFraming(page, model) {
     const context = canvas.getContext('2d'); context.fillStyle = '#536950'; context.fillRect(0, 0, 640, 360);
     return canvas.toDataURL('image/jpeg').split(',')[1];
   }), 'base64');
-  const framing = { enabled: true, revision: 0, phase: 'idle', active: false, paused: false, target_id: null, available: false,
+  const framing = { profile: 'full', profiles: {}, enabled: true, revision: 0, phase: 'idle', active: false, paused: false, target_id: null, available: false,
     reason: 'Select a person in the image.', error_x: null, error_y: null, height: null, reference_height: null,
     axes: zero(), frame_age_s: 0, takeover_remaining_s: null };
   const control = { at: 0, enabled: true, available: true, reason: '', owned: false, phase: 'idle', last_input_age: 0,
@@ -20,12 +20,18 @@ async function installFraming(page, model) {
     video: 'framing-video-1', visionState: 'recent', hold: null, holdInput: null, stopError: false, visiblePerson: 7,
     framingGenerationConflicts: [] };
   const snapshot = () => {
-    framing.available = control.vehicle.armed && control.vehicle.landed === false && control.vehicle.mode === 2
-      && framing.target_id !== null && framing.phase !== 'takeover' && mock.visionState === 'recent';
-    return { ...structuredClone(control), at: model.clock(), mode_switch: {
+    framing.profiles = Object.fromEntries([['full', 2], ['pilot_throttle', 0]].map(([profile, mode]) => [profile, {
+      available: control.vehicle.armed && control.vehicle.landed === false && control.vehicle.mode === mode
+        && control.selected_mode === mode && framing.target_id !== null && framing.phase !== 'takeover' && mock.visionState === 'recent',
+      reason: control.vehicle.mode === mode ? '' : `Switch to ${mode === 0 ? 'Stabilize' : 'AltHold'}.`,
+    }]));
+    framing.available = framing.profiles[framing.profile]?.available ?? false;
+    const value = { ...structuredClone(control), at: model.clock(), mode_switch: {
       available: control.vehicle.armed && control.vehicle.landed === false && !control.mode_transition,
       reason: '', target_mode: control.selected_mode === 2 ? 0 : 2, target_throttle: control.selected_mode === 2 ? .374 : null,
     } };
+    if (mock.modifySnapshot) mock.modifySnapshot(value);
+    return value;
   };
   mock.completeSwitch = () => {
     const transfer = control.mode_transition;
@@ -65,7 +71,7 @@ async function installFraming(page, model) {
       control.owned = true; control.phase = 'claimed'; mock.token = `private-framing-${mock.calls.length}`; mock.intent = 0;
       control.interruption = null; control.last_error = '';
       control.lease_started_at = model.clock();
-      Object.assign(framing, { active: false, paused: false, phase: 'idle', target_id: null,
+      Object.assign(framing, { profile: 'full', active: false, paused: false, phase: 'idle', target_id: null,
         reason: 'New control lease; select a person', reference_height: null });
       return reply(200, { token: mock.token, control: snapshot() });
     }
@@ -74,7 +80,7 @@ async function installFraming(page, model) {
       if (payload.mode_generation !== control.mode_generation) return reply(409, {
         detail: 'Flight mode changed; synchronize input.', code: 'stale_mode_generation', control: snapshot() });
       expect(payload.seq).toBeGreaterThan(control.input_seq);
-      control.input_seq = payload.seq; control.axes = payload.axes;
+      control.input_seq = payload.seq; control.axes = payload.axes; control.throttle = payload.throttle;
       if (Object.values(payload.axes).some(Boolean)) {
         mock.manualSeq = payload.seq;
         if (framing.active || framing.phase === 'takeover') {
@@ -92,11 +98,12 @@ async function installFraming(page, model) {
     if (path.endsWith('/action')) {
       const { action } = payload;
       if (action === 'switch_mode') {
+        if (mock.switchError) return reply(409, { detail: 'Recent autopilot throttle unavailable; transfer refused.' });
         expect(control.axes).toEqual(zero()); expect(payload.mode_generation).toBe(control.mode_generation);
         control.mode_generation += 1;
         control.mode_transition = { from_mode: control.selected_mode, to_mode: payload.mode, started_at: model.clock(),
           deadline: model.clock() + 1, target_throttle: payload.mode === 0 ? .374 : null, bridge_throttle: .4 };
-        control.phase = 'switching'; framing.active = false; framing.phase = 'idle'; framing.paused = false;
+        control.phase = 'switching'; framing.active = false; framing.phase = 'idle'; framing.paused = false; framing.profile = 'full';
         framing.target_id = null; framing.reference_height = null;
         framing.revision += 1; framing.reason = 'Flight mode changing; manual control.';
         control.command = { action, mode: payload.mode, state: 'accepted', observed: false, command_id: 1 };
@@ -132,7 +139,10 @@ async function installFraming(page, model) {
       framing.reason = 'Selected. Engage after manual takeoff.';
     } else if (payload.operation === 'engage') {
       if (payload.revision !== framing.revision || payload.input_seq > control.input_seq || payload.input_seq < mock.manualSeq) return reply(409, { detail: 'Manual input superseded engagement.' });
-      expect(control.vehicle.mode).toBe(2); expect(control.vehicle.landed).toBe(false); expect(control.axes).toEqual(zero());
+      expect(['full', 'pilot_throttle']).toContain(payload.profile);
+      expect(control.vehicle.mode).toBe(payload.profile === 'pilot_throttle' ? 0 : 2);
+      expect(control.vehicle.landed).toBe(false); expect(control.axes).toEqual(zero());
+      framing.profile = payload.profile;
       framing.active = true; framing.phase = 'active'; framing.reason = 'Framing active.';
     } else if (payload.operation === 'stop') {
       framing.active = false; framing.phase = framing.target_id === null ? 'idle' : 'selected'; framing.axes = zero();
@@ -153,9 +163,9 @@ async function installFraming(page, model) {
 }
 
 const operations = mock => mock.calls.filter(call => call.path.endsWith('/framing'));
-const operation = name => `[data-framing-operation="${name}"]`;
+const operation = (name, profile = 'full') => `[data-framing-operation="${name}"]${name === 'engage' ? `[data-framing-profile="${profile}"]` : ''}`;
 
-async function ready(page, model, { engage = false, mode = 2, select = true } = {}) {
+async function ready(page, model, { engage = false, mode = 2, select = true, profile = 'full' } = {}) {
   const mock = await installFraming(page, model);
   await open(page);
   await page.locator('#view-control').click();
@@ -171,7 +181,7 @@ async function ready(page, model, { engage = false, mode = 2, select = true } = 
     await expect(page.locator('#framing-target')).toHaveText('Person #7');
   }
   if (engage) {
-    await page.locator(operation('engage')).click();
+    await page.locator(operation('engage', profile)).click();
     await expect(page.locator('#framing-status')).toContainText('Framing active');
   }
   return mock;
@@ -198,6 +208,7 @@ test('selecting sends exact displayed frame identity and engagement stays explic
   await expect(page.locator('#vision-status')).toContainText('Framing assistance active');
   await expect(page.locator('#view-context')).toHaveText('Assisted framing · GPS-free');
   const engage = operations(mock).find(call => call.payload.operation === 'engage').payload;
+  expect(engage.profile).toBe('full');
   expect(engage.input_seq).toBeGreaterThanOrEqual(1);
   expect(engage.revision).toBe(1);
   expect(mock.calls.filter(call => call.path.endsWith('/action')).map(call => call.payload.action)).toEqual(['prepare', 'arm']);
@@ -567,5 +578,219 @@ for (const viewport of [{ width: 1366, height: 768 }, { width: 768, height: 1024
     await forward.scrollIntoViewIfNeeded(); await expect(forward).toBeEnabled();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
     await page.screenshot({ path: test.info().outputPath('framing.png'), fullPage: true });
+  });
+}
+
+
+const pilotEngage = operation('engage', 'pilot_throttle');
+const increaseThrottle = '[data-throttle-step="2"]';
+const decreaseThrottle = '[data-throttle-step="-2"]';
+async function chooseThrottle(page, value) {
+  await page.locator('#control-throttle').fill(String(value));
+  await page.locator('#control-throttle').dispatchEvent('input');
+}
+
+test('each framing profile requires its matching confirmed airborne flight mode', async ({ page, model }) => {
+  const mock = await ready(page, model, { mode: 0 });
+  await expect(page.locator(operation('engage'))).toBeDisabled();
+  await expect(page.locator(pilotEngage)).toBeEnabled();
+  await expect(page.locator('#framing-profile-note')).toContainText('Stabilize: engage framing with manual throttle');
+  mock.framing.reason = 'Full framing requires AltHold';
+  await expect(page.locator('#framing-status')).toHaveText('Selected. Engage framing with manual throttle.');
+  for (const landed of [true, null]) {
+    mock.control.vehicle.landed = landed;
+    await expect(page.locator(pilotEngage)).toBeDisabled();
+  }
+  mock.control.vehicle.landed = false;
+  await expect(page.locator(pilotEngage)).toBeEnabled();
+  await chooseThrottle(page, 43);
+  await page.locator(pilotEngage).click();
+  await expect(page.locator('#view-context')).toHaveText('Framing + manual throttle · GPS-free');
+  await expect(page.locator(pilotEngage)).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator(operation('engage'))).toHaveAttribute('aria-pressed', 'false');
+  expect(operations(mock).find(call => call.payload.operation === 'engage').payload.profile).toBe('pilot_throttle');
+  expect(mock.control.throttle).toBe(.43);
+  await expect(page.locator('#framing-profile-note')).toContainText('vertical centering is manual');
+});
+
+test('manual throttle slider, touch steps and keyboard preserve shared framing and its target', async ({ page, model }) => {
+  const mock = await ready(page, model, { mode: 0, engage: true, profile: 'pilot_throttle' });
+  await chooseThrottle(page, 41);
+  await expect.poll(() => mock.control.throttle).toBe(.41);
+  await page.locator(increaseThrottle).tap();
+  await expect.poll(() => mock.control.throttle).toBe(.43);
+  await page.locator(decreaseThrottle).tap();
+  await expect.poll(() => mock.control.throttle).toBe(.41);
+  await page.keyboard.press('r');
+  await expect.poll(() => mock.control.throttle).toBe(.43);
+  await page.keyboard.press('f');
+  await expect.poll(() => mock.control.throttle).toBe(.41);
+  await chooseThrottle(page, 0);
+  await expect.poll(() => mock.control.throttle).toBe(0);
+  await chooseThrottle(page, 50);
+  await expect.poll(() => mock.control.throttle).toBe(.5);
+  expect(mock.control.axes).toEqual(zero());
+  expect(mock.framing.active).toBe(true);
+  expect(mock.framing.target_id).toBe(7);
+  expect(operations(mock).map(call => call.payload.operation)).toEqual(['select', 'engage']);
+  await page.locator(operation('closer')).click();
+  await page.locator(operation('farther')).click();
+  expect(mock.control.throttle).toBe(.5);
+  await page.keyboard.press('e');
+  await expect.poll(() => mock.framing.active).toBe(false);
+  expect(mock.control.throttle).toBe(.5);
+  await expect(page.locator(operation('stop'))).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#view-context')).toHaveText('Manual flight · GPS-free');
+});
+
+for (const afterApply of [false, true]) {
+  test(`throttle changes preserve ${afterApply ? 'accepted' : 'pending'} shared engagement without replaying an old value`, async ({ page, model }) => {
+    const mock = await ready(page, model, { mode: 0 });
+    await chooseThrottle(page, 38);
+    const hold = { operation: 'engage', afterApply }; mock.hold = hold;
+    await page.locator(pilotEngage).click();
+    await expect.poll(() => hold.requested).toBe(true);
+    await page.locator(increaseThrottle).tap();
+    await expect.poll(() => mock.control.throttle).toBe(.4);
+    await page.keyboard.press('r');
+    await expect.poll(() => mock.control.throttle).toBe(.42);
+    hold.release();
+    await expect(page.locator('#framing-status')).toContainText('Framing active');
+    await expect(page.locator('#control-throttle-value')).toHaveText('42 %');
+    expect(mock.framing.active).toBe(true);
+    expect(operations(mock).map(call => call.payload.operation)).toEqual(['select', 'engage']);
+    await page.locator(operation('stop')).click();
+    await expect.poll(() => mock.framing.active).toBe(false);
+    expect(mock.control.throttle).toBe(.42);
+  });
+}
+
+test('manual attitude supersedes a delayed shared engagement while throttle remains held', async ({ page, model }) => {
+  const mock = await ready(page, model, { mode: 0 });
+  await chooseThrottle(page, 44);
+  const hold = { operation: 'engage' }; mock.hold = hold;
+  await page.locator(pilotEngage).click();
+  await expect.poll(() => hold.requested).toBe(true);
+  await page.keyboard.press('ArrowUp');
+  await expect.poll(() => operations(mock).some(call => call.payload.operation === 'stop')).toBe(true);
+  hold.release();
+  await page.waitForTimeout(180);
+  expect(mock.framing.active).toBe(false);
+  expect(mock.control.throttle).toBe(.44);
+  await expect(page.locator('#view-context')).toHaveText('Manual flight · GPS-free');
+});
+
+test('shared throttle stays adjustable through a tracking pause and does not acknowledge takeover', async ({ page, model }) => {
+  const mock = await ready(page, model, { mode: 0, engage: true, profile: 'pilot_throttle' });
+  Object.assign(mock.framing, { paused: true, reason: 'Detection interrupted; corrections paused', axes: zero() });
+  await expect(page.locator('#framing-status')).toContainText('Keep managing throttle');
+  await page.locator(increaseThrottle).tap();
+  await expect.poll(() => mock.control.throttle).toBe(.02);
+  expect(mock.framing.active).toBe(true);
+  expect(mock.framing.paused).toBe(true);
+  await expect(page.locator(operation('closer'))).toBeDisabled();
+  Object.assign(mock.framing, { paused: false, active: false, phase: 'takeover', reason: 'Person lost', takeover_remaining_s: 1.7 });
+  await expect(page.locator('#framing-status')).toContainText('Manual takeover required');
+  await page.locator(increaseThrottle).tap();
+  await expect.poll(() => mock.control.throttle).toBe(.04);
+  expect(mock.framing.phase).toBe('takeover');
+  expect(operations(mock).map(call => call.payload.operation)).toEqual(['select', 'engage']);
+  await page.locator(operation('stop')).tap();
+  await expect.poll(() => mock.framing.phase).toBe('selected');
+  expect(mock.control.throttle).toBe(.04);
+});
+
+test('switching between full and shared framing confirms the firmware transfer and requires a new explicit engagement', async ({ page, model }) => {
+  const mock = await ready(page, model, { engage: true });
+  for (const [targetMode, profile] of [[0, 'pilot_throttle'], [2, 'full']]) {
+    const engageCount = operations(mock).filter(call => call.payload.operation === 'engage').length;
+    await page.locator('#control-mode-select').selectOption(String(targetMode));
+    expect(mock.framing.active).toBe(true);
+    await page.locator('#control-mode-switch').click();
+    await expect.poll(() => mock.control.phase).toBe('switching');
+    for (const value of ['full', 'pilot_throttle']) await expect(page.locator(operation('engage', value))).toBeDisabled();
+    mock.completeSwitch();
+    await expect(page.locator('#control-mode')).toHaveText(`Mode ${targetMode === 0 ? 'Stabilize' : 'AltHold'}`);
+    await expect(page.locator('#framing-target')).toHaveText('No target');
+    await expect(page.locator('#view-context')).toHaveText('Manual flight · GPS-free');
+    expect(operations(mock).filter(call => call.payload.operation === 'engage')).toHaveLength(engageCount);
+    if (targetMode === 0) {
+      await expect(page.locator('#control-throttle-value')).toHaveText('37.4 %');
+      await page.locator(increaseThrottle).tap();
+      await expect.poll(() => mock.control.throttle).toBe(.394);
+    }
+    await page.getByRole('button', { name: 'Select person #7 for framing' }).click();
+    await page.locator(operation('engage', profile)).click();
+    await expect.poll(() => mock.framing.profile).toBe(profile);
+    await expect(page.locator('#framing-status')).toContainText('Framing active');
+    if (targetMode === 0) expect(mock.control.throttle).toBe(.394);
+  }
+  expect(operations(mock).filter(call => call.payload.operation === 'engage').map(call => call.payload.profile)).toEqual(['full', 'pilot_throttle', 'full']);
+  expect(mock.control.owned).toBe(true);
+});
+
+for (const viewport of [{ width: 1366, height: 768 }, { width: 768, height: 1024 }, { width: 390, height: 844 }]) {
+  test(`all three assistance choices and held throttle remain touch reachable at ${viewport.width}x${viewport.height}`, async ({ page, model }) => {
+    await page.setViewportSize(viewport);
+    await ready(page, model, { mode: 0, engage: true, profile: 'pilot_throttle' });
+    for (const selector of [operation('stop'), operation('engage'), pilotEngage, '#control-throttle', increaseThrottle, decreaseThrottle]) {
+      const button = page.locator(selector);
+      await button.scrollIntoViewIfNeeded();
+      const box = await button.boundingBox();
+      expect(box.height).toBeGreaterThanOrEqual(44); expect(box.width).toBeGreaterThanOrEqual(44);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    await page.screenshot({ path: test.info().outputPath('pilot-throttle.png'), fullPage: true });
+  });
+}
+
+
+test('Stabilize throttle does not supersede a pending person selection', async ({ page, model }) => {
+  const mock = await ready(page, model, { mode: 0, select: false });
+  const hold = { operation: 'select' }; mock.hold = hold;
+  await page.getByRole('button', { name: 'Select person #7 for framing' }).click();
+  await expect.poll(() => hold.requested).toBe(true);
+  await page.locator(increaseThrottle).tap();
+  await expect.poll(() => mock.control.throttle).toBe(.02);
+  hold.release();
+  await expect(page.locator('#framing-target')).toHaveText('Person #7');
+  await expect(page.locator(pilotEngage)).toBeEnabled();
+  expect(operations(mock).map(call => call.payload.operation)).toEqual(['select']);
+});
+
+test('missing or invalid profile capability cannot enable shared framing', async ({ page, model }) => {
+  const mock = await ready(page, model, { mode: 0 });
+  let malformed = false;
+  // Every API reply represents the same service capability; regular input
+  // acknowledgements must not reintroduce the newer profile in this fixture.
+  mock.modifySnapshot = value => {
+    delete value.framing.profiles;
+    delete value.framing.profile;
+    value.framing.available = true;
+    if (malformed) value.framing.profile = 'automatic_throttle';
+  };
+  await expect(page.locator(pilotEngage)).toBeDisabled();
+  await expect(page.locator(operation('engage'))).toBeDisabled();
+  malformed = true;
+  await expect(page.locator('#framing-controls')).toBeHidden();
+  expect(operations(mock).map(call => call.payload.operation)).toEqual(['select']);
+});
+
+
+for (const profile of ['full', 'pilot_throttle']) {
+  test(`a refused firmware transfer keeps confirmed ${profile} framing visibly active without re-engaging`, async ({ page, model }) => {
+    const mock = await ready(page, model, { mode: profile === 'full' ? 2 : 0, engage: true, profile });
+    mock.switchError = true;
+    await page.locator('#control-mode-select').selectOption(profile === 'full' ? '0' : '2');
+    await page.locator('#control-mode-switch').click();
+    await expect(page.locator('#control-feedback')).toContainText('transfer refused');
+    await expect(page.locator('#framing-status')).toContainText('Framing active');
+    await expect(page.locator(operation('engage', profile))).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator(operation('stop'))).toHaveAttribute('aria-pressed', 'false');
+    expect(mock.framing.active).toBe(true);
+    expect(operations(mock).filter(call => call.payload.operation === 'engage')).toHaveLength(1);
+    expect(mock.control.mode_generation).toBe(0);
+    await page.locator(operation('stop')).click();
+    await expect.poll(() => mock.framing.active).toBe(false);
   });
 }

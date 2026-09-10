@@ -21,7 +21,7 @@ import secrets
 from collections import deque
 from copy import deepcopy
 
-from .framing import FramingControl
+from .framing import FramingControl, PROFILES as FRAMING_PROFILES
 
 
 DIGITAL_INPUT_PARAMETERS = {
@@ -349,7 +349,7 @@ class FlightControl:
                 "mode_switch": self._mode_switch_state(now),
                 "prepared": self._prepared_mode == self._selected_mode,
                 "input_seq": self._seq,
-                "framing": self.framing.state(now, self._framing_vehicle_reason(now)),
+                "framing": self._framing_state(now),
                 "vehicle": {"armed": self._armed, "mode": self._mode,
                             "landed": self._landed if self._landed_at is not None
                             and now - self._landed_at <= LANDED_MAX_AGE else None,
@@ -534,7 +534,12 @@ class FlightControl:
             accepted_throttle = 0. if throttle is _MISSING else float(throttle)
             if self._armed is not True and accepted_throttle != 0:
                 raise RuntimeError("Zero throttle required until arming is confirmed")
-        if any(axes.values()) or accepted_throttle != 0:
+        # Stabilize gas belongs to the pilot throughout shared framing, its
+        # pause and its takeover deadline. A renewal or throttle adjustment is
+        # neither an attitude takeover nor acknowledgement of lost guidance.
+        # Keep the separate mode-switch fence below: a throttle change still
+        # supersedes a queued firmware-mode handoff with an older gas value.
+        if any(axes.values()):
             self._last_manual_seq = seq
             self.framing.stop("Manual input; framing stopped")
         if any(axes.values()) or accepted_throttle != self._throttle:
@@ -545,7 +550,18 @@ class FlightControl:
         self._throttle = 0. if self._phase == "landing" else accepted_throttle
         return self.state(now)
 
-    def _framing_vehicle_reason(self, now):
+    def _framing_state(self, now):
+        state = self.framing.state(now, self._framing_vehicle_reason(now))
+        state["profiles"] = {}
+        for profile in sorted(FRAMING_PROFILES):
+            candidate = self.framing.state(now, self._framing_vehicle_reason(now, profile))
+            state["profiles"][profile] = {key: candidate[key] for key in ("available", "reason")}
+        return state
+
+    def _framing_vehicle_reason(self, now, profile=None):
+        profile = self.framing.profile if profile is None else profile
+        required_mode = STABILIZE if profile == "pilot_throttle" else ALT_HOLD
+        mode_name = "Stabilize" if required_mode == STABILIZE else "AltHold"
         reason = self._unavailable(now)
         if reason:
             return reason
@@ -555,12 +571,13 @@ class FlightControl:
             return "Pilot input lease expired"
         if self._mode_transition is not None:
             return "Wait for the flight mode change to complete"
-        if self._selected_mode != ALT_HOLD or self._mode != ALT_HOLD:
-            return "Framing requires AltHold"
+        if self._selected_mode != required_mode or self._mode != required_mode:
+            return ("Pilot-throttle framing requires Stabilize" if profile == "pilot_throttle"
+                    else "Full framing requires AltHold")
         if self._armed is not True:
             return "Take off manually before engaging framing"
-        if self._prepared_mode != ALT_HOLD or not self._profile()["ready"]:
-            return "Prepared AltHold and the digital GPS-free profile are required"
+        if self._prepared_mode != required_mode or not self._profile()["ready"]:
+            return f"Prepared {mode_name} and the digital GPS-free profile are required"
         if self._phase in ("landing", "released", "expired", "error") or self._recovery_at is not None:
             return "Flight control is handing over or recovering"
         if self._pending():
@@ -568,8 +585,9 @@ class FlightControl:
         if (self._landed_state != 2 or self._landed_at is None
                 or now - self._landed_at > LANDED_MAX_AGE):
             return "A recent IN_AIR report is required"
-        if any(self._axes.values()) or self._throttle != 0:
-            return "Release manual inputs before engaging framing"
+        if any(self._axes.values()) or (required_mode == ALT_HOLD and self._throttle != 0):
+            return ("Release direction inputs before engaging framing; keep controlling throttle"
+                    if profile == "pilot_throttle" else "Release manual inputs before engaging framing")
         return ""
 
     def framing_request(self, values, *, link, now, selection_check):
@@ -582,7 +600,8 @@ class FlightControl:
             raise ValueError("Unknown framing operation")
         expected = {"token", "operation", "intent"} | extra[operation]
         versioned = operation not in ("stop", "clear")
-        optional = {"mode_generation"} if versioned else set()
+        optional = ({"mode_generation"} if versioned else set()) | (
+            {"profile"} if operation == "engage" else set())
         if not expected <= set(values) or not set(values) <= expected | optional:
             raise ValueError("Invalid framing fields")
         if versioned:
@@ -619,6 +638,9 @@ class FlightControl:
             selection_check(values, now)
             self.framing.select(values["track_id"], (values["run_id"], values["video_id"]), now)
         elif operation == "engage":
+            profile = values.get("profile", "full")
+            if not isinstance(profile, str) or profile not in FRAMING_PROFILES:
+                raise ValueError("Choose full or pilot_throttle framing")
             if (not _integer(values["revision"], maximum=2**53 - 1)
                     or not _integer(values["input_seq"], maximum=2**53 - 1)):
                 raise ValueError("Engage requires an observed revision and pilot input sequence")
@@ -626,10 +648,10 @@ class FlightControl:
                 raise RuntimeError("Framing selection changed; inspect it before engaging")
             if not self._last_manual_seq <= values["input_seq"] <= self._seq:
                 raise RuntimeError("A manual input superseded this Engage request")
-            reason = self._framing_vehicle_reason(now)
+            reason = self._framing_vehicle_reason(now, profile)
             if reason:
                 raise RuntimeError(reason)
-            self.framing.engage(now)
+            self.framing.engage(now, profile=profile)
         else:
             reason = self._framing_vehicle_reason(now)
             if reason:

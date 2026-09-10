@@ -133,7 +133,10 @@ def _public(value, *, top=False, depth=0):
         return _text(value[:400])
     if isinstance(value, dict):
         allowed = CONTROL_FIELDS if top else PUBLIC_FIELDS
-        return {key: _public(item, depth=depth + 1) for key, item in value.items() if key in allowed}
+        return {key: _public(item, depth=depth + 1) for key, item in value.items()
+                if key in allowed or (not top and key == "profile"
+                                      and isinstance(item, str)
+                                      and item in ("full", "pilot_throttle"))}
     if isinstance(value, (list, tuple)):
         return [_public(item, depth=depth + 1) for item in value[:64]]
     return None
@@ -386,7 +389,7 @@ class VisualRecorder:
             vehicle = state.get("vehicle") or {}
             transition = [state.get("phase"), state.get("owned"), state.get("selected_mode"),
                           vehicle.get("mode"), vehicle.get("armed"), framing.get("phase"),
-                          framing.get("target_id"), framing.get("reference_height"),
+                          framing.get("target_id"), framing.get("reference_height"), framing.get("profile"),
                           framing.get("reason"), state.get("interruption")]
             if previous.get("transition") != transition and counters["events"] < self.max_events:
                 def mode_label(value):
@@ -404,6 +407,8 @@ class VisualRecorder:
                 parts.append("armed" if vehicle.get("armed") is True else
                              "disarmed" if vehicle.get("armed") is False else "arming state unknown")
                 parts.append(f"framing {framing.get('phase') or 'unavailable'}")
+                if framing.get("profile") in ("full", "pilot_throttle"):
+                    parts.append("pilot throttle" if framing["profile"] == "pilot_throttle" else "full framing")
                 if framing.get("target_id") is not None:
                     parts.append(f"person #{framing['target_id']}")
                 reference = framing.get("reference_height")

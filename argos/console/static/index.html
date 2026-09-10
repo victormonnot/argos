@@ -306,9 +306,13 @@
             <button aria-label="Clear selected person" class="button button-quiet" data-framing-operation="clear" disabled type="button">Clear</button>
           </div>
           <p class="framing-status" id="framing-status" role="status">Enable person detection, then select a person in the image.</p>
-          <div aria-label="Visual framing assistance" class="framing-actions" role="group">
-            <button class="button button-outline" data-framing-operation="engage" disabled type="button">Engage framing</button>
-            <button class="button button-outline" data-framing-operation="stop" disabled type="button">Manual</button>
+          <div aria-label="Flight assistance" aria-describedby="framing-profile-note" class="framing-actions framing-modes" role="group">
+            <button aria-pressed="true" class="button button-outline" data-framing-operation="stop" disabled type="button">Manual</button>
+            <button aria-pressed="false" class="button button-outline" data-framing-operation="engage" data-framing-profile="full" disabled type="button"><span>Full framing</span><small>AltHold</small></button>
+            <button aria-pressed="false" class="button button-outline" data-framing-operation="engage" data-framing-profile="pilot_throttle" disabled type="button"><span>Framing + manual throttle</span><small>Stabilize</small></button>
+          </div>
+          <p class="control-instructions framing-profile-note" id="framing-profile-note">Choose the matching flight mode, then select a person and engage after manual takeoff.</p>
+          <div aria-label="Relative target size" class="framing-actions framing-distance" role="group">
             <button class="button button-outline" data-framing-operation="farther" disabled type="button">Farther</button>
             <button class="button button-outline" data-framing-operation="closer" disabled type="button">Closer</button>
           </div>

@@ -353,3 +353,17 @@ def test_old_journals_without_media_remain_downloadable_and_replayable(camera_on
     assert f.client.get(metadata["download_url"]).content == original
     replayed = f.client.get(f"/api/recordings/{identifier}/replay", params={"revision": metadata["revision"], "at": 1.})
     assert replayed.status_code == 200 and replayed.json()["heartbeat"]["state"] == "recent"
+
+
+def test_pilot_throttle_engage_event_names_requested_authority_even_when_refused(camera_only):
+    f = camera_only
+    identifier = start(f)
+    response = f.client.post("/api/control/framing", headers=ORIGIN, json={
+        "token": "not-authority", "operation": "engage", "profile": "pilot_throttle"})
+    assert response.status_code == 409
+    metadata = stop(f, identifier)
+    events = replay(f, metadata, .8).json()["events"]
+    requested = [event for event in events if event["kind"] == "framing"]
+    assert len(requested) == 1
+    assert requested[0]["status"] == "refused"
+    assert requested[0]["detail"].startswith("Engage framing with manual throttle refused")

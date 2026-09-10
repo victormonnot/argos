@@ -8,7 +8,8 @@ supplies pilot input. This is an opt-in simulation feature, separate from the
 default passive observation workflow.
 
 Optional [visual framing](framing.md) adds explicit target selection and
-image-based centering/apparent-size assistance in AltHold. The current milestone
+image-based centering/apparent-size assistance in AltHold, or yaw/size assistance
+with the pilot retaining throttle in Stabilize. The current milestone
 does not implement VIO, position hold, radio control or HITL. It does not enable browser flight of
 physical aircraft. No markers, downward optical flow or simulated true position
 are substituted for a navigation capability.
@@ -106,6 +107,12 @@ Flight controls. The capture continues while flying.
 | --- | --- | --- |
 | AltHold | Self-leveling angle input | Held climb/descent input; neutral requests altitude hold. |
 | Stabilize | Self-leveling angle input, similar to Angle mode | Explicit pilot throttle; no altitude regulation. |
+
+With framing enabled, **Full framing** uses AltHold and **Framing + manual
+throttle** uses Stabilize. **Manual** stops the visual corrections while retaining
+the current flight mode and its throttle handling. The normal flight-mode switch
+returns to manual control, after which selection and engagement are explicit.
+See the [three assistance choices](framing.md#start-and-operate).
 
 The throttle percentage is normalized pilot input, not measured thrust, motor
 RPM or a calibrated climb rate. ArduPilot applies its throttle mapping and tilt

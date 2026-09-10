@@ -1,12 +1,13 @@
-"""Image-only framing requests for the explicit AltHold digital-control profile.
+"""Image-only framing requests for the explicit digital-control profiles.
 
 This law requests pilot axes, not velocities or a position hold. The caller owns
 authority, observation freshness, target association and immediate cancellation.
 The profile must disable RC1..4 and AltHold throttle deadzones: small numerical
 commands otherwise disappear before reaching the autopilot's controllers.
 
-Yaw turns toward the image error; vertical translation corrects its vertical
-component. Forward pitch regulates apparent height with damping from changing
+Yaw turns toward the image error; optional vertical translation corrects its
+vertical component. Pilot-throttle framing never requests vertical translation.
+Forward pitch regulates apparent height with damping from changing
 image size, without metric range or body-size assumptions. A changing human pose
 can still change this measurement without changing range.
 """
@@ -100,14 +101,18 @@ class FramingLaw:
         self._log_height = 0.
         self._height_rate = 0.
         self._height_usable = False
+        self._vertical_control = True
         self._axes = dict.fromkeys(AXIS_LIMITS, 0.)
 
-    def start(self, box: list, received_at: float) -> None:
+    def start(self, box: list, received_at: float, *, vertical_control=True) -> None:
         box, received_at = _observation(box, received_at)
+        if type(vertical_control) is not bool:
+            raise ValueError("vertical control must be explicitly enabled or disabled")
         if not MIN_REFERENCE_HEIGHT <= box[3] <= MAX_REFERENCE_HEIGHT:
             raise ValueError("initial target height must be between 8% and 45% of the image")
         # Validation precedes reset: a bad request cannot corrupt an active law.
         self.reset()
+        self._vertical_control = vertical_control
         self.reference_height = self.height = box[3]
         self.error_x, self.error_y = _errors(box)
         self._received_at = received_at
@@ -167,7 +172,7 @@ class FramingLaw:
             "forward": (FORWARD_GAIN * size_error - FORWARD_DAMPING * self._height_rate
                         if height_usable else 0.),
             "right": 0.,
-            "up": -UP_GAIN * _deadband(error_y, UP_DEADBAND),
+            "up": -UP_GAIN * _deadband(error_y, UP_DEADBAND) if self._vertical_control else 0.,
             "yaw": YAW_GAIN * _deadband(error_x, YAW_DEADBAND),
         }
         for axis, rate in AXIS_SLEW_PER_SECOND.items():
