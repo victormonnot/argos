@@ -1041,3 +1041,45 @@ The runtime was left disarmed with control released and no active capture.
 No native Mac portability test, physical video adapter test, firmware flash,
 radio/HITL integration or outdoor flight was performed. Camera-only HTTP tests
 validate the common replay path, not the RC832/USB adapter itself.
+
+
+## Distributed recorded-flight walkthrough — 2026-09-10
+
+The [recorded-flight example](../examples/demo-flight/README.md) distributes the
+unaltered JSONL and visual SQLite files from the complete 36.580-second
+inspection-yard trial above. The two files total 5,920,234 bytes. Its manifest
+retains their SHA-256 digests, capture identity, counts and ten chapter references
+to actual recorded events. The initial retained arm diagnostic and later GCS
+failsafe status messages are explained without rewriting the history or
+inferring their cause. Rendered-asset attribution accompanies the fixture.
+
+This is a data/documentation addition using the existing console and recording
+APIs. No flight-control logic, detector, simulator, receiver or web runtime was
+changed. The original 58-frame telemetry-only example remains available.
+
+Six fixture tests verify the exact assets, manifest integrity and chapter
+evidence, preserve the diagnostic messages, and seek backwards across all 177
+frame-availability boundaries without exposing future images or boxes. The
+standalone verifier checks both archives and all JPEG digests/dimensions.
+The full Python suite passed **1,922 tests**, including these six.
+
+A fresh Ubuntu 24.04/Python 3.12 virtual environment installed only the
+`console,mavlink` extras. It had no OpenCV, Gazebo Python bindings or ONNX Runtime.
+The exact documented console command served the fixture on a separate loopback
+port, with no camera or MAVLink endpoint configured and flight control disabled.
+The verifier passed in that environment too. No native Mac portability test was
+performed.
+
+Actual Chromium navigation against this minimal server opened the sole session,
+played it, sought forward/backward, clicked the Engage event, and opened
+Measurements, MAVLink messages and Analysis. It verified active framing at
+14 seconds, apparent-height reference changes at 18/22 seconds, manual/landing
+state at 26 seconds and disarming at 36.4 seconds. Desktop and tablet layouts
+were inspected. The browser made only GET requests to the demo server, with no
+control mutations, external requests or browser errors. The README screenshot
+comes from that run. These are new checks of the real fixture; the previous
+130-browser-test total describes the earlier unchanged UI revision.
+
+The existing live simulator and personal recording directory were left intact.
+The example replays a completed simulated flight; it provides no live piloting,
+new inference or physical-flight validation.

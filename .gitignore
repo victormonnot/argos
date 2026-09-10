@@ -12,7 +12,8 @@ __pycache__/
 .venv/
 venv/
 
-# --- Binaries: assets are fetched, never committed ---
+# --- Downloaded models and personal flight/video logs ---
+# Small verified replay fixtures under examples/ are intentionally tracked.
 *.mp4
 *.pt
 *.onnx

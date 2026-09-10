@@ -29,37 +29,51 @@ when describing navigation.
 Verified environment: **Ubuntu 24.04, Python 3.12**. The package declares Python
 3.11 or newer; other OS/version combinations have not all been validated.
 Physical camera input uses Linux/V4L2 and still needs testing on the chosen
-hardware. Gazebo is only required for the simulated-camera demonstration.
+hardware. Gazebo is required for live simulation; recorded-flight replay does not use it.
 
-From the repository root:
+From a source checkout, install the console and MAVLink reader:
 
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e '.[console,mavlink]'
-python -m argos.console
 ```
 
-Open **http://127.0.0.1:8080**. The console starts without a configured source;
-it does not substitute a demo video for a missing camera. Configure sources
-at startup or in **Sources**. The server listens on localhost only.
+### Explore a recorded flight without a simulator
 
-### Explore a session without a simulator
-
-A short recording captured from ArduPilot SITL on the ground is provided in
-[examples/demo](examples/demo/README.md). It contains 58 selected frames with
-their original bytes and reception timestamps. Its provenance and the metadata
-that was not recorded are documented explicitly.
+Start with the [provided inspection-yard flight](examples/demo-flight/README.md):
+36 seconds of actual Gazebo/ArduPilot SITL flight, captured by ARGOS. It includes
+the camera images, matched detections, sampled flight state, request events and
+received telemetry. The two recording files are included in this source checkout.
 
 ```sh
-python examples/verify_demo.py
-python -m argos.console --recordings-dir examples/demo --port 8081
+python examples/verify_demo_flight.py
+python -m argos.console --recordings-dir examples/demo-flight --port 8082
 ```
 
-Open **http://127.0.0.1:8081**, then **Sessions** and the single provided recording.
-Explore **Measurements**, **MAVLink messages** and
-**Analysis**. This is a replay demonstration; the Observation view
-has no live image or telemetry.
+Open **http://127.0.0.1:8082 → Sessions → Recording 05aa147d**. **Flight replay**
+opens automatically for that recording. Try **Play**, drag the time cursor, or
+select a flight event to jump to it. The [guided timeline](examples/demo-flight/README.md)
+points to target selection, Engage, Closer, Farther, manual takeover and landing.
+Open **Measurements**, **MAVLink messages** and **Analysis** to inspect the
+received data behind the flight.
+
+This is the actual ARGOS console reading a completed recording. Playback is
+interactive; the historical flight cannot be steered or changed. Gazebo, SITL,
+camera hardware, an ONNX model and OpenCV are not needed for this replay. No live
+source is configured, and flight control is disabled in this invocation. Port
+8082 keeps it separate from the manual simulation on 8081.
+
+![ARGOS Flight replay showing an archived inspection-yard flight](docs/images/replay-demo.png)
+
+The original [58-frame ground telemetry extract](examples/demo/README.md) remains
+available as a smaller protocol-analysis example.
+
+To start an empty console for your own sources, run `python -m argos.console`
+and open **http://127.0.0.1:8080**. Configure sources at startup or in **Sources**;
+a missing camera is never replaced with the prerecorded flight. The server
+listens on localhost only. For personal captures, use the normal recording
+directory rather than the distributed example directory.
 
 ### Receive the SITL camera and telemetry
 

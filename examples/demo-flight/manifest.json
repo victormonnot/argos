@@ -1,0 +1,170 @@
+{
+  "format": "argos.demo-flight",
+  "version": 1,
+  "id": "05aa147d371144c793c8f88ec3ef0509",
+  "title": "Inspection yard: manual flight and image framing",
+  "capture": {
+    "captured_at_utc": "2026-09-10T07:56:01.207139Z",
+    "run_id": "5d7c978e5aab40508ecf4061b06e2453",
+    "started_at": 66.13079326200022,
+    "ended_at": 102.71058282300055,
+    "duration_s": 36.579789561000325,
+    "environment": "simulation",
+    "scene": "inspection",
+    "method": "Browser-driven QA through normal ARGOS web control endpoints, with ArduCopter SITL and the Gazebo onboard camera.",
+    "detector": "YOLOX-S",
+    "vision_threads": 4,
+    "vision_max_hz": 5,
+    "image_width": 640,
+    "image_height": 480,
+    "unaltered_recording": true
+  },
+  "files": {
+    "telemetry": {
+      "path": "05aa147d371144c793c8f88ec3ef0509.jsonl",
+      "size_bytes": 259562,
+      "sha256": "f80f250a664c40e7e1882a55f10bd08b7ce9a7098faf6e632634db673294d81a"
+    },
+    "visual": {
+      "path": "05aa147d371144c793c8f88ec3ef0509.visual.sqlite3",
+      "size_bytes": 5660672,
+      "sha256": "6c864ceaa7bd59f13ba1c2716c8a782844263aadb02ddc4686833d4efecd88c8"
+    }
+  },
+  "counts": {
+    "telemetry_events": 1970,
+    "visual_frames": 177,
+    "visual_samples": 353,
+    "visual_events": 24,
+    "visual_dropped": 0
+  },
+  "chapters": [
+    {
+      "id": "claim",
+      "title": "Take control",
+      "at_s": 0.1856637070004581,
+      "evidence": {
+        "source": "visual_event",
+        "index": 1,
+        "kind": "claim",
+        "detail": "Take control requested",
+        "status": "accepted"
+      }
+    },
+    {
+      "id": "arm",
+      "title": "Arm request",
+      "at_s": 4.09852857199985,
+      "evidence": {
+        "source": "visual_event",
+        "index": 6,
+        "kind": "action",
+        "detail": "Arm requested",
+        "status": "accepted"
+      }
+    },
+    {
+      "id": "select",
+      "title": "Select person",
+      "at_s": 13.285572677000346,
+      "evidence": {
+        "source": "visual_event",
+        "index": 9,
+        "kind": "framing",
+        "detail": "Select target requested",
+        "status": "accepted"
+      }
+    },
+    {
+      "id": "engage",
+      "title": "Engage framing",
+      "at_s": 13.363513703000535,
+      "evidence": {
+        "source": "visual_event",
+        "index": 11,
+        "kind": "framing",
+        "detail": "Engage framing requested",
+        "status": "accepted"
+      }
+    },
+    {
+      "id": "closer",
+      "title": "Closer",
+      "at_s": 17.3990938980005,
+      "evidence": {
+        "source": "visual_event",
+        "index": 13,
+        "kind": "framing",
+        "detail": "Closer requested",
+        "status": "accepted"
+      }
+    },
+    {
+      "id": "farther",
+      "title": "Farther",
+      "at_s": 21.43228541500048,
+      "evidence": {
+        "source": "visual_event",
+        "index": 15,
+        "kind": "framing",
+        "detail": "Farther requested",
+        "status": "accepted"
+      }
+    },
+    {
+      "id": "manual",
+      "title": "Return to manual control",
+      "at_s": 25.580043240000123,
+      "evidence": {
+        "source": "visual_event",
+        "index": 17,
+        "kind": "framing",
+        "detail": "Manual control requested",
+        "status": "accepted"
+      }
+    },
+    {
+      "id": "land",
+      "title": "Land request",
+      "at_s": 25.629576266000186,
+      "evidence": {
+        "source": "visual_event",
+        "index": 19,
+        "kind": "action",
+        "detail": "Land requested",
+        "status": "accepted"
+      }
+    },
+    {
+      "id": "disarmed",
+      "title": "Disarmed state observed",
+      "at_s": 36.25295916899995,
+      "evidence": {
+        "source": "visual_event",
+        "index": 21,
+        "kind": "control_state",
+        "detail": "landing; True; 2; 9; False; idle; Drone disarmed; framing stopped",
+        "status": "sampled"
+      }
+    },
+    {
+      "id": "release",
+      "title": "Release control",
+      "at_s": 36.502215589000116,
+      "evidence": {
+        "source": "visual_event",
+        "index": 22,
+        "kind": "action",
+        "detail": "Release control requested",
+        "status": "accepted"
+      }
+    }
+  ],
+  "notes": [
+    "A 36.58-second recorded simulation, not a physical flight or an interactive flight simulator.",
+    "The initial sampled control state retains a denied arm command from before capture began; subsequent arming succeeds in the recorded session.",
+    "Autopilot STATUSTEXT includes GCS Failsafe Cleared at 0.518 s and GCS Failsafe at 29.525 s, after the Land request at 25.630 s. These messages are preserved without inferring their cause.",
+    "Event timestamps represent local receipt or observation. Accepted service requests and sampled control states are not interchangeable with vehicle acknowledgements.",
+    "Detector boxes are stored with the corresponding JPEG and become visible at their recorded availability time."
+  ]
+}

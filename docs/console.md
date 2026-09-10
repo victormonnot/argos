@@ -359,6 +359,11 @@ offered as completed recordings.
 
 ## Visual flight replay
 
+For a first visit without a simulator or camera, follow the
+[provided recorded-flight walkthrough](../examples/demo-flight/README.md). It
+uses this same console and the files in the source checkout; no live values or
+flight commands are simulated by the replay.
+
 Open **Session recording**, leave **Include video and flight events** selected,
 and start before the part of the flight you want to retain. Stop, wait for visual
 finalization, then open the session in **Sessions → Flight replay**. Video,
