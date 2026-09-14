@@ -1260,3 +1260,33 @@ frame access, input chronology, paired processing, metrics and failure-safe
 output. A native camera-only capture with zero MAVLink events passed the mocked
 inference CLI integration test. All **154 browser tests**, both bundled archive verifiers and a fresh
 installed-wheel check passed, including the new APIs imported from site-packages.
+
+## Visual detector comparison export — September 14, 2026
+
+The [local visual export](vision-comparison.md#view-tiny-and-s-on-the-same-image)
+was generated from the preceding completed comparison, reusing all **177 saved
+JPEGs and Tiny/S results without new inference**. Every exported JPEG matched
+its recorded digest and native image identity. The original comparison inputs
+and both bundled archives remained unchanged.
+
+Actual Chromium checks opened the generated `index.html` directly through
+`file://`, then opened a copy of the complete export in another directory.
+Both views loaded their own relative JPEGs without external requests, browser
+errors or write requests. Shared navigation reached the two count disagreements
+at archive indices 16–17: Tiny had no box and S retained one. Image pairing,
+box visibility, navigation boundaries and desktop/mobile layout were checked.
+The original recorded overlays remain separate from these recomputed results.
+
+The final suite passed **2,339 Python tests** and **164 browser tests**. The 62
+new Python checks cover native camera-only inputs, strict result/archive
+binding, changed sources, output preservation, escaping and interrupted or
+failed publication. The ten new browser checks cover synchronized navigation,
+count-only jumps, box geometry, responsive layout, actual overlay hiding,
+late image completions, missing-image recovery and local read-only operation.
+An export is marked complete only after its final HTML has been published.
+
+Both supplied archive verifiers and a fresh installed-wheel check passed,
+including the packaged comparison template and isolated module imports. The
+two existing Python dependency deprecation warnings remain. This validates
+inspection of saved results; it does not establish physical tracking accuracy,
+choose a better model or measure live video/control latency.

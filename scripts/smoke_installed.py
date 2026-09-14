@@ -20,6 +20,9 @@ def main():
     for filename in ("IBM-Plex-Sans-OFL.txt", "IBM-Plex-Mono-OFL.txt", "Marcellus-OFL.txt"):
         if "SIL OPEN FONT LICENSE" not in (static / "fonts" / filename).read_text():
             raise RuntimeError(f"missing bundled font licence: {filename}")
+    comparison = resources.files("argos.perception") / "static" / "vision_comparison.html"
+    if comparison.read_text(encoding="utf-8").count("__ARGOS_COMPARISON_DATA__") != 1:
+        raise RuntimeError("missing or invalid packaged visual comparison template")
     with tempfile.TemporaryDirectory(prefix="argos-wheel-smoke-") as temporary:
         config = ConsoleConfig(recordings_dir=Path(temporary) / "captures")
         with TestClient(create_app(config)) as client:
@@ -51,7 +54,7 @@ def main():
                 raise RuntimeError("unconfigured vision returned an image")
             if client.get("/api/frame.jpg").status_code != 503:
                 raise RuntimeError("unconfigured console returned an image")
-    print(f"Installed ARGOS {metadata.version('argos')}: imports, web assets, fonts and empty state OK")
+    print(f"Installed ARGOS {metadata.version('argos')}: imports, web assets, comparison template, fonts and empty state OK")
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ include = ["argos*"]
 [tool.setuptools.package-data]
 "argos.console" = ["static/*.html", "static/*.css", "static/*.js",
                    "static/fonts/*.woff2", "static/fonts/*-OFL.txt", "static/fonts/README.md"]
+"argos.perception" = ["static/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -122,7 +122,9 @@ hardware and does not enable physical flight control.
 To compare the available person detectors on identical saved images, use the
 [offline vision comparison](docs/vision-comparison.md). It reruns Tiny and S with
 the same tracker and reports detections, display-ID observations and processing
-time without starting a camera or simulator.
+time without starting a camera or simulator. Its [visual export](docs/vision-comparison.md#view-tiny-and-s-on-the-same-image)
+shows the recomputed Tiny/S boxes on matching images in a portable local browser
+viewer, without running inference again.
 
 ## Available features
 

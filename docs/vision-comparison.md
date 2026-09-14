@@ -2,8 +2,9 @@
 
 The offline comparison runs **YOLOX-Tiny and YOLOX-S on the same saved camera
 images**, using the same current ARGOS appearance encoder and image tracker.
-It produces a readable table and per-image results. No camera, simulator, radio,
-web service or flight-control connection is needed.
+It produces a readable table and per-image results. A separate export makes
+those results viewable on the original images in a local browser. No camera,
+simulator, radio, web service or flight-control connection is needed.
 
 This compares two detector variants. A later tracker change can be evaluated
 again on the same capture, retaining each run's code hashes and results. The
@@ -53,14 +54,57 @@ read-only and their revisions must remain unchanged throughout processing.
 
 The table counts images with and without detections, stronger detections and
 display-ID transitions. Examples identify frame indices and playback positions
-worth inspecting. Open the **original** capture in Sessions → Flight replay to
-view its images. Its overlays remain the original recorded results; the newly
-computed boxes and IDs are in `frames.jsonl`.
+worth inspecting. The visual export below displays the newly computed boxes.
+Opening the **original** capture in Sessions → Flight replay continues to show
+its original recorded overlays; it does not load the comparison results.
 
 `at_s` is the image's original receipt offset and may be negative when the first
 image predates recording Start. `available_at_s` is when that archived image
 became available; use it as the native replay cursor. Tracking uses the absolute
 recorded receipt time, so processing speed cannot stretch or compress track age.
+
+## View Tiny and S on the same image
+
+Export an existing completed comparison; this command does **not** run either
+model again:
+
+```sh
+.venv/bin/python examples/export_vision_comparison.py \
+  --comparison-dir /tmp/argos-vision-comparison-example \
+  --output-dir /tmp/argos-vision-view-example
+```
+
+The original native capture must still be available. The exporter checks the
+comparison's recorded source/model metadata and each selected image against its
+archive identity and JPEG hash. If you moved the recording files, add
+`--recordings-dir /absolute/path/to/recordings`; the journal and visual sidecar
+must still match the comparison. This locates the existing inputs, rather than
+creating a new evaluation.
+
+Choose a new/empty output directory outside the input directories, or omit
+`--output-dir` for a fresh temporary folder. Existing reports and recordings
+remain unchanged. The export contains:
+
+| File or directory | Contents |
+| --- | --- |
+| `index.html` | Local comparison viewer and its recorded Tiny/S results |
+| `images/` | Original JPEGs used by the comparison |
+| `manifest.json` | Export provenance, source hashes and image bindings |
+
+Open `index.html` directly in a browser. Copy the **whole folder**, including
+`images/`, to view it on another computer; viewing needs no Python environment,
+model files, console or running service.
+
+The two views use the same image and stay on the same frame when navigating.
+Each shows its model's recomputed boxes, confidence and display IDs. You can
+jump to images where Tiny and S return different detection counts. This shortcut
+does not find every difference in box placement or confidence, and it does not
+match identities across the two models. Reviewing the images helps interpret
+the counts; the viewer supplies no ground-truth labels or accuracy score.
+
+This is a viewer for the saved comparison, with the same selected images,
+exclusions and sampling limits. It does not change live settings or establish
+physical tracking or flight readiness.
 
 ## What the measurements mean
 
