@@ -5,6 +5,10 @@ The optional **Person detection** switch displays bounding boxes, confidence and
 short-lived track IDs. Each overlay accompanies the exact image analyzed by the
 model. Turning the switch off restores the normal camera stream.
 
+The [offline vision comparison](vision-comparison.md) reruns Tiny and S on the
+same native recording images with the current tracker. It reports new detections
+and processing costs without changing the live configuration.
+
 Detection alone supplies visual observations. The separately enabled
 [visual framing controller](framing.md) can use an explicitly selected detection
 for centering and apparent-size assistance in AltHold. Neither feature holds

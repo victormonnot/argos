@@ -119,6 +119,11 @@ pitch/yaw assistance, pilot-owned throttle, takeover and simulated source loss,
 with a passive console, recordings and a per-run report. It requires no radio
 hardware and does not enable physical flight control.
 
+To compare the available person detectors on identical saved images, use the
+[offline vision comparison](docs/vision-comparison.md). It reruns Tiny and S with
+the same tracker and reports detections, display-ID observations and processing
+time without starting a camera or simulator.
+
 ## Available features
 
 | View | Purpose |

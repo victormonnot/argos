@@ -789,6 +789,19 @@ class VisualArchive:
         return self._use(identifier, started_at, run_id, revision, read)
 
     def frame(self, identifier, index, *, revision, started_at, run_id):
+        """Return the exact archived JPEG, retaining the existing replay API."""
+        return self.frame_record(identifier, index, revision=revision,
+                                 started_at=started_at, run_id=run_id)["jpeg"]
+
+    def frame_record(self, identifier, index, *, revision, started_at, run_id):
+        """Read one exact frame and its original recorded source/timing fields.
+
+        Times are absolute within the recorded run, not replay offsets or camera
+        exposure times. A second archived entry for the same source image is
+        returned separately; no latest-frame lookup or deduplication occurs.
+        Revision/source binding, JPEG validation and final inode checks are the
+        same as for the existing image endpoint. No telemetry file is required.
+        """
         try:
             _integer(index, 0, MAX_SAMPLES - 1)
         except (ValueError, TypeError, OverflowError) as exc:
@@ -797,10 +810,11 @@ class VisualArchive:
             raise VisualArchiveError("A visual revision is required", 409)
 
         def read(db, meta, rev, path):
-            row = db.execute("SELECT jpeg,digest,width,height FROM frames WHERE idx=?", (index,)).fetchone()
+            row = db.execute("SELECT idx,received,available,sequence,video_id,width,height,jpeg,digest "
+                             "FROM frames WHERE idx=?", (index,)).fetchone()
             if row is None:
                 raise VisualArchiveError("Archived image not found", 404)
-            jpeg, digest, width, height = row
+            idx, received, available, sequence, video_id, width, height, jpeg, digest = row
             if (not isinstance(jpeg, bytes) or not jpeg.startswith(b"\xff\xd8") or not jpeg.endswith(b"\xff\xd9")
                     or hashlib.sha256(jpeg).hexdigest() != digest):
                 raise VisualArchiveError("Archived image failed its digest check")
@@ -808,9 +822,11 @@ class VisualArchive:
                 _check_jpeg(jpeg, width, height)
             except (OSError, ValueError, ImportError) as exc:
                 raise VisualArchiveError("Archived image failed JPEG validation") from exc
-            return jpeg
+            return {"index": idx, "received_at": received, "available_at": available,
+                    "sequence": sequence, "video_id": video_id, "width": width,
+                    "height": height, "jpeg": jpeg}
         result = self._use(identifier, started_at, run_id, revision, read)
-        if isinstance(result, dict):
+        if result.get("state") == "missing":
             raise VisualArchiveError("Archived image not found", 404)
         return result
 

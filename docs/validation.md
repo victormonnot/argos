@@ -1222,3 +1222,41 @@ CLI and packaged-resource checks plus `pip check`. All owned simulator processes
 were stopped. This is a bounded simulation result, not RF-link, physical-radio,
 Betaflight or outdoor-flight validation; Tiny and the inspection-scene variant
 have not been validated through this complete bench sequence.
+
+## Offline detector comparison — September 14, 2026
+
+The [recorded-image comparison](vision-comparison.md) reran actual YOLOX-Tiny
+and YOLOX-S inference on all **177 JPEGs** of the bundled 36.580-second demo
+capture, with the current appearance encoder and separate production trackers.
+Both models used four CPU threads, two excluded warmups and one timed pass;
+processing alternated which model ran first on each identical image.
+
+| Observation on this capture | Tiny | S |
+| --- | ---: | ---: |
+| Images with detections | 175 / 177 | 177 / 177 |
+| Images without detections | 2 | 0 |
+| Images with a detection confidence ≥ 0.5 | 172 | 177 |
+| Distinct display IDs | 1 | 1 |
+| Adjacent singleton ID-change observations | 0 | 0 |
+| Network inference median / p95, ms | 23.932 / 28.397 | 91.118 / 107.155 |
+| Complete processing median / p95, ms | 27.342 / 32.043 | 95.131 / 110.862 |
+
+Tiny's two empty samples are archive frames 16–17, available at replay cursors
+3.306 and 3.512 seconds. The report retains each variant's new boxes, confidence,
+IDs and timings, together with original frame identities and JPEG hashes. This
+capture required no duplicate/time-regression exclusions and no truncation.
+Its journal/visual hashes still match the shipped manifest; all six runtime
+source hashes match the code used for this inference run.
+
+Counts do not establish which detector is correct without annotated truth.
+The saved image subset reflects the original recording's sampling and may not
+match either variant's live frame selection. Processing timings include decode,
+detection, appearance and tracking, exclude archive I/O/loading/warmups, and
+describe this host's offline cost rather than live throughput or camera latency.
+No model, threshold, tracker parameter or flight law was changed by this tool.
+
+The full Python suite passed **2,277 tests**, including 74 new checks for archive
+frame access, input chronology, paired processing, metrics and failure-safe
+output. A native camera-only capture with zero MAVLink events passed the mocked
+inference CLI integration test. All **154 browser tests**, both bundled archive verifiers and a fresh
+installed-wheel check passed, including the new APIs imported from site-packages.
