@@ -1,0 +1,112 @@
+# Isolated Gazebo/SITL virtual-radio bench only; never a physical-aircraft profile.
+# No GPS, downward optical flow, rangefinder, external navigation or IRLOCK.
+FRAME_CLASS 1
+FRAME_TYPE 1
+GPS1_TYPE 0
+GPS2_TYPE 0
+COMPASS_ENABLE 1
+# Keep the driver parameter group loaded, but do not use a magnetic yaw source.
+COMPASS_USE 0
+COMPASS_USE2 0
+COMPASS_USE3 0
+EK3_SRC1_POSXY 0
+EK3_SRC1_VELXY 0
+EK3_SRC1_POSZ 1
+EK3_SRC1_VELZ 0
+EK3_SRC1_YAW 0
+FLOW_TYPE 0
+RNGFND1_TYPE 0
+PLND_ENABLED 0
+VISO_TYPE 0
+BATT_MONITOR 4
+MOT_PWM_MIN 1100
+MOT_PWM_MAX 1900
+MAV_GCS_SYSID 255
+FLTMODE_CH 5
+FLTMODE1 0
+FLTMODE4 2
+FLTMODE6 9
+# Native RC6 arms/disarms; RC7 permits or rejects all MAVLink overrides.
+RC6_OPTION 153
+RC7_OPTION 46
+RC_OPTIONS 0
+# Keep ArduCopter's default: throttle input must not cancel a LAND fallback.
+PILOT_THR_BHV 0
+# Assistance expires independently; the pilot's receiver remains authoritative.
+RC_OVERRIDE_TIME 0.5
+# No GCS-owned flight: losing assistance must not land while native RC is valid.
+FS_GCS_ENABLE 0
+FS_GCS_TIMEOUT 2
+FS_OPTIONS 0
+FS_THR_ENABLE 3
+# Disable the optional ADS-B simulator on serial1; reserve it for assistance.
+SIM_ADSB_COUNT -1
+# ArduCopter 4.8 uses metres/second and degrees with these parameter names.
+PILOT_SPD_UP 1
+PILOT_SPD_DN 0.7
+LAND_SPD_MS 0.5
+ATC_ANGLE_MAX 20
+SERIAL0_PROTOCOL 2
+SERIAL1_PROTOCOL 2
+SERIAL2_PROTOCOL 2
+MAV1_EXT_STAT 2
+MAV1_EXTRA1 10
+MAV1_EXTRA2 5
+MAV1_EXTRA3 2
+MAV1_POSITION 5
+MAV1_RC_CHAN 5
+# Preserve arming checks. The JSON simulator provides its sensor calibration.
+
+# Exact virtual pilot inputs need no stick deadzone.
+RC1_DZ 0
+RC2_DZ 0
+RC3_DZ 0
+RC4_DZ 0
+THR_DZ 0
+
+# Reproducible body-camera framing input map. Checked when framing is enabled.
+RCMAP_ROLL 1
+RCMAP_PITCH 2
+RCMAP_THROTTLE 3
+RCMAP_YAW 4
+RC1_REVERSED 0
+RC2_REVERSED 0
+RC3_REVERSED 0
+RC4_REVERSED 0
+RC1_MIN 1100
+RC1_MAX 1900
+RC1_TRIM 1500
+RC2_MIN 1100
+RC2_MAX 1900
+RC2_TRIM 1500
+RC3_MIN 1100
+RC3_MAX 1900
+RC3_TRIM 1500
+RC4_MIN 1100
+RC4_MAX 1900
+RC4_TRIM 1500
+SIMPLE 0
+SUPER_SIMPLE 0
+PILOT_Y_RATE 202.5
+PILOT_Y_EXPO 0
+# Preserve the forward camera's neutral joints; no gimbal targeting is enabled.
+MNT1_TYPE 0
+SERVO9_FUNCTION 0
+SERVO10_FUNCTION 0
+SERVO11_FUNCTION 0
+
+# Independent assistance and observation links: keep ordinary stream telemetry.
+# HEARTBEAT is periodic; EXTRA1/EXTRA3 include simulation/landed state messages.
+MAV2_EXT_STAT 2
+MAV2_EXTRA1 10
+MAV2_EXTRA2 5
+MAV2_EXTRA3 5
+MAV2_POSITION 5
+MAV2_RC_CHAN 10
+MAV3_EXT_STAT 2
+MAV3_EXTRA1 10
+MAV3_EXTRA2 5
+MAV3_EXTRA3 5
+MAV3_POSITION 5
+MAV3_RC_CHAN 10
+

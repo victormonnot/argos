@@ -113,6 +113,12 @@ The launcher uses its own model copy, Gazebo partition, ports and SITL files;
 **Ctrl-C** stops its three child processes. It does not modify the installed
 models or an existing observation session.
 
+For an automated flight with an independent virtual pilot, see the
+[virtual-radio and assistance bench](docs/radio-bench.md). It checks selective
+pitch/yaw assistance, pilot-owned throttle, takeover and simulated source loss,
+with a passive console, recordings and a per-run report. It requires no radio
+hardware and does not enable physical flight control.
+
 ## Available features
 
 | View | Purpose |

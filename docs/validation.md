@@ -1179,3 +1179,46 @@ forward/back request and slew. The unchanged maximum pitch demand, centering
 settings, relative size step and loss rules remain authoritative. No physical
 radio, camera adapter, firmware, outdoor flight or GPS-free position estimator
 was validated by this software milestone.
+
+## Independent virtual radio and assistance — September 14, 2026
+
+The [radio bench](radio-bench.md) was exercised with the actual Gazebo person
+camera, YOLOX-S/four inference threads, and the existing ArduCopter SITL binary
+whose build header identifies `8927564c`. The adjacent clean source checkout
+was `b351febc5a`; it was not rebuilt. The final scenario passed all seven checks
+in 46.860 seconds, with GPS disabled and normal arming checks enabled.
+
+- While disarmed, the firmware returned pilot yaw 1420 after the permission
+  switch went low despite continuing override yaw 1540. The accepted observation
+  window contained five distinct receiver timestamps and five conflicting sends.
+- Killing the emitting assistant with `SIGKILL` returned pitch/yaw to the pilot;
+  the first matching reception arrived 0.541 seconds later, with a configured
+  override timeout of 0.5 seconds. The receiver and passive observer remained
+  alive. This reception delay includes host scheduling and telemetry delivery.
+- In airborne Stabilize, the existing image framing law remained active during
+  pilot throttle steps 1480, 1520 and 1500. Each step had six or seven matching
+  receiver samples. An image-derived yaw correction of 1525 was also received
+  by the controller. Restart and switch recovery did not resume assistance.
+- A separate `SIM_RC_FAIL=1` injection selected Land; landing and disarming were
+  observed before restoring the receiver. Native UDP sender silence alone retains
+  the last receiver values in this SITL implementation and is not a radio-loss test.
+
+The finalized native capture contains 40.253 seconds, 3,065 telemetry events,
+196 images and 391 visual samples, with zero reported visual drops. Reopening it
+in a source-free console verified archive integrity, actual images/detections
+in Chromium, and Stabilize/Land measurements; final telemetry confirms disarming.
+The passive console's control/framing summary does not represent the external
+assistant; its evidence is in the bench trace and acceptance report.
+
+Preparation runs exposed startup-listener ordering, current firmware parameter
+and stream requirements, and one correctly rejected stale image at 0.457 seconds.
+The new observation relay was shortened without relaxing the existing 0.45-second
+image deadline or changing the framing law/model. The final run followed those
+fixes and explicit capture-finalization checks.
+
+Validation passed **2,203 Python tests**, **154 browser tests**, both bundled
+archive verifiers, and a fresh wheel installation with isolated console/backend
+CLI and packaged-resource checks plus `pip check`. All owned simulator processes
+were stopped. This is a bounded simulation result, not RF-link, physical-radio,
+Betaflight or outdoor-flight validation; Tiny and the inspection-scene variant
+have not been validated through this complete bench sequence.
