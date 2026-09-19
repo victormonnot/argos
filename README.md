@@ -145,6 +145,12 @@ Analog video alone supplies no MAVLink measurements. A recent reception does not
 radio latency or the physical age of a sensor measurement; an interruption alone
 does not identify its cause.
 
+For a Betaflight controller exposing USB MSP, the separate
+[USB readout](docs/betaflight-probe.md) reports identity, attitude, status and
+processed RC channels through a finite command-line probe. It supports MSP API
+1.48 and sends only allowlisted read queries; it does not enable web telemetry
+or physical flight commands.
+
 Recordings are stored in `~/.local/share/argos/recordings/`, or in
 `$XDG_DATA_HOME/argos/recordings/` when that variable contains an absolute path.
 Use `--recordings-dir` to choose another directory. Recording limits and closure
