@@ -151,6 +151,13 @@ processed RC channels through a finite command-line probe. It supports MSP API
 1.48 and sends only allowlisted read queries; it does not enable web telemetry
 or physical flight commands.
 
+For an EdgeTX radio, the separate [USB display test](docs/edgetx-usb-display.md)
+checks PC messages and acknowledgements with a Lua tool on the radio screen.
+It does not change model settings or send flight commands.
+The following [mixer bench](docs/edgetx-usb-mixer-bench.md) exercises one unused
+channel in a copied model with both RF modules disabled and the aircraft
+disconnected. Its script timeout is not a flight failsafe.
+
 Recordings are stored in `~/.local/share/argos/recordings/`, or in
 `$XDG_DATA_HOME/argos/recordings/` when that variable contains an absolute path.
 Use `--recordings-dir` to choose another directory. Recording limits and closure
