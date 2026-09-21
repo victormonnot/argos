@@ -1,10 +1,12 @@
 -- Bench mixer only: copied model "ARGOS USB", both RF modules OFF, no aircraft.
 -- Install in SCRIPTS/MIXES/ArgMix.lua and use Val only on an unused CH32.
 -- Timeout requires run() to keep executing; this is NOT a flight failsafe.
+-- Hbt is for a separately configured native stale-output gate, not a Lua timer.
 local session = nil
 local sequence = 0
 local value = 0
 local fresh = 0
+local heartbeat = 0
 local lastReceived = nil
 local lastHello = nil
 local buffer = ""
@@ -31,6 +33,7 @@ local function reset()
   sequence = 0
   value = 0
   fresh = 0
+  heartbeat = 0
   lastReceived = nil
   lastHello = nil
   buffer = ""
@@ -44,6 +47,7 @@ local function accept(line, now)
     sequence = 0
     value = 0
     fresh = 0
+    heartbeat = 0
     lastReceived = nil
     serialWrite("ARGOS_MIX_READY " .. session .. "\n")
     return
@@ -60,6 +64,9 @@ local function accept(line, now)
     sequence = nextSequence
     value = nextValue
     fresh = 1024
+    -- Toggle per accepted command, including sequence gaps and zero commands.
+    -- Rejected/repeated messages and idle callbacks must not sustain the gate.
+    heartbeat = heartbeat <= 0 and 1024 or -1024
     lastReceived = now
     serialWrite("ARGOS_MIX_ACK " .. session .. " " .. digits .. " " .. textValue .. "\n")
   end
@@ -68,7 +75,7 @@ end
 local function run()
   if not permitted() or type(serialRead) ~= "function" or type(serialWrite) ~= "function" then
     reset()
-    return 0, 0, 0
+    return 0, 0, 0, 0
   end
   local now = getTime()
   if lastHello == nil or elapsed(now, lastHello) >= 50 then
@@ -95,10 +102,11 @@ local function run()
   if lastReceived ~= nil and elapsed(now, lastReceived) >= 30 then
     value = 0
     fresh = 0
+    heartbeat = 0
     lastReceived = nil
     serialWrite("ARGOS_MIX_IDLE " .. session .. " " .. sequence .. "\n")
   end
-  return value, fresh, sequence
+  return value, fresh, sequence, heartbeat
 end
 
-return { output = { "Val", "Fsh", "Seq" }, run = run }
+return { output = { "Val", "Fsh", "Seq", "Hbt" }, run = run }

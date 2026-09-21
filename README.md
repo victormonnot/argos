@@ -157,6 +157,8 @@ It does not change model settings or send flight commands.
 The following [mixer bench](docs/edgetx-usb-mixer-bench.md) exercises one unused
 channel in a copied model with both RF modules disabled and the aircraft
 disconnected. Its script timeout is not a flight failsafe.
+The [native guard bench](docs/edgetx-native-guard-bench.md) adds a radio-side
+stale-output gate and a deliberately held-value fixture, still with RF off.
 
 Recordings are stored in `~/.local/share/argos/recordings/`, or in
 `$XDG_DATA_HOME/argos/recordings/` when that variable contains an absolute path.

@@ -38,7 +38,7 @@ even when the script's configuration guard succeeds.
 2. Keep `ARGOS USB` selected. Open its **CUSTOM SCRIPTS** page, select an empty
    slot (normally **LUA1**), press the roller, and set **Script = ArgMix**.
    If the slot is already occupied, do not overwrite it. The outputs are
-   **Val**, **Fsh** and **Seq**. Val should initially be 0.
+   **Val**, **Fsh**, **Seq** and **Hbt**. Val should initially be 0.
 3. In **MIXES**, add one mix on the unused **CH32** with **Source = the `Val`
    output of that Lua slot**, **Weight = 100**, **Offset = 0**, no switch, no
    curve, no delay or slow. Leave the flight channels untouched. Select the
@@ -111,7 +111,10 @@ not a numbered Input), **Weight = 100**, **Offset = 0**, **Trim unchecked**,
 and **Switch unset**. Keep curves, delays and slow settings off.
 
 Return to the list, long-press the original Val row, select **Edit**, then set
-**Switch = SC up** and **Multiplex = Replace** (possibly abbreviated REPL).
+**Switch = your physical PC position** (for example SC down) and **Multiplex =
+Replace** (possibly abbreviated REPL). Verify that position on the radio; if a
+PC/manual selector already works, preserve its exact Switch field. The example
+below uses SC down for PC and SC middle for manual.
 The Multiplex field is available after the first row has been inserted. Keep
 Val's weight at 100 and its offset, curves, delays and slow settings at zero.
 The result must contain exactly these two CH32 rows, in this order:
@@ -119,7 +122,7 @@ The result must contain exactly these two CH32 rows, in this order:
 | Order | Source | Weight | Switch | Multiplex |
 | --- | --- | --- | --- | --- |
 | First | Raw Rud, Trim unchecked | 100 | None | Add/default |
-| Second | Lua1 Val | 100 | SC up | Replace |
+| Second | Lua1 Val | 100 | Verified PC position | Replace |
 
 The native mixer evaluates the physical switch and skips the replacement when
 it is off, leaving the preceding Rud value. This does not require a Lua call to
@@ -127,18 +130,22 @@ perform the handover. The radio's native mixer must still be functioning.
 
 1. With SC in the middle and no PC test running, move the yaw stick left/right.
    CH32 should follow it and return near zero when centered.
-2. Center the stick, put SC up and run the same finite PC helper. During +25%
+2. Center the stick, put SC down and run the same finite PC helper. During +25%
    or -25%, move SC to the middle: CH32 should immediately follow the stick,
    even as the PC continues sending. Move the stick briefly to verify control.
 3. Keep SC in the middle through the remaining PC phases. Those phases should
    no longer move CH32; the helper's acknowledgements can still complete.
 
 Report the channel behavior, not just ACKs. In this intermediate configuration,
-moving the stick alone does **not** cancel the replacement while SC is up;
-SC must be moved to manual. USB loss while SC remains up returns the selected
+moving the stick alone does **not** cancel the replacement while SC is down;
+SC must be moved to manual. USB loss while SC remains down returns the selected
 Lua value to zero, not to the stick. Automatic fallback to the stick and expiry
 independent of Lua still require a separate gate. Do not enable RF with this
 bench configuration. Leave SC in the middle when finished.
+
+The following [native guard bench](edgetx-native-guard-bench.md) uses the added
+Hbt output to detect a held producer value and restore the raw-stick mix. Its
+fault fixture tests this separately from Lua's own timeout; it remains RF-off.
 
 ## Timeout scope
 
@@ -170,10 +177,14 @@ that token, a strictly increasing canonical sequence number 1–120 and one of
 `-256`, `0`, `256`. ACK echoes those fields. IDLE echoes the current session and
 last sequence after expiry. Tokens separate runs; they are not authentication.
 
-The Lua source returns Val (-256/0/256), Fsh (0/1024) and Seq. These are returned
+The Lua source returns Val (-256/0/256), Fsh (0/1024), Seq and Hbt. The first three
+output positions and USB wire contract are unchanged. Hbt toggles -1024/+1024
+once per accepted SET, including zero-valued commands and sequence gaps. It
+returns to zero on BEGIN, guard failure or scheduled expiry; rejected traffic
+and ordinary callbacks do not toggle it. These are returned
 values, not calls to channel/model setters. A wrong model name, active/missing RF
 module configuration, getter error or missing serial API resets local state and
-returns three zeros without announcing readiness. All these checks require the
+returns four zeros without announcing readiness. All these checks require the
 script to run. No aircraft or original model file is supplied or modified.
 
 ```sh
