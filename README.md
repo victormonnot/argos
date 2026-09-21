@@ -159,6 +159,10 @@ channel in a copied model with both RF modules disabled and the aircraft
 disconnected. Its script timeout is not a flight failsafe.
 The [native guard bench](docs/edgetx-native-guard-bench.md) adds a radio-side
 stale-output gate and a deliberately held-value fixture, still with RF off.
+The separate [disarmed RF yaw bench](docs/edgetx-rf-yaw-bench.md) checks a small
+fixed yaw sequence received by a USB-connected Betaflight controller, with
+throttle, ARM and crash flip held low in a dedicated radio model. It requires
+removed propellers and no aircraft battery; it is not a flight backend.
 
 Recordings are stored in `~/.local/share/argos/recordings/`, or in
 `$XDG_DATA_HOME/argos/recordings/` when that variable contains an absolute path.
