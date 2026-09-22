@@ -117,6 +117,13 @@ person across the image to inspect left,
 center and right behavior. **Clear** cancels the selection. No radio or flight
 controller USB connection is needed for this preview.
 
+The displayed JPEG keeps its usual bounded display lifetime (at most one second).
+The proposed correction uses the newer server analysis and its stricter 450 ms
+receipt-age limit. A delayed browser state response can temporarily show zero
+while retaining the selection; it does not send a cancellation merely because
+the displayed JPEG arrived later. A server-side stop clears the selection and
+keeps its specific reason visible, even while later images are unavailable.
+
 The error is `2 × (box_center_x − 0.5)`: zero at image center, negative on the
 image's left, positive on its right. Within ±0.035 the proposed output is zero;
 outside it the output is `0.25 × error`, capped at ±0.125 (±12.5% of a normalized
@@ -127,7 +134,7 @@ radio mapping still require a separate disarmed integration test.
 The selection uses server-owned detections paired with the displayed image.
 Only a current detection with confidence at least 0.5 can produce a preview.
 Missing detections, unavailable vision, a source or image-dimension change,
-inconsistent image order, or an image older than 450 ms clear the selected target
+inconsistent image order, or a latest server analysis older than 450 ms clear the selected target
 and zero the output. A returning person does not resume the preview until
 selected again. The age is measured from local camera receipt, not inferred
 sensor exposure time or radio latency; a capture device repeatedly delivering a

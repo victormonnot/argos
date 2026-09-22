@@ -233,7 +233,10 @@
     return Boolean(view?.enabled && !document.hidden && document.body.dataset.view === "observation"
       && visionEnabled && !requestFailure && visionRecent(now) && current.video.state === "recent"
       && frame?.vision && frame.run_id === current.run_id && frame.video_id === current.video.source_id
-      && currentFrameAge(now) <= view.frame_max_age_s);
+      // The displayed JPEG has its own bounded delivery age. Selection is
+      // checked against server history; the newer proposed output separately
+      // retains its stricter 450 ms limit below.
+      && currentFrameAge(now) <= frameLimit());
   }
 
   function invalidateYawPreview(message = "") {
@@ -304,21 +307,43 @@
       && recentImage && matching && view.phase === "tracking" && view.target_id === yawPreviewTarget
       && finite(view.error_x) && finite(view.frame_received_at) && view.frame_received_at <= runTime(now) + .05
       && age <= view.frame_max_age_s);
-    if (yawPreviewTarget !== null && !yawPreviewClearing && (!recentImage || (!yawPreviewPending && confirmed && !active))) {
-      void clearYawPreview("Preview stopped: a recent image and selected person are required. Select again to resume.");
+    if (yawPreviewTarget !== null && !yawPreviewClearing) {
+      if (!yawPreviewPending && confirmed && (view.phase !== "tracking" || view.target_id !== yawPreviewTarget)) {
+        // Preserve the server's terminal reason. Posting Clear here would turn
+        // e.g. a lost target or slow analysis into a generic idle snapshot.
+        invalidateYawPreview(`Preview stopped: ${view.detail}`);
+        yawPreviewRevision = view.revision;
+      } else if (!recentImage || (!yawPreviewPending && confirmed && (!matching
+          || !finite(view.error_x) || !finite(view.frame_received_at)
+          || view.frame_received_at > runTime(now) + .05
+          || view.frame_age_s > view.frame_max_age_s))) {
+        const reason = !serviceFresh(now) || requestFailure ? "Service unavailable"
+          : current.video.state !== "recent" ? "Camera image unavailable"
+          : !recentImage ? "Displayed analyzed image unavailable or expired"
+          : !matching ? "Selected person is absent from the displayed image"
+          : "Latest analysis is unavailable or expired";
+        void clearYawPreview(`Preview stopped: ${reason}. Select again to resume.`);
+      }
     }
-    const yaw = active ? view.yaw : 0;
-    element("yaw-preview").dataset.active = String(active);
-    text("yaw-preview-target", active ? `Person #${view.target_id}` : "No active target");
-    text("yaw-preview-error", active ? Math.abs(view.error_x) <= view.deadband ? "Centered" : `${number.format(Math.abs(view.error_x) * 100)}% ${view.error_x < 0 ? "left" : "right"}` : "—");
+    // A state response can lag a still-running server, just as its JPEG can.
+    // Locally projected expiry zeros the suggestion while awaiting a newer
+    // snapshot, without sending an operator cancellation on every poll cycle.
+    const showing = active && yawPreviewTarget !== null;
+    const yaw = showing ? view.yaw : 0;
+    element("yaw-preview").dataset.active = String(showing);
+    text("yaw-preview-target", yawPreviewTarget !== null ? `Person #${yawPreviewTarget}` : "No active target");
+    text("yaw-preview-error", showing ? Math.abs(view.error_x) <= view.deadband ? "Centered" : `${number.format(Math.abs(view.error_x) * 100)}% ${view.error_x < 0 ? "left" : "right"}` : "—");
     text("yaw-preview-value", `${yaw > 0 ? "+" : ""}${number.format(yaw * 100)}%`);
     element("yaw-preview-meter").style.setProperty("--yaw-position", `${50 + (view ? yaw / view.yaw_limit : 0) * 50}%`);
     element("yaw-preview-clear").disabled = yawPreviewTarget === null && !yawPreviewPending;
     let detail = yawPreviewMessage || view?.detail || "";
     if (!visionEnabled) detail = "Enable person detection, then select a person in the image.";
-    else if (!recentImage) detail = "Waiting for a recent analyzed image. Proposed yaw is zero.";
-    else if (!yawPreviewTarget && !yawPreviewMessage) detail = "Select a person in the image to preview horizontal centering.";
-    else if (active) detail = "Latest analysis · image left / right · proposed stick only. Physical turn direction is not verified.";
+    else if (!yawPreviewMessage) {
+      if (!recentImage) detail = "Waiting for a recent analyzed image. Proposed yaw is zero.";
+      else if (!yawPreviewTarget) detail = "Select a person in the image to preview horizontal centering.";
+      else if (showing) detail = "Latest analysis · image left / right · proposed stick only. Physical turn direction is not verified.";
+      else detail = "Person selected. Waiting for a current analysis; proposed yaw is zero.";
+    }
     text("yaw-preview-status", detail);
   }
 
