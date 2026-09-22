@@ -27,6 +27,12 @@
   let visionSelection = { allowed: false, target_id: null, active: false, paused: false };
   let visionStateSignature = "";
   const visionIdentities = new WeakMap();
+  let yawPreviewEpoch = 0;
+  let yawPreviewTarget = null;
+  let yawPreviewPending = false;
+  let yawPreviewClearing = false;
+  let yawPreviewRevision = 0;
+  let yawPreviewMessage = "";
   let stopped = false;
   let mutation = null;
   let stateEpoch = 0;
@@ -201,6 +207,121 @@
     return visionEnabled ? Math.min(current.video.age_limit_s, visionView()?.age_limit_s ?? 1) : current.video.age_limit_s;
   }
 
+  function yawPreviewView(value = current?.yaw_preview) {
+    // Optional preview data never grants control authority or invalidates the
+    // independent camera/telemetry snapshot. Invalid data displays no correction.
+    const nullable = (item, valid) => item === null || valid(item);
+    const count = item => Number.isSafeInteger(item) && item >= 0;
+    const identity = item => typeof item === "string" && item.length > 0 && item.length <= 128;
+    if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.enabled !== "boolean"
+        || !["disabled", "idle", "tracking", "stopped"].includes(value.phase) || !count(value.revision)
+        || typeof value.detail !== "string" || value.detail.length > 1000
+        || !nullable(value.target_id, item => count(item) && item > 0)
+        || ![value.run_id, value.video_id].every(item => nullable(item, identity))
+        || !nullable(value.frame_sequence, count)
+        || ![value.frame_received_at, value.frame_age_s].every(item => nullable(item, age => finite(age) && age >= 0))
+        || !finite(value.frame_max_age_s) || value.frame_max_age_s <= 0 || value.frame_max_age_s > .45
+        || !nullable(value.error_x, error => finite(error) && Math.abs(error) <= 1)
+        || !finite(value.yaw_limit) || value.yaw_limit <= 0 || value.yaw_limit > .125
+        || !finite(value.deadband) || value.deadband < 0 || value.deadband >= 1
+        || !finite(value.yaw) || Math.abs(value.yaw) > value.yaw_limit) return null;
+    return value;
+  }
+
+  function yawImageRecent(now = performance.now()) {
+    const view = yawPreviewView();
+    return Boolean(view?.enabled && !document.hidden && document.body.dataset.view === "observation"
+      && visionEnabled && !requestFailure && visionRecent(now) && current.video.state === "recent"
+      && frame?.vision && frame.run_id === current.run_id && frame.video_id === current.video.source_id
+      && currentFrameAge(now) <= view.frame_max_age_s);
+  }
+
+  function invalidateYawPreview(message = "") {
+    yawPreviewEpoch += 1;
+    yawPreviewTarget = null;
+    yawPreviewPending = false;
+    yawPreviewClearing = false;
+    yawPreviewRevision = 0;
+    yawPreviewMessage = message;
+  }
+
+  async function clearYawPreview(message = "Preview cleared. Select a person to start again.") {
+    if (yawPreviewTarget === null && !yawPreviewPending) return;
+    const context = { run_id: current.run_id, video_id: current.video.source_id };
+    invalidateYawPreview(message);
+    const epoch = yawPreviewEpoch;
+    yawPreviewClearing = true;
+    renderYawPreview(performance.now());
+    renderVisionSelection();
+    try {
+      const body = await postJson("/api/vision/yaw-preview", { action: "clear", ...context });
+      if (epoch !== yawPreviewEpoch) return;
+      const view = yawPreviewView(body.yaw_preview);
+      if (!view) throw new Error("Invalid preview response.");
+      yawPreviewRevision = view.revision;
+    } catch (_error) {
+      if (epoch === yawPreviewEpoch) yawPreviewMessage = "Preview hidden. Clear could not be confirmed; select a person again when the service is available.";
+    } finally {
+      if (epoch === yawPreviewEpoch) { yawPreviewClearing = false; render(); }
+    }
+  }
+
+  async function selectYawPreview(identity) {
+    const view = yawPreviewView();
+    if (!yawImageRecent() || yawPreviewPending || yawPreviewClearing || view.revision < yawPreviewRevision
+        || identity?.run_id !== current.run_id || identity.video_id !== current.video.source_id) return;
+    const epoch = ++yawPreviewEpoch;
+    yawPreviewTarget = identity.track_id;
+    yawPreviewPending = true;
+    yawPreviewMessage = "Selecting person…";
+    render();
+    try {
+      const body = await postJson("/api/vision/yaw-preview", { action: "select", revision: view.revision, ...identity });
+      if (epoch !== yawPreviewEpoch) return;
+      const result = yawPreviewView(body.yaw_preview);
+      if (!result || result.run_id !== identity.run_id || result.video_id !== identity.video_id
+          || result.target_id !== identity.track_id || result.revision <= view.revision) throw new Error("Selection was not confirmed.");
+      yawPreviewRevision = result.revision;
+      yawPreviewMessage = "";
+    } catch (error) {
+      if (epoch === yawPreviewEpoch) { yawPreviewTarget = null; yawPreviewMessage = `Select a recent person again. ${error.message}`; }
+    } finally {
+      if (epoch === yawPreviewEpoch) { yawPreviewPending = false; render(); }
+    }
+  }
+
+  function renderYawPreview(now) {
+    const view = yawPreviewView();
+    element("yaw-preview").hidden = !view?.enabled || document.body.dataset.view !== "observation";
+    const recentImage = yawImageRecent(now);
+    // Age each receipt itself: new HTTP snapshots cannot renew a frozen result.
+    const age = view && finite(view.frame_received_at) && finite(view.frame_age_s)
+      ? Math.max(runTime(now) - view.frame_received_at, view.frame_age_s + (stateTransitMs + Math.max(0, now - lastReceived)) / 1000) : Infinity;
+    const matching = view?.run_id === current?.run_id && view?.video_id === current?.video.source_id
+      && frame?.vision?.detections.some(item => item.track_id === yawPreviewTarget);
+    const confirmed = view && view.revision >= yawPreviewRevision;
+    const active = Boolean(yawPreviewTarget !== null && !yawPreviewPending && !yawPreviewClearing && confirmed
+      && recentImage && matching && view.phase === "tracking" && view.target_id === yawPreviewTarget
+      && finite(view.error_x) && finite(view.frame_received_at) && view.frame_received_at <= runTime(now) + .05
+      && age <= view.frame_max_age_s);
+    if (yawPreviewTarget !== null && !yawPreviewClearing && (!recentImage || (!yawPreviewPending && confirmed && !active))) {
+      void clearYawPreview("Preview stopped: a recent image and selected person are required. Select again to resume.");
+    }
+    const yaw = active ? view.yaw : 0;
+    element("yaw-preview").dataset.active = String(active);
+    text("yaw-preview-target", active ? `Person #${view.target_id}` : "No active target");
+    text("yaw-preview-error", active ? Math.abs(view.error_x) <= view.deadband ? "Centered" : `${number.format(Math.abs(view.error_x) * 100)}% ${view.error_x < 0 ? "left" : "right"}` : "—");
+    text("yaw-preview-value", `${yaw > 0 ? "+" : ""}${number.format(yaw * 100)}%`);
+    element("yaw-preview-meter").style.setProperty("--yaw-position", `${50 + (view ? yaw / view.yaw_limit : 0) * 50}%`);
+    element("yaw-preview-clear").disabled = yawPreviewTarget === null && !yawPreviewPending;
+    let detail = yawPreviewMessage || view?.detail || "";
+    if (!visionEnabled) detail = "Enable person detection, then select a person in the image.";
+    else if (!recentImage) detail = "Waiting for a recent analyzed image. Proposed yaw is zero.";
+    else if (!yawPreviewTarget && !yawPreviewMessage) detail = "Select a person in the image to preview horizontal centering.";
+    else if (active) detail = "Latest analysis · image left / right · proposed stick only. Physical turn direction is not verified.";
+    text("yaw-preview-status", detail);
+  }
+
   function visionResult(header) {
     if (typeof header !== "string" || header.length > 32768) throw new Error("Missing or oversized vision metadata");
     const result = JSON.parse(header);
@@ -266,7 +387,8 @@
           event.preventDefault();
           const identity = event.detail === 0 ? visionIdentities.get(box) : pressedIdentity || visionIdentities.get(box);
           pressedIdentity = null;
-          document.dispatchEvent(new CustomEvent("argos:select-person", { detail: { ...identity } }));
+          if (document.body.dataset.view === "observation") void selectYawPreview(identity);
+          else document.dispatchEvent(new CustomEvent("argos:select-person", { detail: { ...identity } }));
         });
       }
       Object.assign(box.style, { left: `${100 * x}%`, top: `${100 * y}%`, width: `${100 * width}%`, height: `${100 * height}%` });
@@ -280,12 +402,15 @@
 
   function renderVisionSelection() {
     const visible = !element("vision-layer").hidden;
-    const allowed = visible && visionSelection.allowed && document.body.dataset.view === "control";
+    const preview = document.body.dataset.view === "observation";
+    const allowed = visible && (preview ? yawImageRecent() && !yawPreviewPending && !yawPreviewClearing
+      : visionSelection.allowed && document.body.dataset.view === "control");
     for (const box of element("vision-layer").children) {
-      const selected = Number(box.dataset.trackId) === visionSelection.target_id;
+      const selected = Number(box.dataset.trackId) === (preview ? yawPreviewTarget : visionSelection.target_id);
       box.dataset.selectable = String(allowed);
       box.dataset.selected = String(selected);
       box.lastElementChild.hidden = !allowed;
+      box.lastElementChild.setAttribute("aria-label", `Select person #${box.dataset.trackId} for ${preview ? "yaw preview" : "framing"}`);
       box.lastElementChild.setAttribute("aria-pressed", String(selected));
     }
   }
@@ -298,6 +423,7 @@
       && frame?.vision && currentFrameAge(now) <= frameLimit();
     element("vision-layer").hidden = !visible;
     if (visible) layoutVision();
+    renderYawPreview(now);
     renderVisionSelection();
     const visionState = { enabled: visionEnabled, recent: Boolean(visible), run_id: current?.run_id ?? null, video_id: current?.video.source_id ?? null };
     const signature = JSON.stringify(visionState);
@@ -360,6 +486,7 @@
   function acceptState(body, started) {
     if (!validState(body) || !validReception(body.reception) || (body.reconnecting != null && !["video", "mavlink"].includes(body.reconnecting)) || [body.video.source_id, body.telemetry.connection_id].some((id) => id !== undefined && (typeof id !== "string" || !id.length))) throw new Error("Invalid service response");
     const received = performance.now();
+    if (current && (body.run_id !== current.run_id || body.video.source_id !== current.video.source_id)) invalidateYawPreview();
     if (!current && !panelChosen && body.environment === "unconfigured") inspectorPanel = "sources";
     if (!current || body.run_id !== current.run_id) {
       frameEpoch += 1;
@@ -1067,11 +1194,19 @@
   element("focus-button").addEventListener("click", () => focusView(!document.body.classList.contains("focus-mode")));
   element("vision-toggle").addEventListener("change", () => {
     visionEnabled = element("vision-toggle").checked;
+    if (!visionEnabled) void clearYawPreview();
     frameEpoch += 1;
     clearFrame();
     imageFailure = "";
     render();
   });
+  element("yaw-preview-clear").addEventListener("click", () => { void clearYawPreview(); });
+  document.addEventListener("argos:workspace-changed", event => {
+    if (event.detail.view !== "observation") void clearYawPreview();
+    renderYawPreview(performance.now());
+    renderVisionSelection();
+  });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) void clearYawPreview(); });
   document.addEventListener("argos:framing-ui", event => {
     visionSelection = event.detail || { allowed: false, target_id: null, active: false, paused: false };
     renderVisionSelection();

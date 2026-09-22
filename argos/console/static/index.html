@@ -156,6 +156,18 @@
             <span id="camera-size"></span>
           </span>
         </div>
+        <section aria-labelledby="yaw-preview-title" class="yaw-preview" hidden id="yaw-preview">
+          <div class="yaw-preview-heading">
+            <h3 id="yaw-preview-title">Yaw preview <span>No commands sent</span></h3>
+            <button aria-label="Clear yaw preview" class="button button-quiet" disabled id="yaw-preview-clear" type="button">Clear</button>
+          </div>
+          <div class="yaw-preview-readout">
+            <span id="yaw-preview-target">No active target</span>
+            <dl><div><dt>Horizontal error</dt><dd id="yaw-preview-error">—</dd></div><div><dt>Proposed stick</dt><dd id="yaw-preview-value">0%</dd></div></dl>
+            <div aria-hidden="true" class="yaw-preview-scale"><span>−12.5%</span><div id="yaw-preview-meter"><i></i></div><span>+12.5%</span></div>
+          </div>
+          <p id="yaw-preview-status" role="status">Enable person detection, then select a person in the image.</p>
+        </section>
         <section aria-label="MAVLink telemetry and measurements" class="measurements">
           <button aria-controls="inspector" aria-expanded="true" class="telemetry-parent" data-panel="telemetry" data-section="link" id="telemetry-button" type="button">
             <span>

@@ -230,6 +230,16 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
         session.start()
         return JSONResponse(snapshot())
 
+    @app.post("/api/vision/yaw-preview")
+    async def yaw_preview(request: Request):
+        values = await mutation_body(request)
+        try:
+            return JSONResponse(session.yaw_preview_request(values))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @app.post("/api/control/{operation}")
     async def flight_control(operation: str, request: Request):
         if operation not in {"claim", "input", "action", "framing"}:

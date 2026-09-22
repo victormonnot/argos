@@ -75,6 +75,10 @@ tested with the chosen hardware. It does not provide a complete onboard video
 link; transport from a real drone must still be selected for its camera and
 radio/network equipment.
 
+Adding a configured person detector makes **Yaw preview** available in
+**Observation**: select a detected person to inspect a bounded horizontal
+correction, without sending commands. See the [preview workflow](vision.md#physical-camera-yaw-preview).
+
 A single worker reads the device and retains the latest image. On shutdown, the
 display is invalidated immediately; only the worker releases the driver. If a
 native driver remains blocked in `read`, the thread may outlast the one-second

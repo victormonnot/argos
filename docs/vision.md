@@ -11,7 +11,9 @@ and processing costs without changing the live configuration.
 
 Detection alone supplies visual observations. The separately enabled
 [visual framing controller](framing.md) can use an explicitly selected detection
-for centering and apparent-size assistance in AltHold. Neither feature holds
+for centering and apparent-size assistance in simulated AltHold. For a physical
+camera, the [horizontal yaw preview](#physical-camera-yaw-preview) displays a
+proposed correction without sending commands. None of these features holds
 position or estimates distance in metres. Short-lived track IDs combine box
 geometry with compact appearance evidence from the analyzed image. They are not
 persistent human identities or long-term re-identification. After occlusion,
@@ -84,9 +86,59 @@ still opens the runway without a person or detector. `--scene person` and
 
 For an already configured camera, add `--vision-model /absolute/path/to/model.onnx`
 and, for S, `--vision-variant s` to `python -m argos.console`. The detector accepts
-the same JPEG camera data from Gazebo or the existing V4L2 receiver. A physical camera/flight trial has not been
-validated. Missing, altered or unsupported model files leave vision unavailable
+the same JPEG camera data from Gazebo or the existing V4L2 receiver. Physical
+assisted flight has not been validated. Missing, altered or unsupported model files leave vision unavailable
 with an explicit status; the application does not download replacements.
+
+## Physical-camera yaw preview
+
+With a real V4L2 camera and a configured detector, **Observation** includes
+**Yaw preview**. It calculates a horizontal correction from a selected person's
+image position. It does not open a radio port, send MAVLink/MSP/RC commands,
+acquire flight control, or require a telemetry connection.
+
+Use the device showing the intended live camera (the device number can change
+after reconnecting). Close other programs using that capture device, then launch
+the console with the already prepared Tiny model:
+
+```sh
+.venv/bin/python -m argos.console \
+  --camera-device /dev/video2 \
+  --vision-model "$HOME/.cache/argos/models/yolox_tiny.onnx" \
+  --vision-variant tiny --vision-threads 2 --port 8080
+```
+
+Open **http://127.0.0.1:8080**, stay in **Observation**, enable **Person detection**,
+and select a person's box. **Yaw preview** shows the horizontal image error and
+the proposed stick percentage from the latest analysis. Image and state requests
+are independent, so this readout can briefly precede the displayed JPEG; both
+must remain fresh and refer to the same source and selected target. Move the
+person across the image to inspect left,
+center and right behavior. **Clear** cancels the selection. No radio or flight
+controller USB connection is needed for this preview.
+
+The error is `2 × (box_center_x − 0.5)`: zero at image center, negative on the
+image's left, positive on its right. Within ±0.035 the proposed output is zero;
+outside it the output is `0.25 × error`, capped at ±0.125 (±12.5% of a normalized
+stick). These are initial preview parameters, not tuned flight gains. The sign
+describes image coordinates; actual aircraft response, camera orientation and
+radio mapping still require a separate disarmed integration test.
+
+The selection uses server-owned detections paired with the displayed image.
+Only a current detection with confidence at least 0.5 can produce a preview.
+Missing detections, unavailable vision, a source or image-dimension change,
+inconsistent image order, or an image older than 450 ms clear the selected target
+and zero the output. A returning person does not resume the preview until
+selected again. The age is measured from local camera receipt, not inferred
+sensor exposure time or radio latency; a capture device repeatedly delivering a
+frozen upstream picture cannot be detected by this timestamp check alone.
+
+Turning detection off or leaving Observation clears the browser's preview.
+The browser also hides corrections when the displayed analyzed image or service
+state expires. Repeated state reads do not refresh the camera receipt time.
+This feature previews horizontal centering only; it does not maintain altitude,
+distance or position, and it is separate from the fixed-pattern
+[disarmed RF yaw bench](edgetx-rf-yaw-bench.md).
 
 ## Model and data flow
 

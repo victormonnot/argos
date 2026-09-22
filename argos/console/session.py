@@ -19,6 +19,7 @@ from .status import StatusTexts, system_status_view
 from .video import DeviceCamera, GazeboCamera, VideoStore
 from .views import battery_view, mode_view, reception_view, safe_text
 from .visual_capture import capture_action, capture_visual
+from .yaw_preview import YawPreview
 
 
 class ConsoleSession:
@@ -56,6 +57,8 @@ class ConsoleSession:
         self.messages = LiveMessages()
         self.control = FlightControl(enabled=config.sim_control, framing_enabled=config.sim_framing, system=config.system,
                                      component=config.component)
+        self.yaw_preview = YawPreview(enabled=(config.environment == "real"
+            and config.video_source == "device" and config.vision_model is not None))
 
     def _open_link(self):
         config = self.config
@@ -131,6 +134,7 @@ class ConsoleSession:
         self._event(self.clock(), "info", "Reopening requested: " +
                     ("camera" if source == "video" else "MAVLink link"))
         if source == "video":
+            self.yaw_preview.clear("Camera reopening; select a person again")
             previous, self.camera = self.camera, None
             self.video.stop()
             self.video_source_id = uuid4().hex
@@ -209,6 +213,7 @@ class ConsoleSession:
     async def prepare_replacement(self):
         """Do not bypass the physical reader bound through full source edits."""
         self.control.check_reconfigure()
+        self.yaw_preview.clear("Sources changing; select a person again")
         if not isinstance(self.camera, DeviceCamera):
             return
         if self.reconnecting:
@@ -242,12 +247,14 @@ class ConsoleSession:
                 "run_id": candidate.context[0], "video_id": candidate.context[1],
                 "sequence": candidate.sample.sequence, "received_at": candidate.sample.received_at,
                 "detections": candidate.result["detections"],
+                "width": candidate.result["width"], "height": candidate.result["height"],
             }
         except Exception:
             # Optional perception must not terminate the MAVLink/control task.
             # Unavailable observations trigger the normal manual-takeover path.
             observation = None
         self.control.framing.observe(observation)
+        self.yaw_preview.observe(observation, self.clock())
 
     def tick(self):
         if self._closed:
@@ -324,6 +331,7 @@ class ConsoleSession:
             "environment": self.config.environment,
             "configuration": self.config.public(), "recording": self.recorder.snapshot(),
             "control": self.control.state(now),
+            "yaw_preview": self.yaw_preview.state(now),
             "video": video, "reconnecting": self.reconnecting,
             "reception": self.incidents.snapshot(),
             "telemetry": {
@@ -368,6 +376,44 @@ class ConsoleSession:
         capture_action(self, operation, values, status="accepted")
         return result
 
+    def yaw_preview_request(self, values):
+        """Select image measurements without acquiring or using flight authority."""
+        if not isinstance(values, dict):
+            raise ValueError("This action requires a JSON object")
+        action = values.get("action")
+        if not isinstance(action, str) or action not in {"select", "clear"}:
+            raise ValueError("Unknown yaw-preview action")
+        fields = {"action", "run_id", "video_id"}
+        if action == "select":
+            fields |= {"revision", "frame_sequence", "track_id"}
+        if set(values) != fields:
+            raise ValueError("Invalid yaw-preview fields")
+        if any(not isinstance(values[key], str) or not values[key]
+               or len(values[key]) > 128 for key in ("run_id", "video_id")):
+            raise ValueError("Invalid image source identity")
+        if action == "select":
+            for key, minimum in (("revision", 0), ("frame_sequence", 0), ("track_id", 1)):
+                if type(values[key]) is not int or not minimum <= values[key] <= 2**53 - 1:
+                    raise ValueError("Invalid selection identity or revision")
+        if (self._closed or not self._started or self.replacing or self.reconnecting == "video"):
+            raise RuntimeError("The camera session is not open")
+        if not self.yaw_preview.state(self.clock())["enabled"]:
+            raise RuntimeError("Yaw preview requires a physical camera and person detector")
+        if (values["run_id"], values["video_id"]) != (self.run_id, self.video_source_id):
+            raise RuntimeError("The selected camera source changed")
+        if action == "clear":
+            self.yaw_preview.clear()
+        else:
+            self._observe_vision(refresh=True)
+            now = self.clock()
+            if self.vision is None:
+                raise RuntimeError("Vision unavailable")
+            # Validate the exact displayed frame against server-owned history;
+            # the client cannot supply geometry, receipt times or output values.
+            self.vision.check_selection(self, values, now)
+            self.yaw_preview.select(values["track_id"], revision=values["revision"], now=now)
+        return {"yaw_preview": self.yaw_preview.state(self.clock())}
+
     def _control_request(self, operation, values):
         if (self._closed or not self._started or self.replacing or self.reconnecting
                 or self.link is None or self._error):
@@ -407,6 +453,7 @@ class ConsoleSession:
     def close(self):
         if not self._closed:
             self.control.close(self.link, self.clock())
+            self.yaw_preview.clear("Session stopped")
             self._closed = True
             self.video.stop()
             try:

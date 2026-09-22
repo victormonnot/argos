@@ -18,6 +18,9 @@ position: the simulated drone can drift without GPS.
 Optional [person detection](docs/vision.md) and [visual framing](docs/framing.md)
 add image observations, Full framing in AltHold and framing with pilot-controlled
 throttle in Stabilize.
+For a physical camera, [Yaw preview](docs/vision.md#physical-camera-yaw-preview)
+shows a bounded horizontal correction for a selected person without sending
+commands to a drone or radio.
 Other experimental perception, guidance and simulation modules are tested
 separately. Onboard autonomy and swarm coordination are research directions,
 not capabilities delivered by this interface.
