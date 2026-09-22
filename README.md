@@ -162,6 +162,9 @@ channel in a copied model with both RF modules disabled and the aircraft
 disconnected. Its script timeout is not a flight failsafe.
 The [native guard bench](docs/edgetx-native-guard-bench.md) adds a radio-side
 stale-output gate and a deliberately held-value fixture, still with RF off.
+The [vision-to-channel bench](docs/edgetx-vision-bench.md) connects a selected
+person in the real-camera Yaw preview to unused CH32 for a finite session, with
+both RF modules OFF and the existing native manual/freshness gate.
 The separate [disarmed RF yaw bench](docs/edgetx-rf-yaw-bench.md) checks a small
 fixed yaw sequence received by a USB-connected Betaflight controller, with
 throttle, ARM and crash flip held low in a dedicated radio model. It requires
