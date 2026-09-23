@@ -10,10 +10,11 @@ async function installVision(page, model) {
     return { raw: image('#aa3333'), vision: image('#3355bb') };
   });
   const mock = { calls: [], video: 'video-vision-1', state: 'recent', configured: true, modelName: 'YOLOX-Tiny', ageLimit: 1, stateAge: 0,
+    videoState: 'recent', videoDetail: '',
     rawSequence: 100, visionSequence: 1, freeze: false, capturedAt: model.clock() - .03, hold: null, malformed: null,
     result: { width: 640, height: 360, inference_ms: 37.4, detections: [{ track_id: 7, box: [.25, .2, .2, .6], confidence: .93 }] } };
   model.modifyState = value => {
-    Object.assign(value.video, { source: 'gazebo', source_id: mock.video, state: 'recent', label: 'Test camera', endpoint: '/test/image',
+    Object.assign(value.video, { source: 'gazebo', source_id: mock.video, state: mock.videoState, detail: mock.videoDetail, label: 'Test camera', endpoint: '/test/image',
       sequence: mock.rawSequence, received_at: value.at - .01, rx_age_s: .01, width: 640, height: 360, age_limit_s: 10 });
     value.vision = { configured: mock.configured, state: mock.state, detail: '', model: mock.modelName, max_hz: 5,
       age_limit_s: mock.ageLimit, frame_age_s: mock.stateAge, inference_ms: 37.4, processed: 1, tracks: 1 };
@@ -43,6 +44,27 @@ async function enabled(page, model) {
   await page.getByRole('checkbox', { name: 'Person detection' }).check();
   await expect(page.locator('.vision-box')).toHaveCount(1);
   return mock;
+}
+
+for (const [state, label, title] of [
+  ['error', 'Error', 'The camera reports an error'],
+  ['stale', 'Stale image', 'The image is no longer updating'],
+  ['reconnecting', 'Reopening', 'Reopening camera…'],
+  ['waiting', 'Waiting', 'Waiting for an image'],
+]) {
+  test(`person detection preserves the camera ${state} diagnosis`, async ({ page, model }) => {
+    const mock = await enabled(page, model);
+    mock.videoState = state;
+    mock.videoDetail = 'USB capture diagnostic from the camera source';
+    await expect(page.locator('#camera-image')).toBeHidden();
+    await expect(page.locator('#video-status')).toHaveText(label);
+    await expect(page.locator('#camera-empty-title')).toHaveText(title);
+    if (state !== 'stale') {
+      await expect(page.locator('#camera-empty-detail')).toHaveText(mock.videoDetail);
+    }
+    await expect(page.locator('#vision-toggle')).toBeChecked();
+    await expect(page.locator('.vision-box')).toHaveCount(0);
+  });
 }
 
 test('detection is optional, off by default, and uses only the paired analyzed frame', async ({ page, model }) => {

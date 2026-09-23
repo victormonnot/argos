@@ -252,6 +252,15 @@ camera invalidates the analyzed frame even if the last inference was recent.
 The UI accounts for receipt age and transfer time; these are not exposure-time
 or radio-latency measurements.
 
+Live camera status and its observation time are read under the same lock. A new
+acquisition arriving during a reader call must not briefly appear to have a
+future receipt and cancel a valid preview. Original image timestamps and the
+450 ms yaw-preview limit remain unchanged. With detection enabled, actual
+camera errors remain visible rather than being replaced by a generic detector
+pending message. A device/driver failure still requires investigating the
+capture connection and explicitly reopening the camera; it does not resume a
+previously stopped target selection.
+
 The model can miss people or detect unrelated shapes, particularly on synthetic
 images, small subjects, unusual poses, occlusion or fast camera motion. This is
 a perception baseline with visible failures, not evidence of reliable outdoor

@@ -3,7 +3,7 @@
 from dataclasses import FrozenInstanceError
 import io
 import sys
-from threading import Event, Thread
+from threading import Event, Thread, get_ident
 from types import SimpleNamespace
 
 import numpy as np
@@ -128,6 +128,58 @@ def test_query_before_receipt_does_not_claim_freshness():
     assert target.snapshot(9.)["state"] == "waiting"
     assert target.snapshot(9.)["rx_age_s"] is None
     assert target.latest(10.) is not None
+
+
+@pytest.mark.parametrize("method", ["read_current", "snapshot_current"])
+def test_live_reader_samples_time_after_a_competing_capture_publication(method):
+    now, clock_calls, result = [10.], [], []
+
+    def clock():
+        clock_calls.append(now[0])
+        return now[0]
+
+    target = VideoStore(source="device", endpoint="/dev/video2", clock=clock)
+    assert accept(target)
+    original_lock, owner, reader_waiting = target._lock, get_ident(), Event()
+
+    class ObservedLock:
+        def __enter__(self):
+            if get_ident() != owner:
+                reader_waiting.set()
+            return original_lock.__enter__()
+
+        def __exit__(self, *args):
+            return original_lock.__exit__(*args)
+
+    target._lock = ObservedLock()
+    worker = Thread(target=lambda: result.append(getattr(target, method)()))
+    with target._lock:
+        worker.start()
+        assert reader_waiting.wait(2.)
+        assert clock_calls == []  # No read time sampled before lock admission.
+        now[0] = 10.001
+        assert accept(target, at=10.001)
+    worker.join(2.)
+    assert not worker.is_alive()
+    at, observed = result[0]
+    assert at == 10.001 and clock_calls == [10.001]
+    if method == "read_current":
+        assert observed.sequence == 2 and observed.received_at == 10.001
+    else:
+        assert observed["state"] == "recent" and observed["received_at"] == 10.001
+    # An explicitly requested historical read remains strict.
+    assert target.latest(10.) is None
+    assert target.snapshot(10.)["state"] == "waiting"
+
+
+def test_live_reader_does_not_clamp_a_genuinely_future_receipt_to_current_time():
+    target = store()
+    assert accept(target, at=10.001)
+    at, sample = target.read_current()
+    assert at == 10. and sample is None
+    at, state = target.snapshot_current()
+    assert at == 10. and state["state"] == "waiting"
+    assert state["received_at"] == 10.001 and state["rx_age_s"] is None
 
 
 def test_jpeg_conversion_does_not_block_reads_or_refresh_old_image(monkeypatch):

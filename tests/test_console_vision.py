@@ -12,12 +12,17 @@ from argos.console.vision import VisionService, INFERENCE_TIMEOUT, START_TIMEOUT
 
 
 class Camera:
-    def __init__(self):
+    def __init__(self, clock=lambda: 0.):
         self.sample = VideoSample(b"original", 1, 0.)
         self.failed = False
+        self.clock = clock
 
     def latest(self, now):
         return None if self.failed or now - self.sample.received_at > 1 else self.sample
+
+    def read_current(self):
+        now = self.clock()
+        return now, self.latest(now)
 
 
 class Process:
@@ -62,7 +67,7 @@ class Context:
 @pytest.fixture
 def runtime():
     now = [0.]
-    session = SimpleNamespace(run_id="run-a", video_source_id="video-a", video=Camera(),
+    session = SimpleNamespace(run_id="run-a", video_source_id="video-a", video=Camera(lambda: now[0]),
                               config=ConsoleConfig(), clock=lambda: now[0])
     vision = VisionService(Path("model.onnx"), wall_clock=lambda: now[0], process_context=Context())
     vision.start()

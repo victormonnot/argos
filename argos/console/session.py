@@ -290,7 +290,8 @@ class ConsoleSession:
             self.control.tick(None, now)
         if self._error and self.recorder.active and not self.recorder._visual_enabled:
             self.recorder.stop(now, reason="transport_error", detail=self._error)
-        snapshot = self.state(now)
+        snapshot = self.state()
+        now = snapshot["at"]
         video, telemetry = snapshot["video"], snapshot["telemetry"]
         for event in self.incidents.update(now, video, telemetry):
             self._event(event["at"], event["level"], event["message"])
@@ -301,7 +302,13 @@ class ConsoleSession:
         capture_visual(self, self.clock())
 
     def state(self, now=None):
-        now = self.clock() if now is None else now
+        if now is None:
+            # Sample the live camera and time atomically before constructing
+            # the remaining snapshot. Its receipt can never exceed `at` due to
+            # an acquisition thread publishing between a clock and frame read.
+            now, video = self.video.snapshot_current()
+        else:
+            video = self.video.snapshot(now)
         snapshot = self.cache.snapshot(now)
         health = self.health.snapshot(now)
         views = {}
@@ -322,7 +329,6 @@ class ConsoleSession:
         else:
             state, detail = "waiting", "Waiting for telemetry from the selected component"
         report = self._report
-        video = self.video.snapshot(now)
         video["source_id"] = self.video_source_id
         if self.reconnecting == "video":
             video.update(state="reconnecting", detail="Reopening camera")

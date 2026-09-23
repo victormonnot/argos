@@ -157,7 +157,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
 
     @app.get("/api/frame.jpg")
     async def frame():
-        sample = session.video.latest(session.clock())
+        _, sample = session.video.read_current()
         if sample is None:
             return JSONResponse({"detail": "No recent image available"}, status_code=503)
         return Response(sample.jpeg, media_type="image/jpeg", headers={
@@ -274,7 +274,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
             raise HTTPException(422, "Use an optional include_visual boolean")
         include_visual = values.get("include_visual", False)
         telemetry_ready = session.config.has_telemetry and session.link is not None and not session._error
-        video_ready = include_visual and session.video.latest(session.clock()) is not None
+        video_ready = include_visual and session.video.read_current()[1] is not None
         if (not (telemetry_ready or video_ready) or session._closed
                 or session.recorder.active or session.replacing or session.reconnecting == "mavlink"
                 or session.recorder.visual.snapshot()["state"] == "finalizing"):

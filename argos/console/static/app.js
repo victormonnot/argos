@@ -1067,7 +1067,10 @@
       videoLabel = "Waiting for image";
       emptyDetail = imageFailure || "The service receives images. The console is waiting for a decodable image.";
     }
-    if (visionEnabled && !visible) {
+    // A detector cannot produce a result while its camera is unavailable.
+    // Keep the source's error/recovery diagnosis visible instead of replacing
+    // it with a generic detection message whenever detection is enabled.
+    if (visionEnabled && !visible && video.state === "recent") {
       videoLabel = "Detection image pending";
       emptyTitle = "Waiting for a recent analyzed image";
       emptyDetail = imageFailure || visionView()?.detail || "Person detection must produce a recent image before boxes can be shown. Turn detection off to return to the camera stream.";

@@ -132,7 +132,7 @@ class VisionService:
         if self.model_path is None or self._closed or self._error or self._process is None:
             return
         wall_now = self.wall_clock()
-        now = session.clock()
+        now, camera_sample = session.video.read_current()
         try:
             # At most one queued response: drain bounded work, never await DNN.
             kind, value = self._outgoing.get_nowait()
@@ -153,7 +153,7 @@ class VisionService:
                 self._pending = None
                 if (candidate.context == self._context
                         and 0 <= now - candidate.sample.received_at <= self._age_limit(session)
-                        and session.video.latest(now) is not None):
+                        and camera_sample is not None):
                     try:
                         result = self._validate_result(result)
                         if not isinstance(appearances, list) or len(appearances) != len(result["detections"]):
@@ -185,7 +185,7 @@ class VisionService:
             return
         if self._last_submit is not None and wall_now - self._last_submit < 1 / MAX_HZ:
             return
-        sample = session.video.latest(now)
+        sample = camera_sample
         if (sample is None or sample.sequence == self._last_sequence
                 or (self._frame is not None and self._frame.context == self._context
                     and sample.received_at <= self._frame.sample.received_at)):
@@ -231,12 +231,15 @@ class VisionService:
         return min(AGE_LIMIT, session.config.video_age)
 
     def frame(self, session):
-        now = session.clock()
+        # Capture timestamp and camera availability under the same store lock.
+        # A producer publishing just after an earlier caller timestamp must not
+        # make the current camera briefly appear to come from the future.
+        now, camera_sample = session.video.read_current()
         candidate = self._frame
         if (self._closed or self._error or candidate is None
                 or candidate.context != self._identity(session)
                 or not 0 <= now - candidate.sample.received_at <= self._age_limit(session)
-                or session.video.latest(now) is None):
+                or camera_sample is None):
             return None
         return candidate
 

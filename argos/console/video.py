@@ -199,6 +199,23 @@ class VideoStore:
         with self._lock:
             return self._sample if self._status(now)[0] == "recent" else None
 
+    def read_current(self) -> tuple[float, VideoSample | None]:
+        """Observe the live sample and its read time in one reader section.
+
+        Capture can publish while a caller waits for this lock. Sampling time
+        after acquiring it prevents a genuinely new image appearing to come
+        from the future; explicit-time readers retain their strict semantics.
+        """
+        with self._lock:
+            now = _time(self.clock())
+            return now, self.latest(now)
+
+    def snapshot_current(self) -> tuple[float, dict]:
+        """Snapshot live status against time sampled while holding its lock."""
+        with self._lock:
+            now = _time(self.clock())
+            return now, self.snapshot(now)
+
     def latest_with_dimensions(self, now: float):
         """Keep a recorded JPEG and its dimensions from the same acquisition."""
         now = _time(now)
