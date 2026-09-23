@@ -72,8 +72,15 @@ def _recent_age(value, limit, name):
     age = _number(value, name)
     bound = _number(limit, f"{name} limit")
     if bound <= 0 or age > min(bound, MAX_FRAME_AGE):
-        raise PreviewError(f"Stale {name}")
+        raise PreviewError(f"Stale {name}: {age:.3f} s (limit {min(bound, MAX_FRAME_AGE):.3f} s)")
     return age
+
+
+def _status_detail(section):
+    """Bound untrusted status text and keep terminal output on one line."""
+    return ", ".join(f"{key}={json.dumps(section[key][:160], ensure_ascii=True)}"
+                     for key in ("state", "phase", "detail")
+                     if isinstance(section.get(key), str))
 
 
 class PreviewValidator:
@@ -115,17 +122,21 @@ class PreviewValidator:
         vision = _object(state["vision"], "vision state")
         preview = _object(state["yaw_preview"], "yaw preview")
         if (state["environment"] != "real" or config["environment"] != "real"
-                or config["video_source"] != "device" or video["source"] != "device"
-                or video["state"] != "recent" or state.get("reconnecting") is not None):
+                or config["video_source"] != "device" or video["source"] != "device"):
             raise PreviewError("A recent physical camera in the real environment is required")
+        if state.get("reconnecting") is not None:
+            raise PreviewError("A console source is reopening; wait for it before starting the bench")
+        if video["state"] != "recent":
+            raise PreviewError(f"Camera unavailable: {_status_detail(video)}")
         endpoint = config["video_endpoint"]
         if (not isinstance(endpoint, str) or not re.fullmatch(r"/dev/video[0-9]+", endpoint)
                 or video["endpoint"] != endpoint):
             raise PreviewError("Physical camera identity does not match")
         if vision["configured"] is not True or vision["state"] != "recent":
-            raise PreviewError("Recent person detection is required")
+            raise PreviewError(f"Recent person detection is required: {_status_detail(vision)}")
         if preview["enabled"] is not True or preview["phase"] != "tracking":
-            raise PreviewError("Select a person in Yaw preview before starting the bench")
+            raise PreviewError("Select a person in Yaw preview before starting the bench: "
+                               + _status_detail(preview))
 
         at = _number(state["at"], "server snapshot time")
         if self._server_at is not None and at <= self._server_at:

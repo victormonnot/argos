@@ -21,7 +21,8 @@ connection or Betaflight readout is used. This is a separate setup from the
 by USB and must not be run with a battery.
 
 1. Duplicate the verified **ARGOS USB** model, including its CH32 mixes and
-   logical switches, into a new model named exactly **ARGOS VISION**.
+   logical switches, into a new model named exactly **ARGOS VIS**.
+   Use this short name, which fits the Pocket's model-name field.
    Select this copy. Keep **Internal RF = OFF** and **External RF = OFF**.
    Do not copy ARGOS RF: that profile uses a flight channel instead of CH32.
 2. With the powered radio connected in USB Storage mode, copy
@@ -93,6 +94,14 @@ The default duration is 20 seconds; the accepted range is 1–30 seconds. The
 helper establishes a new ArgVis session and sends bounded values at up to
 10 Hz, using the console's existing detections. There is no automatic retry,
 reconnection or session restart.
+
+If the greeting times out, check the exact short model name **ARGOS VIS**,
+ArgVis in LUA1, both RF modules OFF, and USB-VCP/USB Serial settings. An older
+ArgVis script requiring `ARGOS VISION` must be replaced on the SD card; renaming
+the model alone will not change that script's guard. Camera, detector and preview
+failures include their reported state/detail in the helper's error message.
+Stabilize the live preview before retrying; racing from a click to the terminal
+does not repair a disappearing camera.
 
 During the run:
 

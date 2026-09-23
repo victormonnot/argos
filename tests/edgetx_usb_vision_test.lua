@@ -40,7 +40,7 @@ local function radio(options)
   options = options or {}
   local state = {
     now = options.now or 0, input = "", writes = {}, reads = 0,
-    name = options.name or "ARGOS VISION", moduleTypes = {0, 0},
+    name = options.name or "ARGOS VIS", moduleTypes = {0, 0},
     modelReads = 0, moduleReads = {0, 0}, infoMissing = false,
     moduleMissing = {}, infoError = false, moduleError = {},
     missingRead = false, missingWrite = false, readError = false, writeError = false,
@@ -185,8 +185,13 @@ test("cold radio greets every 50 ticks with four neutral named outputs", functio
   equal(r.moduleReads[2], 3)
 end)
 
-test("only the exact ARGOS VISION model with both RF modules OFF is permitted", function()
-  for _, name in ipairs({"ARGOS USB", "ARGOS RF", "argos vision", "ARGOS VISION "}) do
+test("only the exact ARGOS VIS model with both RF modules OFF is permitted", function()
+  local accepted = radio({name = "ARGOS VIS"})
+  accepted:begin()
+  accepted:set(1, 128)
+  accepted:expect(128, 1024, 1)
+  for _, name in ipairs({"ARGOS USB", "ARGOS RF", "ARGOS VISION", "argos vis",
+      "ARGOS VIS ", " ARGOS VIS", "ARGOS VI"}) do
     local r = radio({name = name})
     r:step("ARGOS_VISION_BEGIN " .. SESSION .. "\n")
     r:expect(0, 0, 0, 0)
@@ -403,7 +408,7 @@ end)
 
 test("every runtime guard failure clears active output and partial input", function()
   local failures = {
-    {function(r) r.name = "ARGOS RF" end, function(r) r.name = "ARGOS VISION" end},
+    {function(r) r.name = "ARGOS RF" end, function(r) r.name = "ARGOS VIS" end},
     {function(r) r.moduleTypes[1] = 5 end, function(r) r.moduleTypes[1] = 0 end},
     {function(r) r.moduleTypes[2] = 5 end, function(r) r.moduleTypes[2] = 0 end},
     {function(r) r.infoError = true end, function(r) r.infoError = false end},

@@ -1,4 +1,4 @@
--- VISION MIXER BENCH ONLY: copied model "ARGOS VISION", both RF modules OFF.
+-- VISION MIXER BENCH ONLY: copied model "ARGOS VIS", both RF modules OFF.
 -- Install as SCRIPTS/MIXES/ArgVis.lua; Val belongs only on unused CH32 through
 -- the separately configured native gate. This is not an aircraft controller.
 -- Expiry needs run() to execute; neither this timer nor an ACK proves a flight
@@ -25,7 +25,7 @@ local function permitted()
     local info = model.getInfo()
     local internal = model.getModule(0)
     local external = model.getModule(1)
-    return type(info) == "table" and info.name == "ARGOS VISION"
+    return type(info) == "table" and info.name == "ARGOS VIS"
       and type(internal) == "table" and internal.Type == 0
       and type(external) == "table" and external.Type == 0
   end)

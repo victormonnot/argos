@@ -38,6 +38,28 @@ def test_deadline_charges_entire_request_and_value_is_immutable():
         result.value = 128
 
 
+@pytest.mark.parametrize("section,updates,expected", [
+    ("video", {"state": "error", "detail": "V4L2 read failed"}, "V4L2 read failed"),
+    ("vision", {"state": "error", "detail": "Vision inference timed out"}, "Vision inference timed out"),
+    ("yaw_preview", {"phase": "stopped", "detail": "Selected target image is stale"},
+     "Selected target image is stale"),
+])
+def test_operator_receives_actual_stop_reason(section, updates, expected):
+    state = snapshot()
+    state[section].update(updates)
+    with pytest.raises(source.PreviewError, match=expected):
+        source.PreviewValidator().validate(state, 100., 100.01)
+
+
+def test_status_detail_is_bounded_and_cannot_inject_terminal_lines():
+    state = snapshot()
+    state["video"].update(state="error", detail="USB\n\x1b[31m" + "x" * 1000)
+    with pytest.raises(source.PreviewError) as error:
+        source.PreviewValidator().validate(state, 100., 100.01)
+    assert len(str(error.value)) < 260
+    assert "\n" not in str(error.value) and "\x1b" not in str(error.value)
+
+
 @pytest.mark.parametrize(("yaw", "expected"), [(-.125, -128), (0., 0), (.125, 128)])
 def test_normalized_yaw_conversion(yaw, expected):
     state = snapshot()

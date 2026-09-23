@@ -236,7 +236,7 @@ def main(argv=None):
         parser.error("--duration must be between 1 and 30")
     port = source = None
     try:
-        print("Vision-to-CH32 bench only. Use ARGOS VISION, both RF modules OFF, "
+        print("Vision-to-CH32 bench only. Use ARGOS VIS, both RF modules OFF, "
               "ArgVis in LUA1, the verified native gate, USB-VCP = Lua and USB Serial. "
               "Select a person in the local ARGOS Yaw preview first. "
               "Any aircraft supplying video must be disarmed with propellers removed.", flush=True)
