@@ -132,6 +132,42 @@ def test_wrong_peer_never_gets_any_bytes(greeting):
     assert not radio.writes and bench.failed
 
 
+@pytest.mark.parametrize("chunked", [False, True])
+def test_repeated_periodic_greetings_are_accepted_throughout_session(chunked):
+    hello = bridge.HELLO + b"\n"
+    bench, radio, clock = make(hello * 3)
+    if chunked:
+        radio.chunks = deque([hello[:9], hello[9:] + hello, hello])
+    radio.transform = lambda reply: hello * 2 + reply + hello * 2
+    bench.connect()
+    bench.send(proposal(clock))
+    # An already queued periodic greeting may precede the final expiry report.
+    radio.chunks.append(hello * 3)
+    bench.finish()
+    assert bench.ready and bench.finished and not bench.failed
+    assert len(radio.writes) == 2
+
+
+@pytest.mark.parametrize("response", [
+    b"ARGOS_USB_VISION_BENCH_V1x\n",
+    b"ARGOS_USB_VISION_BENCH_V1 \n",
+    b"ARGOS_VISION_READY 1234abcd\n",
+])
+def test_valid_greeting_does_not_hide_invalid_trailing_line(response):
+    bench, radio, _ = make(bridge.HELLO + b"\n" + response)
+    with pytest.raises(bridge.ProbeError, match="unexpected"):
+        bench.connect()
+    assert bench.failed and radio.writes == []
+
+
+def test_duplicate_ready_is_terminal_even_with_periodic_greetings():
+    bench, radio, _ = make()
+    radio.transform = lambda reply: reply + bridge.HELLO + b"\n" + reply
+    with pytest.raises(bridge.ProbeError, match="unexpected"):
+        bench.connect()
+    assert bench.failed and len(radio.writes) == 1
+
+
 @pytest.mark.parametrize("fail_at,writes", [(1, 0), (2, 1), (4, 3)])
 def test_source_failure_stops_without_cleanup_or_restart(fail_at, writes):
     bench, radio, clock = make()
@@ -163,6 +199,28 @@ def test_invalid_or_close_deadline_sends_nothing(deadline):
     with pytest.raises(bridge.ProbeError):
         bench.send(replace(proposal(clock), deadline=deadline))
     assert len(radio.writes) == 1 and bench.failed
+
+
+@pytest.mark.parametrize("image_remaining,session_remaining,limiting", [
+    (.035, 30., "image"),
+    (.4, .035, "session"),
+    (-.025, 30., "image"),
+])
+def test_close_deadline_identifies_limiting_budget_and_pending_command(
+        image_remaining, session_remaining, limiting):
+    bench, radio, clock = make()
+    bench.connect()
+    bench.session_deadline = clock.now + session_remaining
+    pending = replace(proposal(clock, lifetime=image_remaining), frame_sequence=42)
+    with pytest.raises(bridge.ProbeError) as caught:
+        bench.send(pending)
+    detail = str(caught.value)
+    assert detail.startswith(f"{limiting} deadline too close for another command")
+    assert "command 1, frame 42" in detail
+    assert f"image remaining {image_remaining * 1000:.1f} ms" in detail
+    assert f"session remaining {session_remaining * 1000:.1f} ms" in detail
+    assert "minimum command budget 40.0 ms" in detail
+    assert bench.failed and len(radio.writes) == 1
 
 
 def test_short_remaining_image_lifetime_becomes_short_radio_ttl():

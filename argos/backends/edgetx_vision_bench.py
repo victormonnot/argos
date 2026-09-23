@@ -73,7 +73,9 @@ class VisionBench:
             for line in lines:
                 if line == expected and not found:
                     found = True
-                elif line == HELLO and expected != HELLO:
+                elif line == HELLO:
+                    # Periodic greetings can be coalesced in the same USB
+                    # read, including while waiting for the first greeting.
                     continue
                 elif line and (expected != HELLO or line.startswith(b"ARGOS_")):
                     raise ProbeError(f"unexpected vision-bench response: {line!r}")
@@ -152,7 +154,14 @@ class VisionBench:
             # Repeated analysis can never acquire a new image-age deadline.
             ttl = min(20, math.floor((remaining - WRITE_TIMEOUT - TICK) / TICK))
             if ttl < 1:
-                raise ProbeError("preview/session deadline too close for another command")
+                limiting = "image" if proposal.deadline <= self.session_deadline else "session"
+                raise ProbeError(
+                    f"{limiting} deadline too close for another command "
+                    f"(command {self.next_sequence}, frame {proposal.frame_sequence}; "
+                    f"image remaining {(proposal.deadline - now) * 1000:.1f} ms, "
+                    f"session remaining {(self.session_deadline - now) * 1000:.1f} ms; "
+                    f"minimum command budget {(WRITE_TIMEOUT + 2 * TICK) * 1000:.1f} ms)"
+                )
             sequence = self.next_sequence
             # Keep the last clock observation and deadline checks beside the
             # actual SET write; a generic writer must not obtain a later clock

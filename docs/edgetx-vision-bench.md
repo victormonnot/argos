@@ -95,6 +95,12 @@ helper establishes a new ArgVis session and sends bounded values at up to
 10 Hz, using the console's existing detections. There is no automatic retry,
 reconnection or session restart.
 
+Keep the ARGOS browser page visible beside the helper terminal. Minimizing the
+browser or changing its tab clears the preview selection; merely focusing a
+separate terminal does not. Updating or extracting this standalone helper does
+not update the running console. Apply the corresponding console changes, restart
+its server and reload its page before retesting a console fix.
+
 If the greeting times out, check the exact short model name **ARGOS VIS**,
 ArgVis in LUA1, both RF modules OFF, and USB-VCP/USB Serial settings. An older
 ArgVis script requiring `ARGOS VISION` must be replaced on the SD card; renaming
@@ -102,6 +108,10 @@ the model alone will not change that script's guard. Camera, detector and previe
 failures include their reported state/detail in the helper's error message.
 Stabilize the live preview before retrying; racing from a click to the terminal
 does not repair a disappearing camera.
+The periodic `ARGOS_USB_VISION_BENCH_V1` greeting can appear several times in one
+USB read. It is normal, including before the handshake. Deadline failures report
+the limiting image/session time and remaining command budget; they do not imply
+that another radio handshake or a faster click can make the analysis newer.
 
 During the run:
 
