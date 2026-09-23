@@ -119,6 +119,33 @@ def test_clear_fences_late_selection_and_is_independent_of_image_availability(pr
     assert f["session"].state()["yaw_preview"]["target_id"] is None
 
 
+def test_selection_consumes_ready_analysis_before_expiring_previous_frame(preview):
+    f = preview
+    assert f["select"]().status_code == 200
+    request = f["body"]()
+    # The last observed frame expires while a newer result is already queued.
+    # The request must consume it before making any expiry/revision decision.
+    f["now"][0] = .6
+    f["vision"].tick = lambda session: f["observe"](at=.55)
+    result = f["client"].post(PATH, json=request, headers=ORIGIN)
+    assert result.status_code == 200
+    state = result.json()["yaw_preview"]
+    assert state["phase"] == "tracking" and state["target_id"] == 1
+    assert state["frame_received_at"] == .55
+
+
+def test_ready_analysis_cannot_revive_an_already_observed_stop(preview):
+    f = preview
+    assert f["select"]().status_code == 200
+    request = f["body"]()
+    f["now"][0] = .6
+    assert f["session"].state()["yaw_preview"]["phase"] == "stopped"
+    f["vision"].tick = lambda session: f["observe"](at=.55)
+    result = f["client"].post(PATH, json=request, headers=ORIGIN)
+    assert result.status_code == 409
+    assert f["session"].state()["yaw_preview"]["phase"] == "stopped"
+
+
 @pytest.mark.parametrize("changes", [
     {"run_id": "old"}, {"video_id": "old"}, {"frame_sequence": 9876}, {"track_id": 12},
 ])

@@ -403,7 +403,10 @@ class ConsoleSession:
                     raise ValueError("Invalid selection identity or revision")
         if (self._closed or not self._started or self.replacing or self.reconnecting == "video"):
             raise RuntimeError("The camera session is not open")
-        if not self.yaw_preview.state(self.clock())["enabled"]:
+        # Checking capability must not expire the preceding frame before the
+        # bounded worker refresh below can consume an already completed image.
+        # A stop observed earlier still has its revision and remains latched.
+        if not self.yaw_preview.enabled:
             raise RuntimeError("Yaw preview requires a physical camera and person detector")
         if (values["run_id"], values["video_id"]) != (self.run_id, self.video_source_id):
             raise RuntimeError("The selected camera source changed")

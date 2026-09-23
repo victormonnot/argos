@@ -261,6 +261,12 @@ pending message. A device/driver failure still requires investigating the
 capture connection and explicitly reopening the camera; it does not resume a
 previously stopped target selection.
 
+When selecting a person, the server consumes any completed analysis already
+waiting in the worker queue before checking image expiry and selection revision.
+A capability check must not expire an older frame first and unnecessarily reject
+the click. A stop observed by an earlier request remains latched and cannot be
+revived by a late selection response or a subsequently completed analysis.
+
 The model can miss people or detect unrelated shapes, particularly on synthetic
 images, small subjects, unusual poses, occlusion or fast camera motion. This is
 a perception baseline with visible failures, not evidence of reliable outdoor
