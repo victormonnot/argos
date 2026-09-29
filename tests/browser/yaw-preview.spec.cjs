@@ -13,7 +13,7 @@ async function setup(page, model) {
       frame_max_age_s: .45, error_x: null, yaw: 0, yaw_limit: .125, deadband: .035 } };
   function preview() {
     const result = structuredClone(mock.override || mock.preview);
-    if (result.phase === 'tracking') {
+    if (['tracking', 'paused'].includes(result.phase)) {
       result.frame_received_at = mock.previewFrozen ?? model.clock() - .02;
       result.frame_age_s = model.clock() - result.frame_received_at;
       result.frame_sequence = mock.sequence;
@@ -111,13 +111,12 @@ test('positive limits and the centered deadband remain explicit image-space meas
   await expect(page.locator('#yaw-preview-target')).toHaveText('Person #7');
 });
 
-for (const cause of ['frozen image', 'frozen result', 'service unavailable', 'target missing']) {
+for (const cause of ['frozen image', 'frozen result', 'service unavailable']) {
   test(`${cause} clears the displayed correction and cannot resume without another selection`, async ({ page, model }) => {
     const mock = await setup(page, model); await select(page);
     if (cause === 'frozen image') mock.freeze = true;
     if (cause === 'frozen result') mock.previewFrozen = model.clock() - 1;
     if (cause === 'service unavailable') model.offline = true;
-    if (cause === 'target missing') mock.detections = [];
     await expect(page.locator('#yaw-preview-value')).toHaveText('0%', { timeout: 1800 });
     await expect.poll(() => mock.calls.some(call => call.action === 'clear')).toBe(true);
     mock.freeze = false; mock.previewFrozen = null; model.offline = false;
@@ -128,6 +127,43 @@ for (const cause of ['frozen image', 'frozen result', 'service unavailable', 'ta
     expect(mock.calls.filter(call => call.action === 'select')).toHaveLength(1);
   });
 }
+
+test('brief missing or weak boxes zero the preview without cancelling bounded same-person recovery', async ({ page, model }) => {
+  const mock = await setup(page, model); await select(page);
+  const person = structuredClone(mock.detections[0]);
+  // The independently fetched JPEG can expose the loss before the state does.
+  mock.detections = [];
+  await expect(page.locator('.vision-box')).toHaveCount(0);
+  await expect(page.locator('#yaw-preview-value')).toHaveText('0%');
+  await expect(page.locator('#yaw-preview-target')).toHaveText('Person #7');
+  Object.assign(mock.preview, { phase: 'paused', error_x: null, yaw: 0,
+    recovery_max_gap_s: .7, recovery_deadline_at: model.clock() + .7 });
+  mock.preview.revision += 1;
+  await expect(page.locator('#yaw-preview-status')).toContainText('Person briefly lost');
+  mock.detections = [{ ...person, confidence: .4 }];
+  await expect(page.locator('.vision-box')).toHaveCount(1);
+  await expect(page.locator('#yaw-preview-value')).toHaveText('0%');
+  mock.detections = [person];
+  Object.assign(mock.preview, { phase: 'tracking', error_x: -.4, yaw: -.1, recovery_deadline_at: null });
+  await expect(page.locator('#yaw-preview-value')).toHaveText('-10%');
+  expect(mock.calls.map(call => call.action)).toEqual(['select']);
+});
+
+test('expired pause cannot visually resurrect from delayed state or from another identity', async ({ page, model }) => {
+  const mock = await setup(page, model); await select(page);
+  Object.assign(mock.preview, { phase: 'paused', error_x: null, yaw: 0,
+    recovery_max_gap_s: .7, recovery_deadline_at: model.clock() + .3 });
+  mock.detections[0].track_id = 8;
+  await expect(page.locator('#yaw-preview-value')).toHaveText('0%');
+  await expect(page.locator('#yaw-preview-target')).toHaveText('No active target');
+  await expect(page.locator('#yaw-preview-status')).toContainText('did not return in time');
+  Object.assign(mock.preview, { phase: 'tracking', error_x: -.4, yaw: -.1 });
+  mock.detections[0].track_id = 7;
+  await page.waitForTimeout(250);
+  await expect(page.locator('#yaw-preview-target')).toHaveText('No active target');
+  await expect(page.locator('#yaw-preview-value')).toHaveText('0%');
+  expect(mock.calls.map(call => call.action)).toEqual(['select']);
+});
 
 for (const action of ['detection off', 'leave observation', 'source change']) {
   test(`${action} invalidates a previously selected preview`, async ({ page, model }) => {

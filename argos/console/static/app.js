@@ -214,7 +214,7 @@
     const count = item => Number.isSafeInteger(item) && item >= 0;
     const identity = item => typeof item === "string" && item.length > 0 && item.length <= 128;
     if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.enabled !== "boolean"
-        || !["disabled", "idle", "tracking", "stopped"].includes(value.phase) || !count(value.revision)
+        || !["disabled", "idle", "tracking", "paused", "stopped"].includes(value.phase) || !count(value.revision)
         || typeof value.detail !== "string" || value.detail.length > 1000
         || !nullable(value.target_id, item => count(item) && item > 0)
         || ![value.run_id, value.video_id].every(item => nullable(item, identity))
@@ -225,6 +225,11 @@
         || !finite(value.yaw_limit) || value.yaw_limit <= 0 || value.yaw_limit > .125
         || !finite(value.deadband) || value.deadband < 0 || value.deadband >= 1
         || !finite(value.yaw) || Math.abs(value.yaw) > value.yaw_limit) return null;
+    if (value.phase === "paused" && (value.yaw !== 0 || value.error_x !== null
+        || !count(value.target_id) || value.target_id <= 0
+        || !finite(value.recovery_deadline_at) || value.recovery_deadline_at < 0
+        || !finite(value.recovery_max_gap_s) || value.recovery_max_gap_s <= 0
+        || value.recovery_max_gap_s > .7)) return null;
     return value;
   }
 
@@ -301,26 +306,29 @@
     const age = view && finite(view.frame_received_at) && finite(view.frame_age_s)
       ? Math.max(runTime(now) - view.frame_received_at, view.frame_age_s + (stateTransitMs + Math.max(0, now - lastReceived)) / 1000) : Infinity;
     const matching = view?.run_id === current?.run_id && view?.video_id === current?.video.source_id
-      && frame?.vision?.detections.some(item => item.track_id === yawPreviewTarget);
+      && frame?.vision?.detections.some(item => item.track_id === yawPreviewTarget && item.confidence >= .5);
     const confirmed = view && view.revision >= yawPreviewRevision;
     const active = Boolean(yawPreviewTarget !== null && !yawPreviewPending && !yawPreviewClearing && confirmed
       && recentImage && matching && view.phase === "tracking" && view.target_id === yawPreviewTarget
       && finite(view.error_x) && finite(view.frame_received_at) && view.frame_received_at <= runTime(now) + .05
       && age <= view.frame_max_age_s);
     if (yawPreviewTarget !== null && !yawPreviewClearing) {
-      if (!yawPreviewPending && confirmed && (view.phase !== "tracking" || view.target_id !== yawPreviewTarget)) {
+      if (!yawPreviewPending && confirmed && (!["tracking", "paused"].includes(view.phase) || view.target_id !== yawPreviewTarget)) {
         // Preserve the server's terminal reason. Posting Clear here would turn
         // e.g. a lost target or slow analysis into a generic idle snapshot.
         invalidateYawPreview(`Preview stopped: ${view.detail}`);
         yawPreviewRevision = view.revision;
-      } else if (!recentImage || (!yawPreviewPending && confirmed && (!matching
-          || !finite(view.error_x) || !finite(view.frame_received_at)
+      } else if (!yawPreviewPending && confirmed && view.phase === "paused"
+          && runTime(now) >= view.recovery_deadline_at) {
+        invalidateYawPreview("Preview stopped: Person did not return in time. Select again to resume.");
+        yawPreviewRevision = view.revision;
+      } else if (!recentImage || (!yawPreviewPending && confirmed && (
+          (view.phase === "tracking" && !finite(view.error_x)) || !finite(view.frame_received_at)
           || view.frame_received_at > runTime(now) + .05
           || view.frame_age_s > view.frame_max_age_s))) {
         const reason = !serviceFresh(now) || requestFailure ? "Service unavailable"
           : current.video.state !== "recent" ? "Camera image unavailable"
           : !recentImage ? "Displayed analyzed image unavailable or expired"
-          : !matching ? "Selected person is absent from the displayed image"
           : "Latest analysis is unavailable or expired";
         void clearYawPreview(`Preview stopped: ${reason}. Select again to resume.`);
       }
@@ -328,6 +336,8 @@
     // A state response can lag a still-running server, just as its JPEG can.
     // Locally projected expiry zeros the suggestion while awaiting a newer
     // snapshot, without sending an operator cancellation on every poll cycle.
+    // A JPEG with a missing/weak box can precede the server's paused state.
+    // Hide its correction, but leave the bounded recovery decision to the server.
     const showing = active && yawPreviewTarget !== null;
     const yaw = showing ? view.yaw : 0;
     element("yaw-preview").dataset.active = String(showing);
@@ -341,6 +351,7 @@
     else if (!yawPreviewMessage) {
       if (!recentImage) detail = "Waiting for a recent analyzed image. Proposed yaw is zero.";
       else if (!yawPreviewTarget) detail = "Select a person in the image to preview horizontal centering.";
+      else if (view?.phase === "paused") detail = "Person briefly lost. Proposed yaw is zero; waiting for the same person.";
       else if (showing) detail = "Latest analysis · image left / right · proposed stick only. Physical turn direction is not verified.";
       else detail = "Person selected. Waiting for a current analysis; proposed yaw is zero.";
     }

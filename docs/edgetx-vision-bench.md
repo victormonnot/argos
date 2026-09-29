@@ -101,6 +101,11 @@ helper establishes a new ArgVis session and sends bounded values at up to
 10 Hz, using the console's existing detections. There is no automatic retry,
 reconnection or session restart.
 
+The browser preview can remember a briefly missing person with zero correction.
+This does not resume the bench: entering that pause changes the preview revision,
+so an existing radio session stops even if its HTTP reads miss the pause itself.
+A new bench invocation is required after recovery.
+
 After receiving the expected greeting, the host starts its single BEGIN write
 with an invalid marker line (`#` followed by a newline). This discards any
 unfinished input left in the radio's line parser before the new BEGIN. Appending
@@ -138,6 +143,31 @@ candidate. Validate that rate with passive live timing first. It increases only
 the analysis ceiling, leaving at most one pending image; the bridge still sends
 at most ten values per second and keeps its original expiry rules. A higher
 ceiling cannot eliminate camera, CPU, HTTP or USB delays.
+
+For a measured, steady analysis cadence near ten results per second, an optional
+policy sends each analyzed image at most once:
+
+```sh
+.venv/bin/python -m argos.backends.edgetx_vision_bench \
+  --port /dev/serial/by-id/YOUR_POCKET_DEVICE \
+  --console-port 8080 --duration 20 --new-frames-only
+```
+
+This policy avoids refreshing the output from an aging image just before a new
+analysis arrives. It waits for an initial image that permits the full existing
+200 ms command lifetime, then requires a newer analyzed frame for every command.
+Later commands retain the 140 ms minimum lifetime. Reads begin 10 ms before the
+next permitted send time, with 5 ms polling while waiting for a suitable result;
+a read completed before that time is checked again through a new HTTP request.
+Commands remain limited to ten per second, and all image, session and previous
+command deadlines are checked before writing. A missing result still stops the
+session, with no automatic restart.
+
+The option leaves the default policy unchanged. It is unsuitable when results
+regularly arrive too far apart: even a 200 ms command provides only 170 ms before
+the existing transfer reserve. It also increases HTTP reads, so software replay
+success must be followed by a live RF-off check on the actual computer. No radio
+script or model change is needed to try this host-side option.
 
 Keep the ARGOS browser page visible beside the helper terminal. Minimizing the
 browser or changing its tab clears the preview selection; merely focusing a

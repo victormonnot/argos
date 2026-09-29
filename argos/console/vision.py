@@ -38,9 +38,10 @@ def _worker(model_path, incoming, outgoing, variant="tiny", threads=2):
             if job is None:
                 return
             identifier, jpeg = job
-            result = detector.detect(jpeg)
-            appearances = encoder.encode(jpeg, result["detections"],
-                                         width=result["width"], height=result["height"])
+            image = detector.decode_jpeg(jpeg)
+            result = detector.detect_bgr(image)
+            appearances = encoder.encode_bgr(image, result["detections"],
+                                             width=result["width"], height=result["height"])
             outgoing.put(("result", (identifier, result, appearances)))
     except Exception as exc:
         outgoing.put(("error", f"Vision unavailable: {type(exc).__name__}: {exc}"[:400]))

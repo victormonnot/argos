@@ -523,9 +523,10 @@ def test_rate_and_command_count_are_bounded():
     assert len(radio.writes) == 1
 
 
-def test_max_duration_stops_before_radio_session_ceiling():
+@pytest.mark.parametrize("new_frames_only", [False, True])
+def test_max_duration_stops_before_radio_session_ceiling(new_frames_only):
     bench, radio, clock = make()
-    bridge.run_bridge(Source(clock), bench, 30)
+    bridge.run_bridge(Source(clock), bench, 30, new_frames_only=new_frames_only)
     assert len(radio.writes) <= 301
     assert radio.times[-1] < bench.session_deadline
     assert bench.finished
@@ -547,7 +548,7 @@ def test_cli_always_closes_both_connections(monkeypatch, failure, status):
     source = Source(clock)
     monkeypatch.setattr(bridge, "PreviewSource", lambda **kw: source)
     monkeypatch.setattr(bridge, "open_port", lambda port: radio)
-    def run(*args):
+    def run(*args, **kwargs):
         if failure is not None:
             raise failure
     monkeypatch.setattr(bridge, "run_bridge", run)
@@ -559,3 +560,113 @@ def test_standalone_help_needs_no_installed_argos():
     result = subprocess.run([sys.executable, "argos/backends/edgetx_vision_bench.py", "--help"],
                             capture_output=True, text=True)
     assert result.returncode == 0 and "--console-port" in result.stdout
+    assert "--new-frames-only" in result.stdout
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_cli_new_frames_policy_requires_explicit_option(monkeypatch, enabled):
+    _, radio, clock = make()
+    source = Source(clock)
+    monkeypatch.setattr(bridge, "PreviewSource", lambda **kw: source)
+    monkeypatch.setattr(bridge, "open_port", lambda port: radio)
+    calls = []
+    monkeypatch.setattr(bridge, "run_bridge", lambda *args, **kw: calls.append(kw))
+    arguments = ["--port", "pocket", *(["--new-frames-only"] if enabled else [])]
+    assert bridge.main(arguments) == 0
+    assert calls == [{"new_frames_only": enabled}]
+
+
+def test_new_frames_never_resend_a_frozen_image_or_restart():
+    bench, radio, clock = make()
+    frozen = proposal(clock)
+    source = Source(clock)
+    source.read = lambda: frozen
+    with pytest.raises(bridge.ProbeError, match="command deadline"):
+        bridge.run_bridge(source, bench, 1, new_frames_only=True)
+    assert bench.failed and radio.sequence == 1
+    assert len(radio.writes) == 2
+    assert clock.now < bench.last_expiry
+    assert clock.now < frozen.deadline
+    with pytest.raises(bridge.ProbeError):
+        bench.connect()
+
+
+def test_new_frames_first_command_requires_full_lifetime_with_bounded_wait():
+    bench, radio, clock = make()
+    source = Source(clock)
+    source.read = lambda: proposal(clock, lifetime=.21)
+    started = clock.now
+    with pytest.raises(bridge.ProbeError, match="command deadline"):
+        bridge.run_bridge(source, bench, 2, new_frames_only=True)
+    assert bench.failed and len(radio.writes) == 1
+    assert 1. <= clock.now - started <= 1.01
+
+
+def test_new_frames_rechecks_first_full_lifetime_after_serial_drain():
+    bench, radio, clock = make()
+    source = Source(clock)
+    source.read = lambda: proposal(clock, lifetime=.24)
+    read = radio.read
+    reads = 0
+    def delayed_send_drain(maximum):
+        nonlocal reads
+        reads += 1
+        if reads == 4:  # HELLO, READY, source-wait drain, then SET drain.
+            clock.sleep(.02)
+        return read(maximum)
+    radio.read = delayed_send_drain
+    with pytest.raises(bridge.ProbeError, match="minimum command budget 230.0 ms"):
+        bridge.run_bridge(source, bench, 1, new_frames_only=True)
+    assert bench.failed and len(radio.writes) == 1
+
+
+def test_new_frames_does_not_use_prefetched_proposal_after_source_failure():
+    bench, radio, clock = make()
+    source = Source(clock)
+    # First selection, first SET source, valid pre-slot read, then failure.
+    source.fail_at = 4
+    with pytest.raises(bridge.PreviewError, match="selection cleared"):
+        bridge.run_bridge(source, bench, 1, new_frames_only=True)
+    assert bench.failed and len(radio.writes) == 2
+    assert source.reads == 4
+    assert source.values[-1].frame_sequence > source.values[-2].frame_sequence
+
+
+@pytest.mark.parametrize("delay", [.081, .151, .251])
+def test_new_frames_http_cannot_spend_old_expiry_reserve(delay):
+    bench, radio, clock = make()
+    source = Source(clock)
+    source.delays[3] = delay
+    with pytest.raises(bridge.ProbeError, match="command deadline"):
+        bridge.run_bridge(source, bench, 1, new_frames_only=True)
+    assert bench.failed and len(radio.writes) == 2
+    with pytest.raises(bridge.ProbeError):
+        bench.send(proposal(clock))
+
+
+def test_new_frames_serial_idle_during_wait_is_terminal():
+    bench, radio, clock = make()
+    source = Source(clock)
+    read = radio.read
+    def expired_while_waiting(maximum):
+        if radio.sequence == 1 and clock.now >= radio.times[-1] + .095:
+            return f"ARGOS_VISION_IDLE {bench.session} 1\n".encode()
+        return read(maximum)
+    radio.read = expired_while_waiting
+    with pytest.raises(bridge.ProbeError, match="ARGOS_VISION_IDLE"):
+        bridge.run_bridge(source, bench, 1, new_frames_only=True)
+    assert bench.failed and len(radio.writes) == 2
+
+
+def test_new_frames_late_ack_does_not_emit_another_set():
+    bench, radio, clock = make()
+    source = Source(clock)
+    read = radio.read
+    def delayed_ack(maximum):
+        if radio.chunks and radio.chunks[0].startswith(b"ARGOS_VISION_ACK"):
+            clock.sleep(.2)
+        return read(maximum)
+    radio.read = delayed_ack
+    with pytest.raises(bridge.ProbeError, match="ARGOS_VISION_ACK"):
+        bridge.run_bridge(source, bench, 1, new_frames_only=True)
+    assert bench.failed and len(radio.writes) == 2

@@ -418,18 +418,23 @@ def test_worker_pairs_current_jpeg_boxes_dimensions_and_private_descriptor(monke
     from argos.perception import appearance, yolox
     from argos.console.vision import _worker
     observed = []
+    image = object()
     result = {"width": 640, "height": 480, "inference_ms": 1., "detections": [narrow_person(.3)]}
     class Detector:
         def __init__(self, *args, **kwargs):
             pass
 
-        def detect(self, jpeg):
-            observed.append(("detect", jpeg))
+        def decode_jpeg(self, jpeg):
+            observed.append(("decode", jpeg))
+            return image
+
+        def detect_bgr(self, decoded):
+            observed.append(("detect", decoded))
             return result
 
     class Encoder:
-        def encode(self, jpeg, detections, *, width, height):
-            observed.append(("encode", jpeg, detections, width, height))
+        def encode_bgr(self, decoded, detections, *, width, height):
+            observed.append(("encode", decoded, detections, width, height))
             return [descriptor()]
 
     monkeypatch.setattr(yolox, "YoloXPersonDetector", Detector)
@@ -440,8 +445,67 @@ def test_worker_pairs_current_jpeg_boxes_dimensions_and_private_descriptor(monke
     _worker("model.onnx", incoming, outgoing)
     assert outgoing.get_nowait() == ("ready", None)
     assert outgoing.get_nowait() == ("result", (17, result, [descriptor()]))
-    assert observed == [("detect", b"exact camera image"),
-                        ("encode", b"exact camera image", result["detections"], 640, 480)]
+    assert observed == [("decode", b"exact camera image"), ("detect", image),
+                        ("encode", image, result["detections"], 640, 480)]
+
+
+def test_worker_decodes_jpeg_once_with_identical_detections_and_appearance(monkeypatch):
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    from argos.perception import appearance, yolox
+    from argos.console.vision import _worker
+
+    image = np.full((240, 320, 3), 155, dtype=np.uint8)
+    image[48:120, 80:128] = [45, 60, 200]
+    image[120:192, 80:128] = [100, 45, 30]
+    ok, encoded = cv2.imencode(".jpg", image)
+    assert ok
+    jpeg = encoded.tobytes()
+    rows = sum((416 // stride) ** 2 for stride in (8, 16, 32))
+    output = np.zeros((1, rows, 85), dtype=np.float32)
+    output[0, 0, :2] = np.array([104, 120]) * 1.3 / 8
+    output[0, 0, 2:4] = np.log(np.array([48, 144]) * 1.3 / 8)
+    output[0, 0, 4:6] = [1, .8]
+
+    class Net:
+        def setPreferableBackend(self, _):
+            pass
+
+        def setInput(self, _):
+            pass
+
+        def forward(self):
+            return output
+
+    monkeypatch.setattr(yolox, "read_verified_model", lambda *args, **kwargs: b"test model")
+    monkeypatch.setattr(cv2.dnn, "readNetFromONNX", lambda _: Net())
+    decoder = cv2.imdecode
+    decoded_inputs = []
+
+    def counted_decode(data, flags):
+        decoded_inputs.append(data.tobytes())
+        return decoder(data, flags)
+
+    monkeypatch.setattr(cv2, "imdecode", counted_decode)
+    detector = yolox.YoloXPersonDetector("test.onnx")
+    expected = detector.detect(jpeg)
+    expected_appearance = appearance.AppearanceEncoder().encode(
+        jpeg, expected["detections"], width=320, height=240)
+    assert len(decoded_inputs) == 2
+    assert expected_appearance[0] is not None
+    decoded_inputs.clear()
+
+    incoming, outgoing = Queue(), Queue()
+    incoming.put((17, jpeg))
+    incoming.put(None)
+    _worker("test.onnx", incoming, outgoing)
+    assert outgoing.get_nowait() == ("ready", None)
+    kind, (identifier, result, descriptors) = outgoing.get_nowait()
+    assert kind == "result" and identifier == 17
+    assert result["detections"] == expected["detections"]
+    assert (result["width"], result["height"]) == (320, 240)
+    assert descriptors == expected_appearance
+    assert decoded_inputs == [jpeg]
 
 
 @pytest.mark.parametrize("bad_identifier", [True, 1., 0, -1, "1"])

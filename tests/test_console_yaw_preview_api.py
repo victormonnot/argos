@@ -170,9 +170,8 @@ def test_state_read_delivers_ready_analysis_without_reviving_a_latched_stop(prev
 @pytest.mark.parametrize("at,detections,complete,detail", [
     (.4, None, False, "Selected target image is stale"),
     (.105, None, True, "Selected target image is stale"),
-    (.4, [], True, "Selected person was lost; select a person again"),
 ])
-def test_state_refresh_still_stops_for_missing_stale_or_lost_results(
+def test_state_refresh_still_stops_for_missing_or_stale_results(
         preview, at, detections, complete, detail):
     f = preview
     selected = f["select"]().json()["yaw_preview"]
@@ -260,7 +259,7 @@ def test_selection_requires_same_origin_json(preview):
         headers={**ORIGIN, "content-type": "application/json"}).status_code == 413
 
 
-@pytest.mark.parametrize("change", ["missing", "error", "lost", "dimension", "context"])
+@pytest.mark.parametrize("change", ["missing", "error", "dimension", "context"])
 def test_selected_preview_clears_when_vision_changes(preview, change):
     f = preview
     assert f["select"]().status_code == 200
@@ -277,6 +276,23 @@ def test_selected_preview_clears_when_vision_changes(preview, change):
     f["session"].tick()
     state = f["session"].state()["yaw_preview"]
     assert state["phase"] == "stopped" and state["yaw"] == 0 and state["target_id"] is None
+
+
+def test_fresh_missing_detection_pauses_preview_then_same_track_resumes(preview):
+    f = preview
+    selected = f["select"]().json()["yaw_preview"]
+    f["now"][0] = .3
+    f["observe"](detections=[])
+    paused = f["client"].get("/api/state").json()["yaw_preview"]
+    assert paused["phase"] == "paused" and paused["yaw"] == 0
+    assert paused["error_x"] is None
+    assert (paused["target_id"], paused["revision"]) == (selected["target_id"], selected["revision"] + 1)
+    assert paused["recovery_deadline_at"] == pytest.approx(.8)
+    f["now"][0] = .5
+    f["observe"]()
+    recovered = f["client"].get("/api/state").json()["yaw_preview"]
+    assert recovered["phase"] == "tracking" and recovered["yaw"] > 0
+    assert (recovered["target_id"], recovered["revision"]) == (paused["target_id"], paused["revision"])
 
 
 def test_camera_reconnect_and_source_replacement_drop_preview(preview, monkeypatch):

@@ -5,7 +5,8 @@ import math
 import pytest
 
 from argos.console.yaw_preview import (
-    DEADBAND, FRAME_MAX_AGE, MAX_SAFE_INTEGER, YAW_LIMIT, YawPreview,
+    DEADBAND, FRAME_MAX_AGE, MAX_SAFE_INTEGER, RECOVERY_MAX_GAP, YAW_LIMIT,
+    YawPreview,
 )
 
 
@@ -111,9 +112,10 @@ def test_distinct_fresh_images_update_only_the_selected_identity():
     assert state["revision"] == 1
 
 
-@pytest.mark.parametrize("loss", ["missing", "different", "low_confidence", "unavailable"])
-def test_lost_target_does_not_reacquire_or_jump_to_another_person(loss):
+@pytest.mark.parametrize("loss", ["missing", "different", "low_confidence"])
+def test_short_detection_gap_pauses_at_zero_and_recovers_only_the_same_id(loss):
     preview = selected()
+    revision = preview.revision
     frame = observation(sequence=2, at=1.1)
     if loss == "missing":
         frame["detections"] = []
@@ -121,12 +123,146 @@ def test_lost_target_does_not_reacquire_or_jump_to_another_person(loss):
         frame["detections"][0]["track_id"] = 8
     elif loss == "low_confidence":
         frame["detections"][0]["confidence"] = .499
-    else:
-        frame = None
     preview.observe(frame, now=1.1)
+    state = preview.state(1.1)
+    assert state["phase"] == "paused"
+    assert state["revision"] == revision + 1 and state["target_id"] == 7
+    assert state["yaw"] == 0 and state["error_x"] is None
+    assert state["recovery_deadline_at"] == 1. + RECOVERY_MAX_GAP
+    preview.observe(observation(sequence=3, at=1.2, center=.3), now=1.2)
+    state = preview.state(1.2)
+    assert state["phase"] == "tracking"
+    assert state["revision"] == revision + 1 and state["target_id"] == 7
+    assert state["yaw"] == pytest.approx(-.1)
+    assert state["recovery_deadline_at"] is None
+
+
+def test_missing_image_still_stops_instead_of_pausing_detection_loss():
+    preview = selected()
+    preview.observe(None, now=1.1)
     revision = assert_stopped(preview, 1.1)["revision"]
     preview.observe(observation(sequence=3, at=1.2), now=1.2)
     assert assert_stopped(preview, 1.2)["revision"] == revision
+
+
+@pytest.mark.parametrize("confidence", [0., .499])
+def test_new_weak_images_and_polling_cannot_extend_recovery(confidence):
+    preview = selected()
+    revision = preview.revision
+    for sequence, at in enumerate((1.1, 1.3, 1.5, 1.69), start=2):
+        frame = observation(sequence=sequence, at=at, confidence=confidence)
+        preview.observe(frame, now=at)
+        for now in (at, at + .001):
+            state = preview.state(now)
+            assert state["phase"] == "paused"
+            assert state["recovery_deadline_at"] == 1. + RECOVERY_MAX_GAP
+            assert state["revision"] == revision + 1
+            assert state["yaw"] == 0 and state["error_x"] is None
+    state = assert_stopped(preview, 1. + RECOVERY_MAX_GAP + .001)
+    assert state["revision"] == revision + 2
+    preview.observe(observation(sequence=6, at=1.8), now=1.8)
+    assert assert_stopped(preview, 1.8)["revision"] == revision + 2
+
+
+def test_pause_stays_zero_for_other_people_until_original_selection_expires():
+    preview = selected()
+    for sequence, at in enumerate((1.1, 1.3, 1.5, 1.69), start=2):
+        preview.observe(observation(sequence=sequence, at=at, track_id=8), now=at)
+        state = preview.state(at)
+        assert state["phase"] == "paused" and state["target_id"] == 7
+        assert state["yaw"] == 0 and state["error_x"] is None
+    assert_stopped(preview, 1. + RECOVERY_MAX_GAP + .001)
+
+
+def test_pause_budget_starts_at_last_strong_source_not_detection_or_click_time():
+    preview = YawPreview(True)
+    preview.observe(observation(), now=1.2)
+    preview.select(7, revision=0, now=1.3)
+    frame = observation(sequence=2, at=1.4)
+    frame["detections"] = []
+    preview.observe(frame, now=1.5)
+    assert preview.state(1.5)["recovery_deadline_at"] == 1. + RECOVERY_MAX_GAP
+
+
+def test_successful_recovery_supplies_a_new_bounded_gap():
+    preview = selected()
+    preview.observe(observation(sequence=2, at=1.1, confidence=.49), now=1.1)
+    preview.observe(observation(sequence=3, at=1.2), now=1.3)
+    preview.observe(observation(sequence=4, at=1.4, confidence=.49), now=1.5)
+    state = preview.state(1.5)
+    assert state["recovery_deadline_at"] == 1.2 + RECOVERY_MAX_GAP
+    assert state["revision"] == 3
+
+
+def test_same_identity_with_old_source_time_cannot_resume_paused_output():
+    preview = selected()
+    preview.observe(observation(sequence=2, at=1., confidence=.49), now=1.1)
+    preview.observe(observation(sequence=3, at=1.), now=1.2)
+    state = preview.state(1.2)
+    assert state["phase"] == "paused"
+    assert state["yaw"] == 0 and state["error_x"] is None
+    assert state["recovery_deadline_at"] == 1. + RECOVERY_MAX_GAP
+
+
+@pytest.mark.parametrize("arrival", [1. + RECOVERY_MAX_GAP,
+                                     1. + RECOVERY_MAX_GAP + .001])
+def test_late_delivery_cannot_resume_at_or_after_recovery_deadline(arrival):
+    preview = selected()
+    preview.observe(observation(sequence=2, at=1.2, confidence=.49), now=1.2)
+    preview.observe(observation(sequence=3, at=1.6), now=arrival)
+    assert_stopped(preview, arrival)
+
+
+def test_paused_revision_fences_requests_created_before_detection_gap():
+    preview = selected()
+    selected_revision = preview.revision
+    preview.observe(observation(sequence=2, at=1.1, confidence=.49), now=1.1)
+    preview.observe(observation(sequence=3, at=1.2), now=1.2)
+    with pytest.raises(RuntimeError, match="changed"):
+        preview.select(7, revision=selected_revision, now=1.2)
+    assert preview.state(1.2)["phase"] == "tracking"
+    assert preview.revision == selected_revision + 1
+
+
+def test_pause_stops_when_image_goes_stale_before_detection_recovery_deadline():
+    preview = selected()
+    preview.observe(observation(sequence=2, at=1.1, confidence=.49), now=1.1)
+    state = assert_stopped(preview, 1.1 + FRAME_MAX_AGE + .001)
+    assert state["detail"] == "Selected target image is stale"
+
+
+def test_explicit_clear_during_pause_forbids_automatic_recovery():
+    preview = selected()
+    preview.observe(observation(sequence=2, at=1.1, confidence=.49), now=1.1)
+    preview.clear()
+    preview.observe(observation(sequence=3, at=1.2), now=1.2)
+    state = preview.state(1.2)
+    assert state["phase"] == "idle" and state["target_id"] is None
+    assert state["yaw"] == 0 and state["error_x"] is None
+    assert state["revision"] == 3 and state["recovery_deadline_at"] is None
+
+
+@pytest.mark.parametrize("fault", ["unavailable", "context", "order", "clock", "metadata"])
+def test_image_integrity_failure_during_pause_still_latches_stop(fault):
+    preview = selected()
+    preview.observe(observation(sequence=2, at=1.1, confidence=.49), now=1.1)
+    frame, now = observation(sequence=3, at=1.2), 1.2
+    if fault == "unavailable":
+        frame = None
+    elif fault == "context":
+        frame["video_id"] = "another camera"
+    elif fault == "order":
+        frame["sequence"] = 1
+    elif fault == "clock":
+        now = 1.05
+    else:
+        frame["width"] = 0
+    preview.observe(frame, now=now)
+    revision = assert_stopped(preview, 1.2)["revision"]
+    preview.observe(observation(sequence=4, at=1.3), now=1.3)
+    assert preview.state(1.3)["phase"] == "stopped"
+    assert preview.state(1.3)["yaw"] == 0
+    assert preview.revision >= revision
 
 
 @pytest.mark.parametrize("change,value", [

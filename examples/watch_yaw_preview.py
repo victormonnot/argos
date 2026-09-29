@@ -8,7 +8,7 @@ def watch(seconds=20, *, clock=time.monotonic, sleep=time.sleep):
     started = clock()
     last_signature = None
     last_print = -1.
-    summary = {"samples": 0, "tracking_samples": 0, "stopped_samples": 0,
+    summary = {"samples": 0, "tracking_samples": 0, "paused_samples": 0, "stopped_samples": 0,
                "max_analysis_age_ms": None, "max_turnaround_ms": None,
                "max_result_interval_ms": None}
     print("Read-only preview trace. Keep ARGOS visible beside this terminal, then select a person.", flush=True)
@@ -45,7 +45,7 @@ def watch(seconds=20, *, clock=time.monotonic, sleep=time.sleep):
                 "detail": str(yaw.get("detail", ""))[:240],
             }
             summary["samples"] += 1
-            if result["phase"] in ("tracking", "stopped"):
+            if result["phase"] in ("tracking", "paused", "stopped"):
                 summary[result["phase"] + "_samples"] += 1
             for name in ("analysis_age_ms", "turnaround_ms", "result_interval_ms"):
                 value = result[name]

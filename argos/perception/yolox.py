@@ -119,15 +119,34 @@ class YoloXPersonDetector:
         self._strides = np.concatenate(strides)
 
     def detect(self, jpeg: bytes) -> dict:
+        return self.detect_bgr(self.decode_jpeg(jpeg))
+
+    def decode_jpeg(self, jpeg: bytes):
+        """Decode once for inference and appearance in the same worker."""
         if not isinstance(jpeg, bytes) or not jpeg or len(jpeg) > 16 * 1024 * 1024:
             raise ValueError("vision input must be a nonempty camera JPEG of at most 16 MiB")
         cv2, np = self._cv2, self._np
         image = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
-        if image is None or image.ndim != 3 or image.shape[2] != 3:
+        if (not isinstance(image, np.ndarray) or image.dtype != np.uint8
+                or image.ndim != 3 or image.shape[2] != 3):
             raise ValueError("vision could not decode the camera JPEG")
+        self._validate_bgr(image)
+        return image
+
+    def _validate_bgr(self, image):
+        np = self._np
+        if (not isinstance(image, np.ndarray) or image.dtype != np.uint8
+                or image.ndim != 3 or image.shape[2] != 3):
+            raise ValueError("vision requires a decoded uint8 BGR image")
         height, width = image.shape[:2]
         if not (0 < width <= 4096 and 0 < height <= 4096):
             raise ValueError("vision image dimensions must be between 1 and 4096 pixels")
+        return height, width
+
+    def detect_bgr(self, image) -> dict:
+        """Infer from a decoded BGR image without modifying or retaining it."""
+        height, width = self._validate_bgr(image)
+        cv2, np = self._cv2, self._np
         ratio = min(self._input_size / width, self._input_size / height)
         scaled_width, scaled_height = max(1, int(width * ratio)), max(1, int(height * ratio))
         resized = cv2.resize(image, (scaled_width, scaled_height), interpolation=cv2.INTER_LINEAR)

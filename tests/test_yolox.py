@@ -100,6 +100,27 @@ def test_letterbox_preserves_bgr_range_and_dimensions(detector):
     np.testing.assert_array_equal(blob[0, :, size // 2, 0], [114, 114, 114])
 
 
+def test_decoded_image_path_preserves_detection_and_does_not_modify_input(detector):
+    subject, runtime = detector
+    raw_box(subject, runtime.output, 0, [1, .25, 1, 1], .8)
+    original = runtime.image.copy()
+    expected = subject.detect(b"camera JPEG fixture")
+    image = subject.decode_jpeg(b"camera JPEG fixture")
+    result = subject.detect_bgr(image)
+    assert result["detections"] == expected["detections"]
+    assert (result["width"], result["height"]) == (4, 2)
+    np.testing.assert_array_equal(image, original)
+
+
+@pytest.mark.parametrize("image", [None, b"JPEG", np.zeros((2, 2, 3)),
+    np.zeros((2, 2), dtype=np.uint8), np.zeros((4097, 1, 3), dtype=np.uint8)])
+def test_decoded_image_input_is_validated_before_inference(detector, image):
+    subject, runtime = detector
+    with pytest.raises(ValueError):
+        subject.detect_bgr(image)
+    assert not hasattr(runtime, "input")
+
+
 def test_verified_variant_does_not_accept_another_catalog_model(model_bytes, monkeypatch):
     path, data = model_bytes
     other = b"different verified model"

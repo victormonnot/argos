@@ -30,6 +30,8 @@ MAX_COMMANDS = 300
 MIN_STREAM_TTL = 14  # 100 ms interval + 30 ms write/tick reserve + one 10 ms poll.
 PREVIEW_POLL = .01
 FIRST_FRAME_WAIT = 1.
+NEW_FRAME_LEAD = .01
+NEW_FRAME_POLL = .005
 
 
 def command_ttl(image_deadline, session_deadline, now):
@@ -270,7 +272,50 @@ def fresh_proposal(source: PreviewSource, bench: VisionBench, end: float):
         bench.sleep(min(PREVIEW_POLL, max(0., limit - now)))
 
 
-def run_bridge(source: PreviewSource, bench: VisionBench, duration: int):
+def new_frame_proposal(source: PreviewSource, bench: VisionBench, end: float,
+                       previous_frame: int | None):
+    """Read near the send slot, without renewing output from the same image.
+
+    This optional policy needs a sufficiently steady analysis cadence. It starts
+    with the full existing 200 ms output lifetime, then waits for a newer image
+    before every SET. A slow or frozen detector still terminates the session.
+    Reads begin 10 ms before the legal slot; a proposal read before that slot is
+    replaced by another validated read, never cached across the pacing wait.
+    """
+    bench._require_ready()
+    due = bench._now() if bench.last_sent is None else bench.last_sent + INTERVAL
+    if bench.last_sent is not None:
+        bench.pace(until=min(end, due - NEW_FRAME_LEAD))
+    limit = min(end, bench.session_deadline,
+                bench._now() + FIRST_FRAME_WAIT if bench.last_sent is None else
+                min(bench.last_expiry - WRITE_TIMEOUT - TICK, bench.last_sent + MAX_GAP))
+    required = 20 if previous_frame is None else MIN_STREAM_TTL
+    while True:
+        bench._drain()
+        now = bench._now()
+        if now >= end:
+            return None
+        if now >= limit:
+            raise ProbeError("no new sufficiently fresh analysis before the command deadline; "
+                             "sending stopped, no session restart")
+        proposal = source.read()
+        now = bench._now()
+        if now >= end:
+            return None
+        if now >= limit:
+            raise ProbeError("new analysis arrived after the command deadline; "
+                             "sending stopped, no session restart")
+        newer = previous_frame is None or proposal.frame_sequence > previous_frame
+        if (now >= due and newer
+                and command_ttl(proposal.deadline, bench.session_deadline, now) >= required):
+            return proposal
+        delay = min(NEW_FRAME_POLL, max(0., limit - now))
+        if now < due:
+            delay = min(delay, due - now)
+        bench.sleep(delay)
+
+
+def run_bridge(source: PreviewSource, bench: VisionBench, duration: int, *, new_frames_only=False):
     """Require a selection before BEGIN and fetch it again after the handshake."""
     if type(duration) is not int or not 1 <= duration <= 30:
         raise ProbeError("duration must be an integer from 1 to 30 seconds")
@@ -281,17 +326,26 @@ def run_bridge(source: PreviewSource, bench: VisionBench, duration: int):
         bench.connect()
         print("ArgVis session ready. Waiting for analysis with enough transmission time.",
               flush=True)
+        if new_frames_only:
+            print("New frames only: each analyzed image is sent at most once; "
+                  "waiting starts with a full 200 ms command lifetime.", flush=True)
         # Leave enough room for a final command's write budget at the radio's
         # independent 30 s ceiling. No SET is used to extend that ceiling.
         end = min(bench._now() + duration, bench.session_deadline - .1)
+        previous_frame = None
         while bench._now() < end and bench.next_sequence <= MAX_COMMANDS:
-            bench.pace(until=end)
-            if bench._now() >= end:
-                break
-            proposal = fresh_proposal(source, bench, end)
+            if new_frames_only:
+                proposal = new_frame_proposal(source, bench, end, previous_frame)
+            else:
+                bench.pace(until=end)
+                if bench._now() >= end:
+                    break
+                proposal = fresh_proposal(source, bench, end)
             if proposal is None or bench._now() >= end:
                 break
-            sequence, ttl = bench.send(proposal, min_ttl=MIN_STREAM_TTL)
+            minimum = 20 if new_frames_only and previous_frame is None else MIN_STREAM_TTL
+            sequence, ttl = bench.send(proposal, min_ttl=minimum)
+            previous_frame = proposal.frame_sequence
             if sequence == 1 or sequence % 5 == 0:
                 print(f"ACK {sequence}: CH32 proposal {proposal.value / 1024:+.1%}, "
                       f"frame {proposal.frame_sequence}, TTL {ttl * 10} ms", flush=True)
@@ -310,6 +364,8 @@ def main(argv=None):
     parser.add_argument("--port", required=True, help="explicit Pocket USB serial device")
     parser.add_argument("--console-port", type=int, default=8080, help="local ARGOS HTTP port")
     parser.add_argument("--duration", type=int, default=20, help="1..30 seconds, default 20")
+    parser.add_argument("--new-frames-only", action="store_true",
+                        help="send each analyzed image once; requires a steady analysis cadence")
     args = parser.parse_args(argv)
     if not args.port.strip() or args.port != args.port.strip():
         parser.error("--port must be a nonempty device without surrounding whitespace")
@@ -326,7 +382,7 @@ def main(argv=None):
         source = PreviewSource(port=args.console_port)
         port = open_port(args.port)
         bench = VisionBench(port)
-        run_bridge(source, bench, args.duration)
+        run_bridge(source, bench, args.duration, new_frames_only=args.new_frames_only)
         return 0
     except KeyboardInterrupt:
         print("Vision bench interrupted; sending stopped. Check manual CH32 takeover.",

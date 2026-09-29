@@ -4,6 +4,7 @@ Synthetic clocks include bounded HTTP/USB time and an independently expiring
 radio. These checks establish no physical delivery or scheduling guarantee.
 """
 from collections import deque
+import bisect
 import math
 
 import pytest
@@ -465,3 +466,137 @@ def test_persistently_valid_but_insufficient_lifetime_has_bounded_initial_wait()
     assert bench.failed and radio.values == []
     assert 1. <= clock.now - started <= 1.02
     assert len({value.frame_sequence for value in source.values}) > 2
+
+
+class JitteredDetectorSource(DetectorSource):
+    """Synthetic publications vary independently from capture and HTTP timing."""
+
+    def __init__(self, clock, http_delay):
+        super().__init__(clock, http_delay)
+        intervals = (.09, .12, .10, .145, .11, .10, .105, .13)
+        completion_ages = (.105, .135, .09, .145, .10, .13, .12, .10)
+        self.publications = []
+        published = 99.
+        for index in range(400):
+            published += intervals[index % len(intervals)]
+            self.publications.append((published,
+                published - 90 - completion_ages[index % len(completion_ages)]))
+        self.publication_times = [row[0] for row in self.publications]
+
+    def read(self):
+        started = self.clock.now
+        self.read_times.append(started)
+        self.clock.sleep(self.http_delay / 2)
+        index = bisect.bisect_right(self.publication_times, self.clock.now) - 1
+        assert index >= 0
+        published, received = self.publications[index]
+        at = self.clock.now - 90
+        error = (-.5, 0., .5)[index % 3]
+        snapshot = {
+            "schema_version": 1, "at": at, "run_id": "run", "environment": "real",
+            "reconnecting": None,
+            "configuration": {"environment": "real", "video_source": "device",
+                              "video_endpoint": "/dev/video0"},
+            "video": {"source_id": "camera", "source": "device", "state": "recent",
+                      "endpoint": "/dev/video0", "received_at": at - .005,
+                      "rx_age_s": .005, "age_limit_s": 1.},
+            "vision": {"configured": True, "state": "recent", "frame_age_s": at - received,
+                       "age_limit_s": 1., "inference_ms": (published - 90 - received) * 1000},
+            "yaw_preview": {"enabled": True, "phase": "tracking", "revision": 1,
+                            "target_id": 7, "run_id": "run", "video_id": "camera",
+                            "frame_sequence": index + 1, "frame_received_at": received,
+                            "frame_age_s": at - received, "frame_max_age_s": .45,
+                            "error_x": error, "yaw": error / 4, "yaw_limit": .125},
+        }
+        self.clock.sleep(self.http_delay / 2)
+        proposal = self.validator.validate(snapshot, started, self.clock.now)
+        self.values.append(proposal)
+        return proposal
+
+
+class DelayedAckRadio(TickingRadio):
+    def __init__(self, clock, delay):
+        super().__init__(clock)
+        self.delay = delay
+        self.ack_at = None
+
+    def write(self, packet):
+        result = super().write(packet)
+        if packet.startswith(b"ARGOS_VISION_SET"):
+            self.ack_at = self.clock.now + self.delay
+        return result
+
+    def read(self, size):
+        self.expire()
+        if (self.replies and self.replies[0].startswith(b"ARGOS_VISION_ACK")
+                and self.clock.now < self.ack_at):
+            return b""
+        return super().read(size)
+
+
+@pytest.mark.parametrize("phase", [.001, .03, .07, .11])
+@pytest.mark.parametrize("http_delay,ack_delay", [(.003, .02), (.008, .04), (.015, .08)])
+def test_new_frames_complete_with_jitter_and_independent_radio_expiry(
+        phase, http_delay, ack_delay):
+    clock = Clock(phase)
+    source = JitteredDetectorSource(clock, http_delay)
+    radio = DelayedAckRadio(clock, ack_delay)
+    bench = bridge.VisionBench(radio, clock=clock.read, sleep=clock.sleep)
+
+    bridge.run_bridge(source, bench, 20, new_frames_only=True)
+
+    assert bench.finished and not bench.failed
+    assert radio.expirations == 1 and not radio.active
+    assert 150 <= len(radio.values) <= 200
+    assert radio.values[0][3] == 20
+    assert_guarded_commands(source, radio)
+    sent_frames = [next(value.frame_sequence for read_at, value in
+                       reversed(list(zip(source.read_times, source.values))) if read_at <= sent)
+                   for sent, _, _, _ in radio.values]
+    assert all(after > before for before, after in zip(sent_frames, sent_frames[1:]))
+    assert len(source.read_times) < 700  # No continuous 200 Hz HTTP poller.
+
+
+def test_new_frames_policy_can_still_stop_for_a_slower_detector():
+    # A 200 ms publication gap cannot fit the previous command's 200 ms TTL
+    # with its 30 ms transfer reserve. This mode is explicitly optional.
+    clock = Clock(.1)
+    source = DetectorSource(clock, .003, completion_age=.1, result_period=.2)
+    radio = TickingRadio(clock)
+    bench = bridge.VisionBench(radio, clock=clock.read, sleep=clock.sleep)
+    with pytest.raises(bridge.ProbeError, match="command deadline"):
+        bridge.run_bridge(source, bench, 2, new_frames_only=True)
+    assert bench.failed and radio.values
+    assert_guarded_commands(source, radio)
+    count = len(radio.values)
+    clock.sleep(.3)
+    with pytest.raises(bridge.ProbeError):
+        bench.connect()
+    assert len(radio.values) == count
+
+
+@pytest.mark.parametrize("phase", [.001, .03, .07, .11, .124])
+def test_new_frames_avoids_duplicate_image_ttl_contraction(phase):
+    # Same source/transport as the existing marginal-cadence regression above.
+    # Re-sending an aging result can shorten its TTL, leaving insufficient
+    # transfer reserve for the next result. Sending each result once preserves
+    # a longer lifetime here; slower or more irregular sources can still stop.
+    def setup():
+        clock = Clock(phase)
+        source = DetectorSource(clock, .015, completion_age=.12, result_period=.15)
+        radio = DelayedAckRadio(clock, .04)
+        bench = bridge.VisionBench(radio, clock=clock.read, sleep=clock.sleep)
+        return source, radio, bench
+
+    source, radio, bench = setup()
+    with pytest.raises(bridge.ProbeError, match="command deadline"):
+        bridge.run_bridge(source, bench, 20)
+    assert bench.failed and len(radio.values) < 20
+    assert_guarded_commands(source, radio)
+
+    source, radio, bench = setup()
+    bridge.run_bridge(source, bench, 20, new_frames_only=True)
+    assert bench.finished and not bench.failed
+    assert 130 <= len(radio.values) <= 135
+    assert radio.expirations == 1 and not radio.active
+    assert_guarded_commands(source, radio)

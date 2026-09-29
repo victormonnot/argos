@@ -133,12 +133,23 @@ radio mapping still require a separate disarmed integration test.
 
 The selection uses server-owned detections paired with the displayed image.
 Only a current detection with confidence at least 0.5 can produce a preview.
-Missing detections, unavailable vision, a source or image-dimension change,
-inconsistent image order, or a latest server analysis older than 450 ms clear the selected target
-and zero the output. A returning person does not resume the preview until
-selected again. The age is measured from local camera receipt, not inferred
+When that detection briefly disappears or drops below 0.5, the preview pauses:
+the correction becomes zero and the selection is remembered for at most 0.7 seconds
+from the last strong detection's camera receipt. Only a fresh, strong detection
+with the same existing track ID can resume it before that deadline. No box is
+predicted through an occlusion, no other person is selected, and weak frames or
+polling cannot extend the recovery window. The browser also tolerates the missing
+box arriving before the corresponding paused state, without posting a cancellation.
+
+Unavailable vision, a source or image-dimension change, inconsistent image order,
+a latest server analysis older than 450 ms, or expiry of the recovery window clear
+the selected target and require a new click. The age is measured from local camera receipt, not inferred
 sensor exposure time or radio latency; a capture device repeatedly delivering a
 frozen upstream picture cannot be detected by this timestamp check alone.
+
+Entering a pause changes the selection revision. The separate Pocket bench
+stops on that change, even if its state reads miss the paused moment; browser
+recovery does not restart a radio session.
 
 Turning detection off or leaving Observation clears the browser's preview.
 The browser also hides corrections when the displayed analyzed image or service
@@ -201,8 +212,9 @@ matches, the competing previous IDs are retired. Current detections receive
 fresh IDs, which can persist once subsequent correspondence is unique. Keeping
 both those old histories and every new ambiguous detection would otherwise
 perpetuate ID changes even after a person stops moving. Unrelated tracks are
-preserved; weak detections cannot retire strong histories. A lost selected target
-still requires explicit reselection, including after this recovery.
+preserved; weak detections cannot retire strong histories. An ambiguous replacement
+ID never inherits a selected preview. Brief gaps can recover only the same ID
+within the bounded preview pause above; an expired or retired ID needs reselection.
 An additional motion-bounded correspondence requires at
 least 0.95 appearance similarity, a 0.08 mutual-best margin and at most 0.35 seconds
 between images, together with center-displacement and body-size checks. The old
@@ -233,8 +245,10 @@ results; it is not a promise of eight completed analyses per second. More
 frequent jobs also consume more CPU. Only one image can be awaiting inference, so intermediate camera
 frames are skipped instead of building latency. The process receives JPEG bytes;
 it has no MAVLink transport, vehicle pose, actor pose, depth or simulator labels.
-The same worker computes appearance descriptors statelessly from that exact
-JPEG and its detections, using the existing OpenCV/NumPy runtime. Descriptors
+The worker decodes the JPEG once and shares that BGR image between detection
+and stateless appearance encoding, using the existing OpenCV/NumPy runtime.
+The original JPEG remains paired with the result for display; no extra image
+copy crosses the process queue. Descriptors
 are returned with the matching job result. The parent validates their fixed
 size, finite bounded values and normalization, and stores them only when the
 matching image is accepted. Source, sequence and receipt-time checks reject

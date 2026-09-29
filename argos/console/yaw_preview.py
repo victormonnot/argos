@@ -14,6 +14,7 @@ YAW_LIMIT = .125
 DEADBAND = .035
 GAIN = .25
 MIN_CONFIDENCE = .5
+RECOVERY_MAX_GAP = .7
 MAX_SAFE_INTEGER = 2**53 - 1
 
 
@@ -74,9 +75,11 @@ def _observation(value):
 class YawPreview:
     """An explicitly selected image identity and bounded, latched preview.
 
-    Any loss of the selected detection or valid fresh imagery clears the target.
-    A later valid image can be selected explicitly, but cannot resume tracking.
-    Revisions invalidate requests created before clear, expiry or source reset.
+    A short detection gap retains selection without producing a correction.
+    Only the same identity in a new strong image can resume within that gap.
+    Invalid or stale imagery and expired recovery still latch a cleared target.
+    Entering a gap changes revision, fencing command sessions even if they miss
+    the paused snapshot. Clear, expiry and source reset also change revision.
     """
 
     def __init__(self, enabled: bool):
@@ -89,15 +92,17 @@ class YawPreview:
         self._last_frame = None
         self._last_now = None
         self._target_id = None
+        self._last_seen_at = None
         self._error_x = None
         self._yaw = 0.
 
     def _stop(self, detail):
-        if self.phase == "tracking":
+        if self.phase in ("tracking", "paused"):
             self.phase = "stopped"
             self.revision += 1
             self._detail = detail
         self._target_id = None
+        self._last_seen_at = None
         self._error_x = None
         self._yaw = 0.
 
@@ -129,13 +134,38 @@ class YawPreview:
         return target
 
     def _update(self, now):
-        if self.phase != "tracking":
+        if self.phase not in ("tracking", "paused"):
             return
-        try:
-            target = self._target(now, self._target_id)
-        except RuntimeError as exc:
-            self._stop(str(exc))
+        if self._frame is None:
+            self._stop("No recent analyzed image")
             return
+        if not 0 <= now - self._frame["received_at"] <= FRAME_MAX_AGE:
+            self._stop("Selected target image is stale")
+            return
+        deadline = self._last_seen_at + RECOVERY_MAX_GAP
+        if self.phase == "paused" and now >= deadline:
+            self._stop("Selected person was lost; select a person again")
+            return
+        target = next((item for item in self._frame["detections"]
+                       if item["track_id"] == self._target_id), None)
+        if target is None or target["confidence"] < MIN_CONFIDENCE:
+            if now >= deadline:
+                self._stop("Selected person was lost; select a person again")
+                return
+            if self.phase != "paused":
+                self.revision += 1
+            self.phase = "paused"
+            self._detail = "Person briefly obscured or uncertain; preview paused with zero correction"
+            self._error_x = None
+            self._yaw = 0.
+            return
+        if (self.phase == "paused"
+                and self._frame["received_at"] <= self._last_seen_at):
+            # A changed sequence with the old receipt cannot renew evidence.
+            return
+        self.phase = "tracking"
+        self._detail = "Horizontal yaw preview only; no commands sent"
+        self._last_seen_at = self._frame["received_at"]
         x, _, width, _ = target["box"]
         self._error_x = max(-1., min(1., 2 * (x + width / 2 - .5)))
         self._yaw = (0. if abs(self._error_x) <= DEADBAND else
@@ -191,6 +221,7 @@ class YawPreview:
             raise ValueError("A positive safe-integer target identity is required")
         self._target(now, track_id)
         self._target_id = track_id
+        self._last_seen_at = self._frame["received_at"]
         self.phase = "tracking"
         self._detail = "Horizontal yaw preview only; no commands sent"
         self.revision += 1
@@ -200,6 +231,7 @@ class YawPreview:
     def clear(self, reason="Preview cleared"):
         """Cancel selection, including any select request from an older revision."""
         self._target_id = None
+        self._last_seen_at = None
         self._error_x = None
         self._yaw = 0.
         self.revision += 1
@@ -219,6 +251,9 @@ class YawPreview:
             "frame_age_s": None if frame is None else max(0., now - frame["received_at"]),
             "frame_max_age_s": FRAME_MAX_AGE, "error_x": self._error_x,
             "yaw": self._yaw, "yaw_limit": YAW_LIMIT, "deadband": DEADBAND,
+            "recovery_max_gap_s": RECOVERY_MAX_GAP,
+            "recovery_deadline_at": (self._last_seen_at + RECOVERY_MAX_GAP
+                                     if self.phase == "paused" else None),
         }
 
     def state(self, now):

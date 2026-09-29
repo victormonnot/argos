@@ -88,6 +88,38 @@ def test_new_image_extends_deadline_without_changing_selection():
         first.target_id, first.revision, first.run_id, first.video_id)
 
 
+@pytest.mark.parametrize("read_pause", [True, False])
+def test_preview_recovery_does_not_resume_existing_radio_session(read_pause):
+    from argos.console.yaw_preview import YawPreview
+
+    preview = YawPreview(True)
+    validator = source.PreviewValidator()
+
+    def frame(sequence, received, now, *, visible=True):
+        preview.observe({"run_id": "run-one", "video_id": "camera-one",
+            "sequence": sequence, "received_at": received, "width": 640, "height": 480,
+            "detections": ([{"track_id": 7, "confidence": .9, "box": [.6, .2, .2, .5]}]
+                           if visible else [])}, now=now)
+        state = snapshot(at=now, received=received, sequence=sequence)
+        state["yaw_preview"] = preview.state(now)
+        return state
+
+    frame(42, 9.9, 10.)
+    preview.select(7, revision=preview.revision, now=10.)
+    validator.validate(frame(42, 9.9, 10.), 100., 100.01)
+    paused = frame(43, 10.0, 10.05, visible=False)
+    assert paused["yaw_preview"]["phase"] == "paused"
+    if read_pause:
+        with pytest.raises(source.PreviewError):
+            validator.validate(paused, 100.05, 100.06)
+    recovered = frame(44, 10.15, 10.2)
+    assert recovered["yaw_preview"]["phase"] == "tracking"
+    # The revision changes even if this client's polls missed the brief loss.
+    with pytest.raises(source.PreviewError):
+        validator.validate(recovered, 100.2, 100.21)
+    assert validator.failed
+
+
 @pytest.mark.parametrize("path,value", [
     (("environment",), "simulation"),
     (("schema_version",), True),

@@ -70,11 +70,30 @@ class AppearanceEncoder:
         self._cv2, self._np = cv2, np
 
     def encode(self, jpeg: bytes, detections: list, *, width: int, height: int) -> list[tuple[float, ...] | None]:
+        self._validate_dimensions(width, height)
+        if not isinstance(jpeg, bytes) or not jpeg or len(jpeg) > 16 * 1024 * 1024:
+            raise ValueError("appearance requires a nonempty JPEG of at most 16 MiB")
+        boxes = self._validate_boxes(detections)
+        cv2, np = self._cv2, self._np
+        image = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        self._validate_bgr(image, width, height)
+        return self._encode_bgr(image, boxes)
+
+    def encode_bgr(self, image, detections: list, *, width: int, height: int) -> list[tuple[float, ...] | None]:
+        """Reuse the detector's current decoded image in its owning worker."""
+        self._validate_dimensions(width, height)
+        boxes = self._validate_boxes(detections)
+        self._validate_bgr(image, width, height)
+        return self._encode_bgr(image, boxes)
+
+    @staticmethod
+    def _validate_dimensions(width, height):
         if (type(width) is not int or type(height) is not int
                 or not 1 <= width <= 4096 or not 1 <= height <= 4096):
             raise ValueError("appearance image dimensions must be between 1 and 4096")
-        if not isinstance(jpeg, bytes) or not jpeg or len(jpeg) > 16 * 1024 * 1024:
-            raise ValueError("appearance requires a nonempty JPEG of at most 16 MiB")
+
+    @staticmethod
+    def _validate_boxes(detections):
         if not isinstance(detections, list) or len(detections) > MAX_DETECTIONS:
             raise ValueError("appearance accepts at most 16 current detections")
         boxes = []
@@ -86,11 +105,16 @@ class AppearanceEncoder:
                     or box[0] + box[2] > 1 + 1e-9 or box[1] + box[3] > 1 + 1e-9):
                 raise ValueError("appearance needs finite normalized detection boxes")
             boxes.append(tuple(float(v) for v in box))
-        cv2, np = self._cv2, self._np
-        image = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
-        if image is None or image.ndim != 3 or image.shape != (height, width, 3):
-            raise ValueError("appearance JPEG dimensions differ from the detector result")
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        return boxes
+
+    def _validate_bgr(self, image, width, height):
+        np = self._np
+        if (not isinstance(image, np.ndarray) or image.dtype != np.uint8
+                or image.shape != (height, width, 3)):
+            raise ValueError("appearance image type or dimensions differ from the detector result")
+
+    def _encode_bgr(self, image, boxes):
+        rgb = self._cv2.cvtColor(image, self._cv2.COLOR_BGR2RGB)
         return [self._describe(rgb, box) for box in boxes]
 
     def _hsv(self, rgb):

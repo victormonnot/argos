@@ -121,3 +121,26 @@ def test_decode_failure_and_dimension_mismatch_are_not_silent_missing_descriptor
     for jpeg, width, height in [(b"not an image", 320, 240), (data, 319, 240), (data, 240, 320)]:
         with pytest.raises(ValueError, match="dimensions differ"):
             encoder.encode(jpeg, [], width=width, height=height)
+
+
+def test_decoded_image_encoding_is_exact_and_does_not_modify_input():
+    cv2, np, _, data = encoded_image()
+    encoder = AppearanceEncoder()
+    detections = [{"box": [.25, .2, .15, .6]}, {"box": [0, .2, .15, .6]}]
+    expected = encoder.encode(data, detections, width=320, height=240)
+    image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+    original = image.copy()
+    assert encoder.encode_bgr(image, detections, width=320, height=240) == expected
+    np.testing.assert_array_equal(image, original)
+
+
+def test_decoded_image_encoding_rejects_wrong_type_shape_and_metadata():
+    _, np, image, _ = encoded_image()
+    encoder = AppearanceEncoder()
+    for invalid in (None, b"JPEG", image.astype(float), image[:, :, 0], image[:-1]):
+        with pytest.raises(ValueError, match="dimensions differ"):
+            encoder.encode_bgr(invalid, [], width=320, height=240)
+    with pytest.raises(ValueError, match="dimensions must be"):
+        encoder.encode_bgr(image, [], width=True, height=240)
+    with pytest.raises(ValueError, match="normalized detection boxes"):
+        encoder.encode_bgr(image, [{"box": [0, 0, 2, 1]}], width=320, height=240)
