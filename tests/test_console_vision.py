@@ -125,6 +125,44 @@ def test_one_pending_job_drops_intermediate_frames_and_caps_submission_rate(runt
     assert vision._incoming.empty()
 
 
+def test_timing_separates_camera_wait_worker_turnaround_and_delivery_interval(runtime):
+    now, session, vision = runtime
+    now[0] = .04  # The first image was received at zero.
+    identifier, _ = ready(vision, session)
+    now[0] = .21
+    complete(vision, session, identifier)
+    timing = vision.state(session)["timing"]
+    assert timing == {"submit_age_ms": 40., "turnaround_ms": pytest.approx(170.),
+                      "result_interval_ms": None}
+    # Reading newer camera images does not recompute or renew analysis timing.
+    now[0] = .25
+    session.video.sample = VideoSample(b"next", 2, .23)
+    assert vision.state(session)["timing"] == timing
+    vision.tick(session)
+    identifier, _ = vision._incoming.get_nowait()
+    now[0] = .42
+    complete(vision, session, identifier)
+    assert vision.state(session)["timing"] == {
+        "submit_age_ms": pytest.approx(20.), "turnaround_ms": pytest.approx(170.),
+        "result_interval_ms": pytest.approx(210.)}
+    assert vision.frame(session).sample.received_at == .23
+    session.video.failed = True
+    assert vision.state(session)["timing"] is None
+
+
+def test_submission_at_exact_five_hz_boundary_does_not_lose_another_poll(runtime):
+    now, session, vision = runtime
+    now[0] = 3.6
+    session.video.sample = VideoSample(b"first", 1, now[0])
+    identifier, _ = ready(vision, session)
+    now[0] = 3.7
+    complete(vision, session, identifier)
+    now[0] = 3.8  # 3.8 - 3.6 rounds below .2 in binary floating point.
+    session.video.sample = VideoSample(b"next", 2, now[0])
+    vision.tick(session)
+    assert vision._incoming.get_nowait()[0] == identifier + 1
+
+
 @pytest.mark.parametrize("attribute,value", [("run_id", "run-b"), ("video_source_id", "video-b")])
 def test_inflight_result_cannot_cross_source_or_run_change(runtime, attribute, value):
     now, session, vision = runtime
@@ -431,13 +469,15 @@ def test_model_variant_survives_source_changes_and_reaches_app(tmp_path):
     pytest.importorskip("fastapi")
     from argos.console.app import create_app
     config = ConsoleConfig(vision_model=tmp_path / "model.onnx", vision_variant="s",
-                           vision_threads=4, recordings_dir=tmp_path)
+                           vision_threads=4, vision_hz=8, recordings_dir=tmp_path)
     replaced = config.with_sources(config.public())
     assert replaced.vision_variant == "s" and "vision_variant" not in config.public()
     assert replaced.vision_threads == 4 and "vision_threads" not in config.public()
+    assert replaced.vision_hz == 8 and "vision_hz" not in config.public()
     app = create_app(replaced)
     assert app.state.vision.model.variant == "s"
     assert app.state.vision.threads == 4
+    assert app.state.vision.max_hz == 8
     assert ConsoleConfig().vision_variant == "tiny"
     assert ConsoleConfig().vision_threads == 2
 
@@ -454,6 +494,12 @@ def test_invalid_thread_limit_is_rejected_in_config_and_service(threads):
         ConsoleConfig(vision_threads=threads)
     with pytest.raises(ValueError, match="threads must be an integer between 1 and 6"):
         VisionService(None, threads=threads)
+
+
+@pytest.mark.parametrize("rate", [0, 11, True, None, 8.0, "8", []])
+def test_invalid_analysis_rate_is_rejected_by_the_service(rate):
+    with pytest.raises(ValueError, match="vision_hz"):
+        VisionService(None, max_hz=rate)
 
 
 def test_console_cli_passes_explicit_variant_to_config(tmp_path, monkeypatch):

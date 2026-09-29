@@ -42,6 +42,8 @@ def main():
                         help="pinned model variant: tiny (416px, default) or s (640px)")
     parser.add_argument("--vision-threads", type=int, choices=range(1, 7), default=2,
                         help="OpenCV CPU thread limit for the vision worker (default: 2)")
+    parser.add_argument("--vision-hz", type=int, choices=range(1, 11), default=5,
+                        help="maximum person analyses per second; actual rate depends on processing time (default: 5)")
     parser.add_argument("--video-age", type=positive, default=1.)
     parser.add_argument("--mavlink-bind", type=address)
     parser.add_argument("--mavlink-peer", type=address)
@@ -68,6 +70,7 @@ def main():
             sim_control=args.sim_control, sim_framing=args.sim_framing, vision_model=args.vision_model,
             vision_variant=args.vision_variant,
             vision_threads=args.vision_threads,
+            vision_hz=args.vision_hz,
             video_source=source, video_endpoint=args.gazebo_topic or args.camera_device,
             environment=environment, gazebo_python_path=args.gazebo_python_path,
             video_age=args.video_age, mavlink_bind=args.mavlink_bind,

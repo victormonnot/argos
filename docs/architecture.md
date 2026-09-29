@@ -88,8 +88,11 @@ assembles the application and ties resource startup and cleanup to its lifespan.
 | Receiver reopening | Blocking replacement work runs in a thread; the session retains ownership until replacement or cleanup finishes. |
 | Display state, selected panels, filters and replay cursor | JavaScript in the browser; these do not own the receivers. |
 
-The receive task waits 50 ms between ticks. Each link poll limits its read work;
-this is not a guaranteed 20 Hz schedule. Recording writes are synchronous in the
+The receive task waits 10 ms between ticks while vision is configured and healthy,
+or 50 ms without it. This promptly collects completed analyses while respecting
+the configured analysis ceiling (five per second by default, `--vision-hz` from
+one to ten) and the existing command rates. Each link poll
+limits its read work; neither interval is a guaranteed schedule. Recording writes are synchronous in the
 tick, so slow storage or CPU work can delay reception. The current process layout
 does not provide hard real-time scheduling or guarantee lossless capture.
 

@@ -256,6 +256,66 @@ test("session handshake is required and partial command input stays neutral", fu
   r:expect(128, 1024, 1, 1024)
 end)
 
+test("host marker and single BEGIN leave a clean parser neutral", function()
+  local r = radio()
+  r:drain("#\nARGOS_VISION_BEGIN " .. SESSION .. "\n")
+  r:expect(0, 0, 0, 0)
+  equal(r:countWrites("ARGOS_VISION_READY"), 1)
+  equal(r:countWrites("ARGOS_VISION_ACK"), 0)
+  equal(r.writes[#r.writes], "ARGOS_VISION_READY " .. SESSION .. "\n")
+end)
+
+test("host marker discards incomplete and oversized lines before one BEGIN", function()
+  for _, prefix in ipairs({"AT\r", "partial", "ARGOS_VISION_BEGIN deadbeef",
+      string.rep("x", 64), string.rep("x", 65), string.rep("x", 200)}) do
+    local r = radio()
+    r:drain(prefix)
+    r:expect(0, 0, 0, 0)
+    r:drain("#\nARGOS_VISION_BEGIN " .. SESSION .. "\n")
+    r:expect(0, 0, 0, 0)
+    equal(r:countWrites("ARGOS_VISION_READY"), 1)
+    equal(r:countWrites("ARGOS_VISION_ACK"), 0)
+    equal(r.writes[#r.writes], "ARGOS_VISION_READY " .. SESSION .. "\n")
+  end
+end)
+
+test("host marker cannot complete any prefix of an old valid SET", function()
+  local oldSet = "ARGOS_VISION_SET " .. SESSION .. " 1 128 20"
+  for length = 0, #oldSet do
+    local r = radio()
+    r:begin()
+    r:step(string.sub(oldSet, 1, length))
+    r:expect(0, 0, 0, 0)
+    -- Deliver marker and LF in separate callbacks, before the new BEGIN.
+    -- A bare LF would activate the complete old SET at length == #oldSet.
+    r:step("#")
+    r:expect(0, 0, 0, 0)
+    r:step("\n")
+    r:expect(0, 0, 0, 0)
+    equal(r:countWrites("ARGOS_VISION_ACK"), 0)
+    equal(r:countWrites("ARGOS_VISION_READY"), 1)
+    r:drain("ARGOS_VISION_BEGIN 1234abcd\n")
+    r:expect(0, 0, 0, 0)
+    equal(r:countWrites("ARGOS_VISION_READY"), 2)
+    r:set(1, -24, 1, "1234abcd")
+    r:expect(-24, 1024, 1, 1024)
+  end
+end)
+
+test("marker cannot restart an expired session with the same BEGIN", function()
+  local r = radio()
+  r:begin()
+  r:set(1, 128, 0, nil, 10)
+  r:step(nil, 10)
+  r:expect(0, 0, 1, 0)
+  r:drain("#\nARGOS_VISION_BEGIN " .. SESSION .. "\n")
+  r:set(2, 128, 11)
+  r:expect(0, 0, 1, 0)
+  equal(r:countWrites("ARGOS_VISION_READY"), 1)
+  equal(r:countWrites("ARGOS_VISION_ACK"), 1)
+  equal(r:countWrites("ARGOS_VISION_IDLE"), 1)
+end)
+
 test("only strictly increasing canonical sequences 1 through 300 are admitted", function()
   local r = radio()
   r:begin()

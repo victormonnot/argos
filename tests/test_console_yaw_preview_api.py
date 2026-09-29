@@ -2,6 +2,8 @@
 from dataclasses import replace
 import json
 from pathlib import Path
+from queue import Queue
+from types import SimpleNamespace
 
 import pytest
 
@@ -50,6 +52,27 @@ def preview(tmp_path):
             run_id=session.run_id, video_id=session.video_source_id,
             frame_sequence=vision._frame.sample.sequence, track_id=1)
 
+    def queue_result(*, at, detections=None, complete=True):
+        """Complete the one pending worker job without running a session tick."""
+        session.video.accept_raw(width=2, height=2, step=6,
+            pixel_format="RGB_INT8", data=bytes(12), received_at=at)
+        sample = session.video.latest(at)
+        vision.model_path = Path("model.onnx")
+        vision.wall_clock = lambda: now[0]
+        vision._ready = True
+        vision._process = SimpleNamespace(is_alive=lambda: True)
+        vision._incoming, vision._outgoing = Queue(maxsize=1), Queue(maxsize=1)
+        vision._identifier = 1
+        vision._last_sequence = sample.sequence
+        vision._submitted_at = vision._last_submit = at
+        vision._pending = (1, AnalyzedFrame(sample, vision._context, {}))
+        ds = ([{"box": [.6, .2, .2, .5], "confidence": .9}]
+              if detections is None else detections)
+        if complete:
+            result = {"width": 2, "height": 2, "inference_ms": 150., "detections": ds}
+            vision._outgoing.put_nowait(("result", (1, result, [None] * len(ds))))
+        return sample.sequence
+
     def select(**changes):
         return client.post(PATH, json=dict(body(), **changes), headers=ORIGIN)
 
@@ -92,7 +115,7 @@ def test_preview_is_passive_even_with_real_mavlink_receiver(preview):
     assert source.closed
 
 
-def test_expiry_on_http_read_is_latched_without_refreshing_vision(preview):
+def test_expiry_on_http_read_is_latched_without_a_new_worker_result(preview):
     f = preview
     assert f["select"]().status_code == 200
     original = f["vision"]._frame
@@ -104,6 +127,61 @@ def test_expiry_on_http_read_is_latched_without_refreshing_vision(preview):
     state = f["session"].state()["yaw_preview"]
     assert state["phase"] == "stopped" and state["target_id"] is None
     assert f["select"]().status_code == 200
+
+
+@pytest.mark.parametrize("endpoint", ["/api/state", "/api/mavlink/messages"])
+def test_state_read_delivers_ready_analysis_before_expiring_previous_frame(preview, endpoint):
+    f = preview
+    source = Input()  # A display refresh must never poll or write MAVLink.
+    f["session"].link = MavlinkLink(source, sequence_scope=SequenceScope.COMPONENT)
+    selected = f["select"]().json()["yaw_preview"]
+    # Between the receiver's ticks the previous image expires, although the
+    # worker has already completed a recent image of the same selected person.
+    sequence = f["queue_result"](at=.4)
+    f["now"][0] = .56
+    response = f["client"].get(endpoint)
+    assert response.status_code == 200
+    state = response.json() if endpoint == "/api/state" else f["session"].state()
+    preview_state = state["yaw_preview"]
+    assert preview_state["phase"] == "tracking"
+    assert preview_state["target_id"] == selected["target_id"]
+    assert preview_state["revision"] == selected["revision"]
+    assert preview_state["frame_sequence"] == sequence
+    assert preview_state["frame_received_at"] == .4
+    assert preview_state["frame_age_s"] == pytest.approx(.16)
+    assert f["vision"].state(f["session"])["processed"] == 1
+    assert f["vision"]._outgoing.empty() and f["vision"]._incoming.empty()
+    assert source.reads == 0
+
+
+def test_state_read_delivers_ready_analysis_without_reviving_a_latched_stop(preview):
+    f = preview
+    assert f["select"]().status_code == 200
+    f["now"][0] = .56
+    stopped = f["session"].state()["yaw_preview"]
+    assert stopped["phase"] == "stopped"
+    sequence = f["queue_result"](at=.4)
+    state = f["client"].get("/api/state").json()["yaw_preview"]
+    assert state["frame_sequence"] == sequence
+    assert state["phase"] == "stopped" and state["yaw"] == 0
+    assert state["target_id"] is None and state["revision"] == stopped["revision"]
+
+
+@pytest.mark.parametrize("at,detections,complete,detail", [
+    (.4, None, False, "Selected target image is stale"),
+    (.105, None, True, "Selected target image is stale"),
+    (.4, [], True, "Selected person was lost; select a person again"),
+])
+def test_state_refresh_still_stops_for_missing_stale_or_lost_results(
+        preview, at, detections, complete, detail):
+    f = preview
+    selected = f["select"]().json()["yaw_preview"]
+    f["queue_result"](at=at, detections=detections, complete=complete)
+    f["now"][0] = .56
+    state = f["client"].get("/api/state").json()["yaw_preview"]
+    assert state["phase"] == "stopped" and state["yaw"] == 0
+    assert state["target_id"] is None and state["revision"] == selected["revision"] + 1
+    assert state["detail"] == detail
 
 
 def test_clear_fences_late_selection_and_is_independent_of_image_availability(preview):

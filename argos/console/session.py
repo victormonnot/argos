@@ -362,6 +362,9 @@ class ConsoleSession:
         }
 
     def live_messages(self):
+        # The telemetry snapshot below also evaluates image-preview expiry.
+        # Consume a queued result first, just as for the main HTTP snapshot.
+        self._observe_vision(refresh=True)
         now = self.clock()
         report = self._report
         return {"run_id": self.run_id, "connection_id": self.connection_id,

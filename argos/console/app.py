@@ -40,10 +40,15 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
     archive = RecordingArchive(session.recorder.directory)
     visual_archive = VisualArchive(session.recorder.directory)
     vision = vision or VisionService(session.config.vision_model, variant=session.config.vision_variant,
-                                     threads=session.config.vision_threads)
+                                     threads=session.config.vision_threads,
+                                     max_hz=session.config.vision_hz)
     session.vision = vision
 
     def snapshot():
+        # A display read can land between receiver ticks. Deliver an already
+        # completed image before expiry sees the preceding receipt timestamp.
+        # This only advances bounded vision queues; it never polls flight I/O.
+        session._observe_vision(refresh=True)
         result = session.state()
         result["vision"] = vision.state(session)
         return result
@@ -58,7 +63,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
             while not stop.is_set():
                 session.tick()
                 try:
-                    await asyncio.wait_for(stop.wait(), timeout=.05)
+                    await asyncio.wait_for(stop.wait(), timeout=vision.poll_interval)
                 except asyncio.TimeoutError:
                     pass
 
@@ -299,7 +304,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
     async def archive_call(method, *args):
         try:
             # Disk reads, checksum validation and indexing must not run on the
-            # event-loop owner that polls the live receiver every 50 ms.
+            # event-loop owner that services live reception and vision.
             return await asyncio.to_thread(method, *args)
         except ArchiveError as exc:
             raise HTTPException(exc.status, str(exc)) from exc

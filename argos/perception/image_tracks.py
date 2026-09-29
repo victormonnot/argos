@@ -97,6 +97,8 @@ class ImageTracker:
     ``captured_at`` retains its existing local camera-receipt provenance. Only
     current detections are returned. Strong established tracks compete first;
     new weak boxes get display IDs without persistent association memory.
+    Ambiguous strong geometry retires the implicated predecessor identities;
+    later unambiguous observations can establish fresh associations.
     Empty frames do not refresh detection or appearance timestamps. Crossing or
     replacement people can still confuse these short-lived image IDs.
     """
@@ -181,6 +183,13 @@ class ImageTracker:
         weak = [i for i, detection in enumerate(current) if detection["confidence"] < STRONG_CONFIDENCE]
         matches, blocked_indices, blocked_ids = self._geometry(
             current, descriptors, remembered, strong, list(remembered), captured_at)
+        # Predecessor identities are untrustworthy after strong ambiguity.
+        # Keeping them alongside newly seeded tracks would make each new image
+        # ambiguous again, even once a single person becomes stationary. Retire
+        # only the implicated identities; do not guess between them or let an
+        # appearance fallback / weak box revive them later in this update.
+        for identity in blocked_ids:
+            del remembered[identity]
         expanded = self._appearance(current, descriptors, remembered,
             [i for i in strong if i not in matches and i not in blocked_indices],
             [identity for identity in remembered if identity not in set(matches.values()) | blocked_ids], captured_at, self._last_at)

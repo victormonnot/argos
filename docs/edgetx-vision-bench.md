@@ -20,6 +20,12 @@ connection or Betaflight readout is used. This is a separate setup from the
 [RF yaw bench](edgetx-rf-yaw-bench.md), which requires an aircraft powered only
 by USB and must not be run with a battery.
 
+With both RF modules OFF, the Pocket will **not connect to the aircraft's
+receiver**. This is expected for this bench and is not evidence of lost binding.
+The separate video-receiver connection can still supply the camera image.
+Keep the RF settings OFF; do not rebind or enable a transmitter to fix a USB
+handshake or an image-timing error.
+
 1. Duplicate the verified **ARGOS USB** model, including its CH32 mixes and
    logical switches, into a new model named exactly **ARGOS VIS**.
    Use this short name, which fits the Pocket's model-name field.
@@ -94,6 +100,44 @@ The default duration is 20 seconds; the accepted range is 1–30 seconds. The
 helper establishes a new ArgVis session and sends bounded values at up to
 10 Hz, using the console's existing detections. There is no automatic retry,
 reconnection or session restart.
+
+After receiving the expected greeting, the host starts its single BEGIN write
+with an invalid marker line (`#` followed by a newline). This discards any
+unfinished input left in the radio's line parser before the new BEGIN. Appending
+the marker makes an old partial command invalid; merely adding a newline could
+finish that command. Clearing the PC's receive buffer does not clear the radio's
+input buffer. This synchronization sends no SET and does not retry BEGIN or
+resume an expired session. It cannot repair competing serial readers or missing
+USB delivery.
+
+After the handshake, the helper waits up to one second for an analysis with
+enough remaining time for streaming. It sends no channel value while waiting.
+Each streaming value requires at least 140 ms of radio lifetime: the 100 ms
+send interval, 20 ms write budget, 10 ms radio tick and one 10 ms polling period.
+With the new value's write/tick reserves, this requires at least 170 ms
+remaining on the original image deadline at the final send check. An older
+but still valid preview is polled again after 10 ms
+instead of sending a value that must expire before the next legal send slot.
+During active output, that wait ends 30 ms before the preceding command's
+modeled expiry, preserving its write/tick reserves, and is also bounded by
+the existing 250 ms gap limit and the finite session. Errors, source/selection
+changes or expiry remain terminal. Waiting cannot renew an image timestamp.
+The old value's transfer reserve is checked again immediately before writing
+the next value. These budgets do not guarantee HTTP, OS or physical USB timing;
+a slow request can still stop the session. This correction can stop an attempt
+earlier and is not a hardware continuity fix: a stable browser preview alone
+does not establish enough margin for uninterrupted radio output.
+
+For recurring timing stops with stable video and a successful handshake, use
+the [offline thread comparison](vision-performance.md) to assess CPU settings
+before another live attempt. Its results identify candidates, not an automatic
+fix or proof of a sustainable camera-to-radio cadence.
+When live measurements show the worker is fast enough but fresh results remain
+limited by the default five-Hz ceiling, the console's `--vision-hz 8` is a
+candidate. Validate that rate with passive live timing first. It increases only
+the analysis ceiling, leaving at most one pending image; the bridge still sends
+at most ten values per second and keeps its original expiry rules. A higher
+ceiling cannot eliminate camera, CPU, HTTP or USB delays.
 
 Keep the ARGOS browser page visible beside the helper terminal. Minimizing the
 browser or changing its tab clears the preview selection; merely focusing a

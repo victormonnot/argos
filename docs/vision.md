@@ -196,7 +196,14 @@ a possible second person.
 Ordinary overlap or nearby-box matching requires a mutually unique geometric
 correspondence. If valid recent appearance descriptors disagree strongly,
 similarity below 0.75 vetoes that edge before assignment. Ambiguous geometric
-components are refused. An additional motion-bounded correspondence requires at
+components are refused. When current strong detections have ambiguous geometric
+matches, the competing previous IDs are retired. Current detections receive
+fresh IDs, which can persist once subsequent correspondence is unique. Keeping
+both those old histories and every new ambiguous detection would otherwise
+perpetuate ID changes even after a person stops moving. Unrelated tracks are
+preserved; weak detections cannot retire strong histories. A lost selected target
+still requires explicit reselection, including after this recovery.
+An additional motion-bounded correspondence requires at
 least 0.95 appearance similarity, a 0.08 mutual-best margin and at most 0.35 seconds
 between images, together with center-displacement and body-size checks. The old
 track must have appeared in the immediately preceding accepted analyzed image;
@@ -218,8 +225,12 @@ appearance veto. See the [recorded comparisons and remaining errors](validation.
 No association path predicts boxes or uses vehicle pose, known body dimensions
 or simulator identity. The current measured image remains the observation.
 
-A separate spawned process loads the model and performs at most five analyses
-per second. Only one image can be awaiting inference, so intermediate camera
+A separate spawned process loads the model and defaults to at most five analyses
+per second. The console's `--vision-hz` option accepts an integer from 1 to 10
+to choose a different ceiling. For a host whose measured full worker turnaround
+is short enough, `--vision-threads 4 --vision-hz 8` is a candidate for fresher
+results; it is not a promise of eight completed analyses per second. More
+frequent jobs also consume more CPU. Only one image can be awaiting inference, so intermediate camera
 frames are skipped instead of building latency. The process receives JPEG bytes;
 it has no MAVLink transport, vehicle pose, actor pose, depth or simulator labels.
 The same worker computes appearance descriptors statelessly from that exact
@@ -238,7 +249,16 @@ timeout disables vision and clears its results. Restart the console to retry; fl
 its own existing lifecycle and continues independently of vision.
 
 Vision status reports the configured model label, variant, input size and
-`threads` limit.
+`threads` limit. `inference_ms` measures the network forward pass, not the age
+of its input or the entire processing pipeline. The optional `timing` object
+reports `submit_age_ms` (camera receipt to submission), `turnaround_ms`
+(submission to result collection, including worker and queue/scheduling time),
+and `result_interval_ms` (time between accepted results; null on the first).
+These measurements belong to the accepted image and are not renewed by reads.
+They do not measure camera exposure, analog transmission or display latency.
+The receive loop services vision queues every 10 ms while enabled and healthy;
+inference respects the configured ceiling with one outstanding job. Changing
+this ceiling does not change image-age limits, selection rules or command rates.
 Selecting S does not change frame-age limits, tracking gates or framing
 thresholds. Its extra computation can reduce analysis frequency or make a result
 too old for framing; a stronger detector is not an exemption from freshness.
@@ -261,11 +281,22 @@ pending message. A device/driver failure still requires investigating the
 capture connection and explicitly reopening the camera; it does not resume a
 previously stopped target selection.
 
-When selecting a person, the server consumes any completed analysis already
-waiting in the worker queue before checking image expiry and selection revision.
+When selecting a person or reading live state/messages, the server consumes any
+completed analysis already waiting in the worker queue before checking image
+expiry and selection revision.
 A capability check must not expire an older frame first and unnecessarily reject
 the click. A stop observed by an earlier request remains latched and cannot be
 revived by a late selection response or a subsequently completed analysis.
+
+For a twenty-second, read-only timing trace of a running local console, run
+`python3 examples/watch_yaw_preview.py` from the checkout. Keep the browser
+visible and select a person once. The tool reads `/api/state`; it never opens a
+camera/serial port or changes a selection. It prints state transitions and
+one sample per second, with summary maxima from all polls. A stable camera and
+target can still exceed the stricter preview deadline between analyses: total
+processing time plus the interval until the next result matters, not just the
+displayed inference duration. A stopped preview retains its reason even if the
+next analysis is fresh; another explicit selection is required.
 
 The model can miss people or detect unrelated shapes, particularly on synthetic
 images, small subjects, unusual poses, occlusion or fast camera motion. This is

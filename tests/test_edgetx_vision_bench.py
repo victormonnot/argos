@@ -54,18 +54,21 @@ class Radio:
         self.clock.sleep(self.write_delay)
         if self.partial:
             return len(data) - 1
-        parts = data.decode().split()
-        if parts[0] == "ARGOS_VISION_BEGIN":
-            _, self.session = parts
-            reply = f"ARGOS_VISION_READY {self.session}\n"
-        else:
-            assert parts[0] == "ARGOS_VISION_SET"
-            _, session, seq, value, ttl = parts
-            assert session == self.session
-            self.sequence = int(seq)
-            self.expiry = self.clock.now + int(ttl) / 100
-            reply = f"ARGOS_VISION_ACK {session} {seq} {value} {ttl}\n"
-        self.chunks.append(self.transform(reply.encode()))
+        for line in data.decode().split("\n")[:-1]:
+            if line == "#":
+                continue
+            parts = line.split()
+            if parts[0] == "ARGOS_VISION_BEGIN":
+                _, self.session = parts
+                reply = f"ARGOS_VISION_READY {self.session}\n"
+            else:
+                assert parts[0] == "ARGOS_VISION_SET"
+                _, session, seq, value, ttl = parts
+                assert session == self.session
+                self.sequence = int(seq)
+                self.expiry = self.clock.now + int(ttl) / 100
+                reply = f"ARGOS_VISION_ACK {session} {seq} {value} {ttl}\n"
+            self.chunks.append(self.transform(reply.encode()))
         return len(data)
 
     def close(self):
@@ -130,6 +133,55 @@ def test_wrong_peer_never_gets_any_bytes(greeting):
     with pytest.raises(bridge.ProbeError):
         bridge.run_bridge(Source(clock), bench, 1)
     assert not radio.writes and bench.failed
+
+
+def test_connect_uses_one_invalid_marker_then_one_begin_in_a_single_write():
+    bench, radio, _ = make()
+    bench.connect()
+    assert radio.writes == [b"#\nARGOS_VISION_BEGIN 1234abcd\n"]
+    assert bench.ready and bench.next_sequence == 1
+    assert radio.sequence == 0 and radio.expiry is None
+
+
+@pytest.mark.parametrize("prefix", [
+    b"AT\r", b"partial", b"ARGOS_VISION_BEGIN deadbeef",
+    b"x" * 64, b"x" * 65, b"x" * 200,
+])
+def test_connect_clears_partial_radio_input_without_a_second_begin(prefix):
+    class FramedRadio(Radio):
+        """Model the radio's persistent, LF-only bounded line parser."""
+        def __init__(self, clock):
+            super().__init__(clock)
+            self.buffer = bytearray()
+            self.dropping = False
+            self.feed(prefix)
+
+        def feed(self, data):
+            for byte in data:
+                if byte == 10:
+                    if not self.dropping and self.buffer == b"ARGOS_VISION_BEGIN 1234abcd":
+                        self.chunks.append(b"ARGOS_VISION_READY 1234abcd\n")
+                    self.buffer.clear()
+                    self.dropping = False
+                elif not self.dropping:
+                    if len(self.buffer) >= 64:
+                        self.buffer.clear()
+                        self.dropping = True
+                    else:
+                        self.buffer.append(byte)
+
+        def write(self, data):
+            self.writes.append(data)
+            self.feed(data)
+            return len(data)
+
+    clock = Clock()
+    radio = FramedRadio(clock)
+    bench = bridge.VisionBench(radio, clock=clock.clock, sleep=clock.sleep)
+    bench.session = "1234abcd"
+    bench.connect()
+    assert radio.writes == [b"#\nARGOS_VISION_BEGIN 1234abcd\n"]
+    assert bench.ready and not bench.failed and clock.now == 100.
 
 
 @pytest.mark.parametrize("chunked", [False, True])
@@ -229,6 +281,126 @@ def test_short_remaining_image_lifetime_becomes_short_radio_ttl():
     seq, ttl = bench.send(proposal(clock, lifetime=.155))
     assert seq == 1 and ttl == 12
     assert radio.times[-1] + ttl * .01 + bridge.WRITE_TIMEOUT + bridge.TICK < 100.155
+
+
+def test_streaming_minimum_is_rechecked_after_serial_read_time():
+    bench, radio, clock = make()
+    bench.connect()
+    chosen = proposal(clock, lifetime=.17)
+    read = radio.read
+    def delayed_read(maximum):
+        clock.sleep(.025)
+        return read(maximum)
+    radio.read = delayed_read
+    with pytest.raises(bridge.ProbeError, match="minimum command budget 170.0 ms"):
+        bench.send(chosen, min_ttl=bridge.MIN_STREAM_TTL)
+    assert len(radio.writes) == 1 and bench.failed
+
+
+@pytest.mark.parametrize("remaining", [.03, .029, .005])
+def test_fresh_image_cannot_replace_output_without_old_expiry_write_reserve(remaining):
+    bench, radio, clock = make()
+    bench.connect()
+    bench.send(proposal(clock))
+    clock.now = bench.last_expiry - remaining
+
+    with pytest.raises(bridge.ProbeError, match="previous command.*transmission"):
+        bench.send(proposal(clock))
+
+    assert bench.failed and len(radio.writes) == 2
+    assert bench.next_sequence == 2
+    with pytest.raises(bridge.ProbeError):
+        bench.connect()
+
+
+def test_old_expiry_write_reserve_is_rechecked_after_serial_drain():
+    bench, radio, clock = make()
+    bench.connect()
+    bench.send(proposal(clock))
+    clock.sleep(.15)
+    read = radio.read
+
+    def delayed_read(maximum):
+        clock.sleep(.025)
+        return read(maximum)
+
+    radio.read = delayed_read
+    with pytest.raises(bridge.ProbeError, match="previous command.*transmission"):
+        bench.send(proposal(clock))
+
+    assert bench.failed and len(radio.writes) == 2
+
+
+def test_old_expiry_write_reserve_allows_a_bounded_timely_replacement():
+    bench, radio, clock = make()
+    bench.connect()
+    bench.send(proposal(clock))
+    clock.now = bench.last_expiry - .031
+    radio.write_delay = .019
+
+    sequence, ttl = bench.send(proposal(clock))
+
+    assert sequence == 2 and ttl == 20
+    assert not bench.failed and len(radio.writes) == 3
+
+
+def test_http_read_cannot_use_old_expiry_transmission_reserve():
+    bench, radio, clock = make()
+    source = Source(clock)
+    # After the 100 ms send interval, GET consumes 75 ms. The old output
+    # remains alive, but has less than the 20 ms write plus 10 ms tick reserve.
+    source.delays[3] = .075
+
+    with pytest.raises(bridge.ProbeError, match="analysis arrived after the command deadline"):
+        bridge.run_bridge(source, bench, 1)
+
+    assert bench.failed and len(radio.writes) == 2
+    assert clock.now < bench.last_expiry
+
+
+def test_ack_cannot_be_accepted_after_conservative_expiry():
+    bench, radio, clock = make()
+    bench.connect()
+    radio.write_delay = .015
+    read = radio.read
+    def delayed_ack(maximum):
+        if radio.writes[-1].startswith(b"ARGOS_VISION_SET"):
+            clock.sleep(.035)
+        return read(maximum)
+    radio.read = delayed_ack
+    # 40 ms TTL starts at send time; a 15 ms write and 35 ms ACK delay
+    # exceed it, even if the mock delivers only the expected ACK line.
+    with pytest.raises(bridge.ProbeError, match="timeout waiting for ARGOS_VISION_ACK"):
+        bench.send(proposal(clock, lifetime=.075))
+    assert len(radio.writes) == 2 and bench.failed
+
+
+def test_ready_timeout_reports_received_greetings_without_repeating_begin():
+    bench, radio, clock = make()
+    radio.transform = lambda reply: (bridge.HELLO + b"\n") * 2
+    with pytest.raises(bridge.ProbeError, match="2 greetings during this wait"):
+        bench.connect()
+    assert bench.failed and len(radio.writes) == 1
+    assert radio.writes[0] == b"#\nARGOS_VISION_BEGIN 1234abcd\n"
+
+
+@pytest.mark.parametrize("pause_before_wait", [True, False])
+def test_ack_wait_cannot_renew_expiry_after_scheduler_pause(pause_before_wait):
+    bench, radio, clock = make()
+    bench.connect()
+    wait = bench._wait
+    def paused_wait(expected, timeout, **kwargs):
+        if pause_before_wait:
+            clock.sleep(.2)
+        wait(expected, timeout, **kwargs)
+        if not pause_before_wait:
+            clock.sleep(.2)
+    bench._wait = paused_wait
+    with pytest.raises(bridge.ProbeError):
+        bench.send(proposal(clock, lifetime=.2), min_ttl=bridge.MIN_STREAM_TTL)
+    assert clock.now > bench.last_expiry
+    assert bench.failed and len(radio.writes) == 2
+    assert bench.next_sequence == 1
 
 
 def test_same_frame_deadline_dwindles_and_cannot_be_extended_by_host():

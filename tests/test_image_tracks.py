@@ -193,6 +193,107 @@ def test_ambiguous_geometry_cannot_be_rescued_by_the_expanded_fallback():
     assert all(item["track_id"] != old for item in result)
 
 
+@pytest.mark.parametrize("with_appearance", [False, True])
+def test_transient_ambiguity_does_not_keep_changing_a_stationary_person_id(with_appearance):
+    tracker = ImageTracker()
+    descriptors = [appearance()] if with_appearance else None
+    first = tracker.update([person(.2)], 1, appearances=descriptors)[0]["track_id"]
+    second = tracker.update([person(.4)], 1.125, appearances=descriptors)[0]["track_id"]
+    assert first != second
+    # Both previous boxes overlap this measurement: neither identity is safe.
+    measured = person(.3)
+    replacement = tracker.update([measured], 1.25, appearances=descriptors)[0]
+    assert replacement["track_id"] not in {first, second}
+    for index in range(1, 21):
+        # The ambiguity must not reproduce itself indefinitely by remembering
+        # a fresh competitor on every subsequent unchanged observation.
+        assert tracker.update([measured], 1.25 + index * .125,
+                              appearances=descriptors) == [replacement]
+
+
+@pytest.mark.parametrize("with_appearance", [False, True])
+def test_crossing_retires_uncertain_ids_without_disturbing_an_unrelated_person(with_appearance):
+    tracker = ImageTracker()
+
+    def update(people, at):
+        return tracker.update(people, at,
+            appearances=[appearance()] * len(people) if with_appearance else None)
+
+    other = person(.75, w=.12)
+    original = update([person(.2), person(.4), other], 1)
+    uncertain = {item["track_id"] for item in original[:2]}
+    unaffected = original[2]["track_id"]
+    merged = update([other, person(.3)], 1.125)
+    assert merged[0]["track_id"] == unaffected
+    assert merged[1]["track_id"] not in uncertain
+    split = update([person(.4), other, person(.2)], 1.25)
+    split_ids = {split[0]["track_id"], split[2]["track_id"]}
+    assert len(split_ids) == 2
+    assert split_ids.isdisjoint(uncertain | {merged[1]["track_id"]})
+    assert split[1]["track_id"] == unaffected
+    # Returning to the original positions cannot resurrect either ambiguous
+    # predecessor, even though its ordinary memory TTL has not elapsed.
+    continued = update([person(.2), person(.4), other], 1.375)
+    assert [item["track_id"] for item in continued] == [
+        split[2]["track_id"], split[0]["track_id"], unaffected]
+
+
+@pytest.mark.parametrize("with_appearance", [False, True])
+def test_continuing_duplicate_boxes_never_choose_an_ambiguous_predecessor(with_appearance):
+    tracker = ImageTracker()
+
+    def update(people, at):
+        return tracker.update(people, at,
+            appearances=[appearance()] * len(people) if with_appearance else None)
+
+    previous = {update([person(.3)], 1)[0]["track_id"]}
+    for index in range(1, 9):
+        result = update([person(.29), person(.31)], 1 + index * .125)
+        identities = {item["track_id"] for item in result}
+        assert len(identities) == 2 and identities.isdisjoint(previous)
+        previous = identities
+    single = update([person(.3)], 2.125)
+    assert single[0]["track_id"] not in previous
+    assert update([person(.3)], 2.25) == single
+
+
+def test_weak_ambiguity_neither_retires_strong_tracks_nor_refreshes_their_evidence():
+    tracker = ImageTracker()
+    original = tracker.update([person(.2), person(.4)], 1,
+                              appearances=[appearance(), appearance()])
+    records = dict(tracker._tracks)
+    weak = tracker.update([person(.3, confidence=.4)], 1.125,
+                          appearances=[appearance()])[0]
+    assert weak["track_id"] not in records
+    assert tracker._tracks == records
+    assert tracker.update([person(.2)], 1.25,
+                          appearances=[appearance()])[0]["track_id"] == original[0]["track_id"]
+
+
+def test_weak_box_cannot_reclaim_a_track_retired_by_strong_ambiguity():
+    tracker = ImageTracker()
+    original = tracker.update([person(.2), person(.4)], 1,
+                              appearances=[appearance(), appearance()])
+    old_ids = {item["track_id"] for item in original}
+    result = tracker.update([person(.3), person(.2, confidence=.4)], 1.125,
+                            appearances=[appearance(), appearance()])
+    assert all(item["track_id"] not in old_ids for item in result)
+    assert set(tracker._tracks) == {result[0]["track_id"]}
+
+
+def test_appearance_contradiction_preserves_a_genuinely_unique_geometry_match():
+    tracker = ImageTracker()
+    original = tracker.update([person(.2), person(.4)], 1,
+                              appearances=[appearance(), appearance(basis=10)])
+    other_id = original[1]["track_id"]
+    other_record = tracker._tracks[other_id]
+    # Geometry overlaps both histories, but contradictory appearance has
+    # already rejected the second edge before ambiguity is evaluated.
+    current = tracker.update([person(.3)], 1.125, appearances=[appearance()])
+    assert current[0]["track_id"] == original[0]["track_id"]
+    assert tracker._tracks[other_id] == other_record
+
+
 def test_individually_missing_appearance_allows_only_unique_geometry():
     tracker = ImageTracker()
     old = tracker.update([narrow()], 1, appearances=[appearance()])[0]["track_id"]

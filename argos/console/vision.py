@@ -17,6 +17,7 @@ import time
 
 from argos.perception.image_tracks import ImageTracker
 from argos.perception.yolox import get_model_spec, validate_inference_threads
+from .config import validate_vision_hz
 from .video import VideoSample
 
 MAX_HZ = 5
@@ -50,6 +51,7 @@ class AnalyzedFrame:
     sample: VideoSample
     context: tuple[str, str]
     result: dict
+    timing: dict | None = None
 
 
 class VisionService:
@@ -60,11 +62,12 @@ class VisionService:
     Model recovery requires restarting the console; manual flight stays separate.
     """
 
-    def __init__(self, model_path: Path | None, *, variant="tiny", threads=2, wall_clock=time.monotonic,
+    def __init__(self, model_path: Path | None, *, variant="tiny", threads=2, max_hz=MAX_HZ, wall_clock=time.monotonic,
                  process_context=None):
         self.model_path = model_path
         self.model = get_model_spec(variant)
         self.threads = validate_inference_threads(threads)
+        self.max_hz = validate_vision_hz(max_hz)
         self.wall_clock = wall_clock
         self._mp = process_context
         self._process = self._incoming = self._outgoing = None
@@ -78,6 +81,13 @@ class VisionService:
         self._tracker = ImageTracker()
         self._tracker_dimensions = None
         self._selection_history = deque(maxlen=4)
+        self._completed_at = None
+
+    @property
+    def poll_interval(self):
+        # Collect completed work and submit the next latest image promptly.
+        # This is queue servicing, not a higher inference or command rate.
+        return .01 if self.model_path is not None and not self._closed and not self._error else .05
 
     def start(self):
         if self.model_path is None or self._process is not None or self._closed:
@@ -117,6 +127,7 @@ class VisionService:
             self._tracker_dimensions = None
             self._selection_history.clear()
             self._processed = 0
+            self._completed_at = None
             # Leave the one outstanding job alone until it returns or times out.
             # Its original context below prevents acceptance by the new source.
 
@@ -168,7 +179,12 @@ class VisionService:
                     except (TypeError, ValueError, KeyError) as exc:
                         self._fail(f"Invalid vision result: {exc}")
                         return
-                    self._frame = AnalyzedFrame(candidate.sample, candidate.context, result)
+                    timing = dict(candidate.timing or {},
+                        turnaround_ms=1000 * (wall_now - self._submitted_at),
+                        result_interval_ms=(None if self._completed_at is None else
+                                            1000 * (wall_now - self._completed_at)))
+                    self._completed_at = wall_now
+                    self._frame = AnalyzedFrame(candidate.sample, candidate.context, result, timing)
                     self._processed += 1
                     self._selection_history.append((candidate.context, candidate.sample.sequence,
                         candidate.sample.received_at, frozenset(d["track_id"] for d in result["detections"])))
@@ -183,7 +199,9 @@ class VisionService:
             if wall_now - self._submitted_at > INFERENCE_TIMEOUT:
                 self._fail("Vision inference timed out; manual flight remains available")
             return
-        if self._last_submit is not None and wall_now - self._last_submit < 1 / MAX_HZ:
+        # Avoid deferring an exactly due frame by another poll solely because
+        # subtraction rounded an interval a fraction below its boundary.
+        if self._last_submit is not None and wall_now - self._last_submit < 1 / self.max_hz - 1e-9:
             return
         sample = camera_sample
         if (sample is None or sample.sequence == self._last_sequence
@@ -195,7 +213,8 @@ class VisionService:
             self._incoming.put_nowait((self._identifier, sample.jpeg))
         except Full:
             return
-        self._pending = (self._identifier, AnalyzedFrame(sample, self._context, {}))
+        self._pending = (self._identifier, AnalyzedFrame(sample, self._context, {},
+            {"submit_age_ms": 1000 * (now - sample.received_at)}))
         self._last_sequence = sample.sequence
         self._submitted_at = self._last_submit = wall_now
 
@@ -276,8 +295,9 @@ class VisionService:
         return {"configured": self.model_path is not None, "state": state, "detail": detail,
                 "model": self.model.label, "variant": self.model.variant, "input_size": self.model.input_size,
                 "threads": self.threads,
-                "max_hz": MAX_HZ, "age_limit_s": self._age_limit(session),
+                "max_hz": self.max_hz, "age_limit_s": self._age_limit(session),
                 "frame_age_s": age, "inference_ms": candidate.result["inference_ms"] if candidate else None,
+                "timing": dict(candidate.timing) if candidate and candidate.timing is not None else None,
                 "processed": self._processed if self._context == self._identity(session) else 0,
                 "tracks": len(candidate.result["detections"]) if candidate else 0}
 

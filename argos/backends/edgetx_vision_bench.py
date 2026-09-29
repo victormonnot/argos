@@ -27,6 +27,17 @@ MAX_GAP = .25
 ACK_TIMEOUT = .12
 SESSION_LIMIT = 30.
 MAX_COMMANDS = 300
+MIN_STREAM_TTL = 14  # 100 ms interval + 30 ms write/tick reserve + one 10 ms poll.
+PREVIEW_POLL = .01
+FIRST_FRAME_WAIT = 1.
+
+
+def command_ttl(image_deadline, session_deadline, now):
+    if (type(image_deadline) not in (int, float)
+            or not math.isfinite(image_deadline)):
+        raise ProbeError("invalid preview deadline")
+    remaining = min(image_deadline, session_deadline) - now
+    return min(20, math.floor((remaining - WRITE_TIMEOUT - TICK) / TICK))
 
 
 class VisionBench:
@@ -63,14 +74,21 @@ class VisionBench:
         if not self.ready or self.failed or self.finished:
             raise ProbeError("a fresh vision-bench invocation and handshake are required")
 
-    def _wait(self, expected: bytes, timeout: float):
+    def _wait(self, expected: bytes, timeout: float, *, until=None):
         deadline = self._now() + timeout
+        if until is not None:
+            deadline = min(deadline, until)
+        received = greetings = 0
         while self._now() < deadline:
-            lines = self.lines.feed(self.port.read(256))
+            data = self.port.read(256)
+            received += len(data)
+            lines = self.lines.feed(data)
             if self._now() >= deadline:
                 break
             found = False
             for line in lines:
+                if line == HELLO:
+                    greetings += 1
                 if line == expected and not found:
                     found = True
                 elif line == HELLO:
@@ -83,7 +101,8 @@ class VisionBench:
             if found:
                 return
             self.sleep(min(.005, max(0., deadline - self._now())))
-        raise ProbeError(f"timeout waiting for {expected.decode('ascii')}")
+        raise ProbeError(f"timeout waiting for {expected.decode('ascii')} "
+                         f"(received {received} bytes, {greetings} greetings during this wait)")
 
     def _drain(self):
         for line in self.lines.feed(self.port.read(256)):
@@ -105,7 +124,10 @@ class VisionBench:
             self.port.reset_input_buffer()
             self._wait(HELLO, 5.)
             self.session_deadline = self._now() + SESSION_LIMIT
-            self._write(f"ARGOS_VISION_BEGIN {self.session}")
+            # The radio may retain an incomplete line from an earlier writer.
+            # Invalidate it before its LF: a bare LF could complete an old SET.
+            # This is one bounded write and one BEGIN, with no session retry.
+            self._write(f"#\nARGOS_VISION_BEGIN {self.session}")
             self._wait(f"ARGOS_VISION_READY {self.session}".encode(), 2.)
             self.ready = True
         except BaseException:
@@ -129,7 +151,7 @@ class VisionBench:
             self.failed = True
             raise
 
-    def send(self, proposal: PreviewValue) -> tuple[int, int]:
+    def send(self, proposal: PreviewValue, *, min_ttl=1) -> tuple[int, int]:
         self._require_ready()
         try:
             if type(proposal.value) is not int or not -128 <= proposal.value <= 128:
@@ -137,6 +159,8 @@ class VisionBench:
             if (type(proposal.deadline) not in (int, float)
                     or not math.isfinite(proposal.deadline)):
                 raise ProbeError("invalid preview deadline")
+            if type(min_ttl) is not int or not 1 <= min_ttl <= 20:
+                raise ProbeError("invalid minimum command lifetime")
             if self.next_sequence > MAX_COMMANDS:
                 raise ProbeError("vision bench is limited to 300 commands")
             # Account for time spent reading the API or queued serial reports.
@@ -149,18 +173,23 @@ class VisionBench:
                     raise ProbeError("command rate exceeds 10 Hz")
                 if now >= self.last_expiry:
                     raise ProbeError("previous command expired; start a new invocation")
-            remaining = min(proposal.deadline, self.session_deadline) - now
+                # The radio checks expiry before accepting another SET. A new
+                # image's lifetime does not protect the previous command while
+                # this write is in flight; retain its write and tick reserves.
+                if now >= self.last_expiry - WRITE_TIMEOUT - TICK:
+                    raise ProbeError("previous command has insufficient transmission time; "
+                                     "sending stopped, no session restart")
             # Reserve the entire allowed write time and one radio clock tick.
             # Repeated analysis can never acquire a new image-age deadline.
-            ttl = min(20, math.floor((remaining - WRITE_TIMEOUT - TICK) / TICK))
-            if ttl < 1:
+            ttl = command_ttl(proposal.deadline, self.session_deadline, now)
+            if ttl < min_ttl:
                 limiting = "image" if proposal.deadline <= self.session_deadline else "session"
                 raise ProbeError(
                     f"{limiting} deadline too close for another command "
                     f"(command {self.next_sequence}, frame {proposal.frame_sequence}; "
                     f"image remaining {(proposal.deadline - now) * 1000:.1f} ms, "
                     f"session remaining {(self.session_deadline - now) * 1000:.1f} ms; "
-                    f"minimum command budget {(WRITE_TIMEOUT + 2 * TICK) * 1000:.1f} ms)"
+                    f"minimum command budget {(WRITE_TIMEOUT + (min_ttl + 1) * TICK) * 1000:.1f} ms)"
                 )
             sequence = self.next_sequence
             # Keep the last clock observation and deadline checks beside the
@@ -175,8 +204,10 @@ class VisionBench:
             self.last_expiry = now + ttl * TICK
             self._wait(
                 f"ARGOS_VISION_ACK {self.session} {sequence} {proposal.value} {ttl}".encode(),
-                min(ACK_TIMEOUT, ttl * TICK),
+                ACK_TIMEOUT, until=self.last_expiry,
             )
+            if self._now() >= self.last_expiry:
+                raise ProbeError("command expired before acknowledgement completed")
             self.next_sequence += 1
             return sequence, ttl
         except BaseException:
@@ -198,6 +229,47 @@ class VisionBench:
             self.finished = True
 
 
+def fresh_proposal(source: PreviewSource, bench: VisionBench, end: float):
+    """Wait only for usable analysis, never for an expired output to recover.
+
+    A too-old but still valid preview is not an API failure. Skip that proposed
+    SET rather than shorten output to less than the next legal send interval.
+    Read-only polling cannot renew an image deadline or radio session.
+    Active waiting also preserves the previous value's write/tick reserve;
+    these budgets cannot guarantee an HTTP response or OS scheduling time.
+    """
+    bench._require_ready()
+    limit = min(end, bench.session_deadline,
+                bench._now() + FIRST_FRAME_WAIT if bench.last_sent is None else
+                min(bench.last_expiry - WRITE_TIMEOUT - TICK, bench.last_sent + MAX_GAP))
+    reported = False
+    while True:
+        now = bench._now()
+        if now >= end:
+            return None
+        if now >= limit:
+            raise ProbeError("no sufficiently fresh analysis before the command deadline; "
+                             "sending stopped, no session restart")
+        bench._drain()
+        proposal = source.read()
+        now = bench._now()
+        if now >= end:
+            return None
+        if now >= limit:
+            raise ProbeError("analysis arrived after the command deadline; "
+                             "sending stopped, no session restart")
+        if command_ttl(proposal.deadline, bench.session_deadline, now) >= MIN_STREAM_TTL:
+            return proposal
+        if not reported:
+            print(f"Waiting for a fresher analysis before command {bench.next_sequence} "
+                  f"(frame {proposal.frame_sequence}, image remaining "
+                  f"{(proposal.deadline - now) * 1000:.1f} ms; "
+                  f"need {(WRITE_TIMEOUT + (MIN_STREAM_TTL + 1) * TICK) * 1000:.0f} ms).",
+                  flush=True)
+            reported = True
+        bench.sleep(min(PREVIEW_POLL, max(0., limit - now)))
+
+
 def run_bridge(source: PreviewSource, bench: VisionBench, duration: int):
     """Require a selection before BEGIN and fetch it again after the handshake."""
     if type(duration) is not int or not 1 <= duration <= 30:
@@ -207,6 +279,8 @@ def run_bridge(source: PreviewSource, bench: VisionBench, duration: int):
         print(f"Selected person {selected.target_id}; listening for ArgVis (5 seconds).",
               flush=True)
         bench.connect()
+        print("ArgVis session ready. Waiting for analysis with enough transmission time.",
+              flush=True)
         # Leave enough room for a final command's write budget at the radio's
         # independent 30 s ceiling. No SET is used to extend that ceiling.
         end = min(bench._now() + duration, bench.session_deadline - .1)
@@ -214,10 +288,10 @@ def run_bridge(source: PreviewSource, bench: VisionBench, duration: int):
             bench.pace(until=end)
             if bench._now() >= end:
                 break
-            proposal = source.read()
-            if bench._now() >= end:
+            proposal = fresh_proposal(source, bench, end)
+            if proposal is None or bench._now() >= end:
                 break
-            sequence, ttl = bench.send(proposal)
+            sequence, ttl = bench.send(proposal, min_ttl=MIN_STREAM_TTL)
             if sequence == 1 or sequence % 5 == 0:
                 print(f"ACK {sequence}: CH32 proposal {proposal.value / 1024:+.1%}, "
                       f"frame {proposal.frame_sequence}, TTL {ttl * 10} ms", flush=True)

@@ -10,6 +10,12 @@ from argos.backends.mavlink.transport import _address
 from argos.perception.yolox import get_model_spec, validate_inference_threads
 
 
+def validate_vision_hz(value):
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 10:
+        raise ValueError("vision_hz must be an integer between 1 and 10")
+    return value
+
+
 def default_recordings_dir():
     """Stable per-user storage, independent of the launch working directory."""
     configured = os.environ.get("XDG_DATA_HOME", "")
@@ -40,10 +46,12 @@ class ConsoleConfig:
     limits: TelemetryLimits = field(default_factory=lambda: TelemetryLimits(1., .2, .4))
     vision_variant: str = "tiny"
     vision_threads: int = 2
+    vision_hz: int = 5
 
     def __post_init__(self):
         get_model_spec(self.vision_variant)
         validate_inference_threads(self.vision_threads)
+        validate_vision_hz(self.vision_hz)
         if not isinstance(self.sim_framing, bool):
             raise ValueError("sim_framing must be a boolean")
         if self.sim_framing and (not self.sim_control or self.vision_model is None
