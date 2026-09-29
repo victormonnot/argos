@@ -231,6 +231,36 @@ lifetime shrinks as that deadline approaches. This does not measure the camera s
 physical sample age, complete video latency or the time bytes arrive at the
 radio.
 
+### Radio scheduling is separate from the host write
+
+On the monochrome Pocket with EdgeTX 2.12.4, model Lua scripts execute in the
+nominal 50 ms menu task, through `guiMain` and `luaTask(false)`. They do not run
+at the native mixer's faster cadence. USB input waits in the Lua receive FIFO
+until `serialRead` runs. See the pinned upstream
+[menu task](https://github.com/EdgeTX/edgetx/blob/def35ad324896b45d6607d4778536b1bc5360d20/radio/src/tasks.cpp#L51-L90),
+[Lua invocation](https://github.com/EdgeTX/edgetx/blob/def35ad324896b45d6607d4778536b1bc5360d20/radio/src/main.cpp#L456-L475),
+and [receive callback](https://github.com/EdgeTX/edgetx/blob/def35ad324896b45d6607d4778536b1bc5360d20/radio/src/targets/common/arm/stm32/usbd_cdc.cpp#L356-L365).
+
+A fast `write()` return means the host accepted the bytes, not that Lua read
+them. Even without a USB fault, sends slightly more than 150 ms apart can land
+four 50 ms callbacks apart. A 200 ms command then expires before the next SET is
+parsed. Task overruns can add more delay; 50 ms is not a worst-case bound.
+
+The TTL starts when Lua processes the command, and expiry is checked when Lua
+next runs. Consequently, the host's write/tick reserves do not establish a
+physical output cutoff at the original image deadline. An ACK does not prove
+that cutoff either. The separate
+[USB transmit flush](https://github.com/EdgeTX/edgetx/blob/def35ad324896b45d6607d4778536b1bc5360d20/radio/src/targets/common/arm/stm32/usbd_cdc.cpp#L254-L294)
+adds nominal 16 ms batching on this target's **return path**; it must not be
+treated as the incoming command's delivery time.
+
+Delivery tests model queued commands, callback cadence and return delays
+independently. They reproduce expiry with a fresh, unchanged selection and a
+successful host write, and verify that the helper stops without restarting.
+Successful simulations with fixed immediate command receipt cover a narrower
+case and do not establish live continuity. These timing limits still require
+resolution before using this bench as an aircraft control path.
+
 ArgVis uses its own `ARGOS_USB_VISION_BENCH_V1` protocol, separate from the earlier
 fixed-pattern scripts. It accepts continuous raw values from −128 to +128,
 fresh sequence numbers, and lifetimes from 1 to 20 ticks. Its session has a
@@ -249,7 +279,7 @@ Software checks use synthetic HTTP/serial exchanges, clocks and Lua API mocks:
 ```sh
 .venv/bin/python -m pytest -q \
   tests/test_edgetx_vision_bench.py tests/test_vision_bench_source.py \
-  tests/test_vision_bench_cadence.py
+  tests/test_vision_bench_cadence.py tests/test_vision_bench_delivery.py
 lua tests/edgetx_usb_vision_test.lua
 ```
 
