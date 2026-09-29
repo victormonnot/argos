@@ -21,7 +21,7 @@ def model_bytes(tmp_path, monkeypatch):
     return path, data
 
 
-@pytest.fixture(params=["tiny", "s"])
+@pytest.fixture(params=["tiny", "nano", "s"])
 def detector(request, monkeypatch, model_bytes):
     variant = request.param
     model = yolox.get_model_spec(variant)
@@ -61,13 +61,16 @@ def raw_box(detector, output, row, box, confidence=.8, width=4, height=2):
     output[0, row, 5] = confidence
 
 
-def test_loading_requires_exact_size_and_digest(model_bytes):
+@pytest.mark.parametrize("variant", ["tiny", "nano", "s"])
+def test_loading_requires_exact_size_and_digest(model_bytes, monkeypatch, variant):
     path, data = model_bytes
-    assert yolox.read_verified_model(path) == data
+    monkeypatch.setattr(yolox, "MODEL_CATALOG", {**yolox.MODEL_CATALOG,
+        variant: replace(yolox.get_model_spec(variant), size_bytes=len(data), sha256=hashlib.sha256(data).hexdigest())})
+    assert yolox.read_verified_model(path, variant=variant) == data
     for bad in (data[:-1], data + b"x", b"x" * len(data)):
         path.write_bytes(bad)
         with pytest.raises(ValueError, match="size/SHA-256"):
-            yolox.read_verified_model(path)
+            yolox.read_verified_model(path, variant=variant)
 
 
 def test_missing_model_fails_before_runtime_import(tmp_path, monkeypatch):
@@ -121,18 +124,19 @@ def test_decoded_image_input_is_validated_before_inference(detector, image):
     assert not hasattr(runtime, "input")
 
 
-def test_verified_variant_does_not_accept_another_catalog_model(model_bytes, monkeypatch):
+@pytest.mark.parametrize("variant", ["nano", "s"])
+def test_verified_variant_does_not_accept_another_catalog_model(model_bytes, monkeypatch, variant):
     path, data = model_bytes
     other = b"different verified model"
     monkeypatch.setattr(yolox, "MODEL_CATALOG", {**yolox.MODEL_CATALOG,
-        "s": replace(yolox.get_model_spec("s"), size_bytes=len(other), sha256=hashlib.sha256(other).hexdigest())})
+        variant: replace(yolox.get_model_spec(variant), size_bytes=len(other), sha256=hashlib.sha256(other).hexdigest())})
     assert yolox.read_verified_model(path, variant="tiny") == data
     with pytest.raises(ValueError, match="size/SHA-256"):
-        yolox.read_verified_model(path, variant="s")
+        yolox.read_verified_model(path, variant=variant)
     path.write_bytes(other)
-    assert yolox.read_verified_model(path, variant="s") == other
+    assert yolox.read_verified_model(path, variant=variant) == other
     with pytest.raises(ValueError, match="size/SHA-256"):
-        yolox.read_verified_model(path)  # A valid S file never silently changes the default.
+        yolox.read_verified_model(path)  # Another valid profile never changes the default.
 
 
 @pytest.mark.parametrize("variant", ["unknown", "S", "", None, [], True])

@@ -529,17 +529,18 @@ def test_missing_worker_appearance_list_is_not_a_valid_no_descriptor_reply(runti
     assert "appearance list" in vision.state(session)["detail"]
 
 
-def test_model_variant_survives_source_changes_and_reaches_app(tmp_path):
+@pytest.mark.parametrize("variant", ["nano", "s"])
+def test_model_variant_survives_source_changes_and_reaches_app(tmp_path, variant):
     pytest.importorskip("fastapi")
     from argos.console.app import create_app
-    config = ConsoleConfig(vision_model=tmp_path / "model.onnx", vision_variant="s",
+    config = ConsoleConfig(vision_model=tmp_path / "model.onnx", vision_variant=variant,
                            vision_threads=4, vision_hz=8, recordings_dir=tmp_path)
     replaced = config.with_sources(config.public())
-    assert replaced.vision_variant == "s" and "vision_variant" not in config.public()
+    assert replaced.vision_variant == variant and "vision_variant" not in config.public()
     assert replaced.vision_threads == 4 and "vision_threads" not in config.public()
     assert replaced.vision_hz == 8 and "vision_hz" not in config.public()
     app = create_app(replaced)
-    assert app.state.vision.model.variant == "s"
+    assert app.state.vision.model.variant == variant
     assert app.state.vision.threads == 4
     assert app.state.vision.max_hz == 8
     assert ConsoleConfig().vision_variant == "tiny"
@@ -566,16 +567,17 @@ def test_invalid_analysis_rate_is_rejected_by_the_service(rate):
         VisionService(None, max_hz=rate)
 
 
-def test_console_cli_passes_explicit_variant_to_config(tmp_path, monkeypatch):
+@pytest.mark.parametrize("variant", ["nano", "s"])
+def test_console_cli_passes_explicit_variant_to_config(tmp_path, monkeypatch, variant):
     pytest.importorskip("fastapi")
     from argos.console import __main__ as cli
     from argos.console import app
     import sys
     seen = []
-    monkeypatch.setattr(sys, "argv", ["argos.console", "--vision-model", str(tmp_path / "s.onnx"),
-                                     "--vision-variant", "s", "--vision-threads", "4"])
+    monkeypatch.setattr(sys, "argv", ["argos.console", "--vision-model", str(tmp_path / f"{variant}.onnx"),
+                                     "--vision-variant", variant, "--vision-threads", "4"])
     monkeypatch.setattr(app, "create_app", lambda config: seen.append(config) or "fake-app")
     monkeypatch.setitem(sys.modules, "uvicorn", SimpleNamespace(run=lambda *a, **kw: None))
     cli.main()
-    assert len(seen) == 1 and seen[0].vision_variant == "s"
+    assert len(seen) == 1 and seen[0].vision_variant == variant
     assert seen[0].vision_threads == 4

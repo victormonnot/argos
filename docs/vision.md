@@ -64,7 +64,7 @@ Use the printed cache path if `XDG_CACHE_HOME` is configured, or setup's
 `--vision-variant tiny` selects the original profile explicitly; omitting the
 option has the same effect. The path never selects a variant automatically:
 each profile checks its own exact model size and SHA-256 before loading.
-The example explicitly requests four inference threads. Both model profiles
+The example explicitly requests four inference threads. All model profiles
 still default to two when `--vision-threads` is omitted. The option accepts an
 integer from 1 to 6 in either launcher or console; it changes the OpenCV worker's
 CPU thread limit and does not reserve CPU cores. Four threads improved the
@@ -74,6 +74,27 @@ time; see the [offline comparison and its limits](validation.md#optional-detecto
 That comparison alone does not validate S in an airborne framing loop; the
 [live checks](validation.md#live-s-framing-checks) separately record the failed
 two-thread run and the four-thread trial.
+
+For a smaller CPU workload, the optional `nano` profile uses the official
+YOLOX-Nano export with the same 416-pixel input size as Tiny. Download it explicitly
+and pass both its path and profile to the console:
+
+```sh
+.venv/bin/python examples/setup_vision_model.py --variant nano
+.venv/bin/python -m argos.console \
+  --camera-device /dev/video2 \
+  --vision-model "$HOME/.cache/argos/models/yolox_nano.onnx" \
+  --vision-variant nano --vision-threads 4 --port 8080
+```
+
+Use the actual capture device and printed model path. The Gazebo launcher also
+accepts `--vision-variant nano`. This is an explicit alternative, not an automatic
+fallback: Tiny remains the default, and confidence, tracking and freshness rules
+are unchanged. The [upstream model comparison](https://github.com/Megvii-BaseDetection/YOLOX/blob/6ddff4824372906469a7fae2dc3206c7aa4bbaee/demo/ONNXRuntime/README.md)
+reports a smaller compute cost but lower general detection accuracy for Nano.
+Check person detection and end-to-end timing on the intended camera and host;
+faster inference alone does not validate radio continuity or assisted flight.
+The existing offline comparison still compares Tiny and S.
 
 Open the printed local URL, then enable **Person detection** in the camera
 header. **Flight controls** retains its usual mouse, touch and keyboard workflow.
@@ -85,7 +106,7 @@ still opens the runway without a person or detector. `--scene person` and
 `--vision-model` are independent choices.
 
 For an already configured camera, add `--vision-model /absolute/path/to/model.onnx`
-and, for S, `--vision-variant s` to `python -m argos.console`. The detector accepts
+and the matching `--vision-variant` to `python -m argos.console`. The detector accepts
 the same JPEG camera data from Gazebo or the existing V4L2 receiver. Physical
 assisted flight has not been validated. Missing, altered or unsupported model files leave vision unavailable
 with an explicit status; the application does not download replacements.
@@ -160,21 +181,23 @@ distance or position, and it is separate from the fixed-pattern
 
 ## Model and data flow
 
-The catalog accepts two unmodified official ONNX exports from release `0.1.1rc0`:
+The catalog accepts three unmodified official ONNX exports from release `0.1.1rc0`:
 
 | Variant | Official model | Input tensor | Output tensor | File size |
 | --- | --- | --- | --- | ---: |
 | `tiny` (default) | [YOLOX-Tiny](https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_tiny.onnx) | float32 `1×3×416×416` | `1×3549×85` | 20,219,662 bytes |
+| `nano` | [YOLOX-Nano](https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_nano.onnx) | float32 `1×3×416×416` | `1×3549×85` | 3,659,407 bytes |
 | `s` | [YOLOX-S](https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx) | float32 `1×3×640×640` | `1×8400×85` | 35,858,002 bytes |
 
 Pinned SHA-256 checksums:
 
 - `tiny`: `427cc366d34e27ff7a03e2899b5e3671425c262ea2291f88bb942bc1cc70b0f7`
+- `nano`: `c789161ed43c8269fcd4e67c67eeeb4e80c622da2eb296a20bc6007bd18a0b7d`
 - `s`: `c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063`
 
-The S checksum was measured after downloading the official HTTPS release asset;
-the release API did not supply a publisher digest. It pins the downloaded bytes,
-not a publisher signature. Setup writes an attribution notice beside each model.
+The S and Nano checksums were measured after downloading the official HTTPS
+release assets. They pin the downloaded bytes, not publisher signatures. Setup
+writes an attribution notice beside each model.
 [YOLOX's ONNX guide](https://github.com/Megvii-BaseDetection/YOLOX/blob/6ddff4824372906469a7fae2dc3206c7aa4bbaee/demo/ONNXRuntime/README.md)
 links these exports and documents their input sizes. The
 [upstream Apache-2.0 license](https://github.com/Megvii-BaseDetection/YOLOX/blob/6ddff4824372906469a7fae2dc3206c7aa4bbaee/LICENSE)

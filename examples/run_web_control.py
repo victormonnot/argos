@@ -24,6 +24,9 @@ if __package__:
     from .setup_vision_scene import ASSET_NOTICE, default_assets_dir, verified_mesh
 else:
     from setup_vision_scene import ASSET_NOTICE, default_assets_dir, verified_mesh
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from argos.perception.yolox import MODEL_CATALOG
 
 
 def add_person_scene(world_element: ET.Element, models: Path, mesh: Path) -> None:
@@ -126,8 +129,8 @@ def main():
                         help="asset root populated by examples/setup_vision_scene.py")
     parser.add_argument("--vision-model", type=Path,
                         help="local detector model forwarded to the ARGOS console")
-    parser.add_argument("--vision-variant", choices=("tiny", "s"), default="tiny",
-                        help="pinned detector profile: tiny (416px) or s (640px)")
+    parser.add_argument("--vision-variant", choices=tuple(MODEL_CATALOG), default="tiny",
+                        help="pinned detector profile: tiny (416px, default), nano (416px) or s (640px)")
     parser.add_argument("--vision-threads", type=int, choices=range(1, 7), default=2,
                         help="CPU threads for the detector worker (default: 2)")
     args = parser.parse_args()

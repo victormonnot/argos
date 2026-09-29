@@ -39,7 +39,7 @@ def main():
     parser.add_argument("--vision-model", type=Path,
                         help="local verified ONNX model matching --vision-variant; enables person detection")
     parser.add_argument("--vision-variant", choices=tuple(MODEL_CATALOG), default="tiny",
-                        help="pinned model variant: tiny (416px, default) or s (640px)")
+                        help="pinned model variant: tiny (416px, default), nano (416px) or s (640px)")
     parser.add_argument("--vision-threads", type=int, choices=range(1, 7), default=2,
                         help="OpenCV CPU thread limit for the vision worker (default: 2)")
     parser.add_argument("--vision-hz", type=int, choices=range(1, 11), default=5,

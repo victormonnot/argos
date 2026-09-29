@@ -66,7 +66,7 @@ def install(output: Path, *, variant: str = "tiny") -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--variant", choices=tuple(MODEL_CATALOG), default="tiny",
-                        help="official model export: tiny (416px, default) or s (640px)")
+                        help="official model export: tiny (416px, default), nano (416px) or s (640px)")
     parser.add_argument("--output", type=Path,
                         help="local ONNX destination (default: XDG user cache)")
     args = parser.parse_args()

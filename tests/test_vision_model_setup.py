@@ -87,28 +87,32 @@ def test_explicit_output_is_used_by_cli(tmp_path, monkeypatch, capsys):
     assert str(output) in capsys.readouterr().out
 
 
-def test_s_variant_uses_its_own_download_notice_and_cache(tmp_path, monkeypatch, model_bytes):
+@pytest.mark.parametrize("variant", ["nano", "s"])
+def test_variant_uses_its_own_download_notice_and_cache(tmp_path, monkeypatch, model_bytes, variant):
     calls = []
     def fetch(url, *, timeout):
         calls.append(url)
         return io.BytesIO(model_bytes)
     monkeypatch.setattr(setup, "urlopen", fetch)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    output = yolox.default_model_path("s")
-    assert output.name == "yolox_s.onnx"
-    setup.install(output, variant="s")
-    assert calls == [yolox.get_model_spec("s").url]
+    spec = yolox.get_model_spec(variant)
+    output = yolox.default_model_path(variant)
+    assert output.name == f"yolox_{variant}.onnx"
+    setup.install(output, variant=variant)
+    assert calls == [spec.url]
     notice = output.with_suffix(".NOTICE.txt").read_text()
-    assert "YOLOX-S ONNX" in notice and "Input: 640 x 640; variant: s" in notice
-    setup.install(output, variant="s")
-    assert len(calls) == 1  # Checked S cache remains offline, too.
+    assert f"{spec.label} ONNX" in notice
+    assert f"Input: {spec.input_size} x {spec.input_size}; variant: {variant}" in notice
+    setup.install(output, variant=variant)
+    assert len(calls) == 1  # Every checked profile's cache remains offline.
 
 
-def test_s_cli_selects_s_default_cache(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("variant", ["nano", "s"])
+def test_cli_selects_variant_default_cache(tmp_path, monkeypatch, capsys, variant):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    monkeypatch.setattr(sys, "argv", ["setup_vision_model.py", "--variant", "s"])
+    monkeypatch.setattr(sys, "argv", ["setup_vision_model.py", "--variant", variant])
     seen = []
     monkeypatch.setattr(setup, "install", lambda path, *, variant: seen.append((path, variant)) or path)
     setup.main()
-    assert seen == [(tmp_path / "argos/models/yolox_s.onnx", "s")]
-    assert "Verified YOLOX-S" in capsys.readouterr().out
+    assert seen == [(tmp_path / f"argos/models/yolox_{variant}.onnx", variant)]
+    assert f"Verified {yolox.get_model_spec(variant).label}" in capsys.readouterr().out

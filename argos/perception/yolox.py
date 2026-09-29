@@ -42,6 +42,10 @@ class ModelSpec:
 MODEL_CATALOG = MappingProxyType({
     "tiny": ModelSpec("tiny", "YOLOX-Tiny", MODEL_NAME, MODEL_URL,
                       MODEL_SHA256, MODEL_BYTES, INPUT_SIZE),
+    "nano": ModelSpec("nano", "YOLOX-Nano", "yolox_nano.onnx",
+        "https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_nano.onnx",
+        "c789161ed43c8269fcd4e67c67eeeb4e80c622da2eb296a20bc6007bd18a0b7d",
+        3_659_407, 416),
     "s": ModelSpec("s", "YOLOX-S", "yolox_s.onnx",
         "https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx",
         "c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063",
@@ -51,7 +55,7 @@ MODEL_CATALOG = MappingProxyType({
 
 def get_model_spec(variant: str = "tiny") -> ModelSpec:
     if not isinstance(variant, str) or variant not in MODEL_CATALOG:
-        raise ValueError("vision variant must be tiny or s")
+        raise ValueError("vision variant must be tiny, nano or s")
     return MODEL_CATALOG[variant]
 
 

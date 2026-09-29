@@ -67,7 +67,7 @@ def test_provenance_pairs_process_start_with_boot_identity(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("gui", [False, True])
-@pytest.mark.parametrize("variant", [None, "tiny", "s"])
+@pytest.mark.parametrize("variant", [None, "tiny", "nano", "s"])
 @pytest.mark.parametrize("threads", [None, 4])
 def test_manifest_preserves_legacy_pids_and_records_each_actual_launch(tmp_path, monkeypatch, gui, variant, threads):
     # A complete offline launcher pass checks the Popen-to-manifest connection.
