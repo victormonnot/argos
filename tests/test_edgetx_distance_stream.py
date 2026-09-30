@@ -54,27 +54,28 @@ class Radio:
             return len(packet) - 1
         for line in packet.decode().splitlines():
             fields = line.split()
-            if fields[0] == "DB2":
+            if fields[0] == "DB3":
                 self.session = fields[1]
                 self.ack = 0
                 self.state, self.mode = "M", "N"
                 self.gen += 1
-            elif fields[0] == "DS2" and self.accept:
+            elif fields[0] == "DS3" and self.accept:
                 self.ack = int(fields[4])
         return len(packet)
 
-    def report(self, *, state=None, mode=None, ticket=None, cause=None, ack=None, phase=None):
+    def report(self, *, state=None, mode=None, ticket=None, cause=None, ack=None, phase=None, yaw_phase=None):
         self.ticket = (self.ticket + 1) % stream.COUNTER_MODULUS if ticket is None else ticket
         self.state = state or self.state
         self.mode = mode or self.mode
         cause = cause or {"M": "M", "T": "W", "A": "A", "F": "L"}[self.state]
         phase = phase or ("A" if self.mode == "D" else "N")
-        self.incoming.append((f"DY2 {self.session} {self.gen} {self.ticket} "
-                              f"{self.ack if ack is None else ack} {self.state} {cause} {self.mode} {phase}\n").encode())
+        yaw_phase = yaw_phase or ("N" if self.mode == "N" else "A")
+        self.incoming.append((f"DY3 {self.session} {self.gen} {self.ticket} "
+                              f"{self.ack if ack is None else ack} {self.state} {cause} {self.mode} {yaw_phase} {phase}\n").encode())
 
     def commands(self):
         return [(at, packet.decode().split()) for at, packet in self.writes
-                if packet.startswith(b"DS2 ")]
+                if packet.startswith(b"DS3 ")]
 
     def close(self):
         self.closed = True
@@ -171,7 +172,8 @@ def test_source_mode_selection_is_bound_to_observed_generation():
     assert not host.selection_pending
 
 
-def test_temporary_pitch_phases_keep_target_reference_and_yaw_stream():
+@pytest.mark.parametrize("axis", ["yaw", "pitch", "both"])
+def test_temporary_axis_phases_keep_target_reference_and_stream(axis):
     requested = []
     host, radio, clock = setup(lambda token, mode: requested.append((token, mode)))
     enable(host, radio, clock)
@@ -182,12 +184,15 @@ def test_temporary_pitch_phases_keep_target_reference_and_yaw_stream():
     original = host.session, host.status.generation, host.selection_key
     for phase in ("A", "M", "R", "A"):
         clock.advance(.101)
-        radio.report(state="A", mode="D", phase=phase)
+        radio.report(state="A", mode="D",
+                     phase=phase if axis in ("pitch", "both") else "A",
+                     yaw_phase=phase if axis in ("yaw", "both") else "A")
         value = sample(clock)
         value = replace(value, demand=replace(value.demand, reference_height=.45))
         host.step(value)
         assert (host.session, host.status.generation, host.selection_key) == original
-        assert host.snapshot()["radio_pitch_phase"] == phase
+        assert host.snapshot()["radio_pitch_phase"] == (phase if axis in ("pitch", "both") else "A")
+        assert host.snapshot()["radio_yaw_phase"] == (phase if axis in ("yaw", "both") else "A")
         assert radio.commands()[-1][1][-4:] == ["1", "64", "1", "40"]
         assert not host.selection_pending and not host.selection_failed
     assert requested == [(token, "D")]
@@ -210,7 +215,7 @@ def test_new_generation_in_manual_discards_old_distance_status():
     radio.report(state="M", mode="N")
     host.step(sample(clock))
     count = len(radio.commands())
-    radio.incoming.append(f"DY2 {host.session} {oldgen} {oldticket + 100} 1 A A D A\n".encode())
+    radio.incoming.append(f"DY3 {host.session} {oldgen} {oldticket + 100} 1 A A D A A\n".encode())
     clock.advance(.101)
     host.step(sample(clock))
     assert len(radio.commands()) == count and host.status.mode == "N"
@@ -279,12 +284,15 @@ def test_new_frame_and_pitch_withdrawal_preserve_minimum_spacing():
     assert len(radio.commands()) == 3
 
 
-@pytest.mark.parametrize("line", [b"AY1 00000001 1 1 0 M M", b"DY2 00000001 1 1 0 A A N N",
-                                   b"DY2 00000001 1 1 0 M M D A", b"DY2 00000001 1 1 0 T A D A",
-                                   b"DY2 00000001 2147483648 1 0 T W D A", b"x" * 97,
-                                   b"DY2 00000001 1 1 0 A A D N",
-                                   b"DY2 00000001 1 1 0 A A Y M",
-                                   b"DY1 00000001 1 1 0 A A D"])
+@pytest.mark.parametrize("line", [b"AY1 00000001 1 1 0 M M", b"DY3 00000001 1 1 0 A A N N N",
+                                   b"DY3 00000001 1 1 0 M M D A A", b"DY3 00000001 1 1 0 T A D A A",
+                                   b"DY3 00000001 2147483648 1 0 T W D A A", b"x" * 97,
+                                   b"DY3 00000001 1 1 0 A A D A N",
+                                   b"DY3 00000001 1 1 0 A A Y A M",
+                                   b"DY3 00000001 1 1 0 A A Y N N",
+                                   b"DY3 00000001 1 1 0 M M N M N",
+                                   b"DY1 00000001 1 1 0 A A D",
+                                   b"DY2 00000001 1 1 0 A A D A"])
 def test_malformed_or_wrong_protocol_after_greeting_fails(line):
     host, radio, clock = setup()
     radio.incoming.append(line + b"\n")
@@ -293,7 +301,7 @@ def test_malformed_or_wrong_protocol_after_greeting_fails(line):
     assert host.failed
 
 
-@pytest.mark.parametrize("greeting", [b"ARGOS_YAW_STREAM_V3", b"ARGOS_DISTANCE_STREAM_V1"])
+@pytest.mark.parametrize("greeting", [b"ARGOS_YAW_STREAM_V3", b"ARGOS_DISTANCE_STREAM_V1", b"ARGOS_DISTANCE_STREAM_V2"])
 def test_old_or_yaw_peer_gets_no_writes_and_no_shared_greeting(greeting):
     clock = Clock()
     radio = Radio(clock)

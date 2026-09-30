@@ -1,7 +1,7 @@
 -- Experimental, isolated apparent-distance profile: ARGOS DST only.
 -- SC up: yaw, SC down with SB up/ANGLE: yaw + bounded pitch; middle: manual.
 -- Six outputs use EdgeTX MAX_SCRIPT_OUTPUTS=6. Native gates must independently
--- withdraw yaw/pitch and latch Rud/Ele takeover; Lua cannot guarantee execution.
+-- withdraw each axis independently during stick input; Lua cannot guarantee execution.
 -- This does not control throttle, arming, roll or motors.
 local MAX_SEQUENCE = 2147483647
 local MAX_VALUE = 205
@@ -13,13 +13,12 @@ local ticket = 0
 local tickets = {}
 local sequence = 0
 local state = "M" -- Manual/rearm, enabled Target unavailable, Active, Fault.
-local cause = "S" -- V2 status: startup, manual, waiting, active, target, expiry...
+local cause = "S" -- V3 status: startup, manual, waiting, active, target, expiry...
 local value, fresh, heartbeat = 0, 0, 0
 local pitch, pitchFresh = 0, 0
-local pitchPhase = "N" -- N: not distance; A: automatic; M: stick; R: fresh ticket wait.
-local pitchCenteredAt = nil
-local pitchResumeAt = nil
-local pitchResumeTicket = nil
+-- Phase N: outside mode; A: automatic; M: stick; R: fresh ticket wait.
+local yawAxis = {phase = "N"}
+local pitchAxis = {phase = "N"}
 local leaseIssued = nil
 local lastAccepted = nil
 local enabledAt = nil
@@ -27,7 +26,6 @@ local lastStatus = nil
 local lastHello = nil
 local lastClock = nil
 local sawMiddle = false
-local stickSince = nil
 local buffer = ""
 local dropping = false
 local pending = nil
@@ -54,9 +52,14 @@ local function invalidate()
   lastStatus = nil
 end
 
-local function pitchPhaseTo(nextPhase)
-  if pitchPhase ~= nextPhase then lastStatus = nil end
-  pitchPhase = nextPhase
+local function phaseTo(axis, nextPhase)
+  if axis.phase ~= nextPhase then lastStatus = nil end
+  axis.phase = nextPhase
+end
+
+local function resetAxis(axis, nextPhase)
+  phaseTo(axis, nextPhase)
+  axis.centeredAt, axis.resumeAt, axis.resumeTicket = nil, nil, nil
 end
 
 local function manual(nextState, nextCause)
@@ -64,38 +67,43 @@ local function manual(nextState, nextCause)
   if cause ~= nextCause then lastStatus = nil end
   state = nextState
   mode = "N"
-  pitchPhaseTo("N")
-  pitchCenteredAt, pitchResumeAt, pitchResumeTicket = nil, nil, nil
+  resetAxis(yawAxis, "N")
+  resetAxis(pitchAxis, "N")
   cause = nextCause
   enabledAt = nil
   lastAccepted = nil
-  stickSince = nil
   sawMiddle = false
   withdraw()
 end
 
-local function pitchAuthority(now, ele)
-  local magnitude = math.abs(ele)
-  if magnitude > 102 or (pitchPhase == "R" and magnitude > 51) then
-    -- Native CH2 gating handles the same movement even if Lua stops running.
-    -- Do not change the radio generation or the console's distance reference.
-    pitchPhaseTo("M")
-    pitchCenteredAt, pitchResumeAt, pitchResumeTicket = nil, nil, nil
-  elseif pitchPhase == "M" then
+local function axisAuthority(axis, now, stick)
+  local magnitude = math.abs(stick)
+  if magnitude > 102 or (axis.phase == "R" and magnitude > 51) then
+    -- Native channel gates detect this independently, including when Lua stalls.
+    -- Any amplitude/duration temporarily releases this axis, without changing
+    -- the radio generation, selected person or distance reference.
+    resetAxis(axis, "M")
+  elseif axis.phase == "M" then
     if magnitude <= 51 then
-      if pitchCenteredAt == nil then pitchCenteredAt = now end
-      if elapsed(now, pitchCenteredAt) >= 20 then
-        pitchPhaseTo("R")
-        pitchResumeAt, pitchResumeTicket = now, ticket
-        pitchCenteredAt = nil
+      if axis.centeredAt == nil then axis.centeredAt = now end
+      if elapsed(now, axis.centeredAt) >= 20 then
+        phaseTo(axis, "R")
+        axis.resumeAt, axis.resumeTicket = now, ticket
+        axis.centeredAt = nil
       end
     else
-      pitchCenteredAt = nil
+      axis.centeredAt = nil
     end
   end
-  if pitchPhase == "M" or pitchPhase == "R" then
-    pitch, pitchFresh = 0, 0
-  end
+end
+
+local function allowAxis(axis)
+  local resume = axis.phase == "R" and axis.resumeAt ~= nil and axis.resumeTicket ~= nil
+    and elapsed(pending.clock, axis.resumeAt) < 1073741824
+    and elapsed(pending.ticket, axis.resumeTicket) > 0
+    and elapsed(pending.ticket, axis.resumeTicket) < 1073741824
+  if resume then resetAxis(axis, "A") end
+  return axis.phase == "A"
 end
 
 local function fault(reason)
@@ -139,90 +147,76 @@ local function blocked(reason, detail, now)
 end
 
 local function permitted()
-  local ok, allowed, sc, rud, ele, sb, takeover, reason, detail = pcall(function()
+  local ok, allowed, sc, rud, ele, sb, reason, detail = pcall(function()
     local info = model.getInfo()
     if type(info) ~= "table" or info.name ~= "ARGOS DST" then
-      return false, nil, nil, nil, nil, nil, "model", type(info) == "table" and info.name or type(info)
+      return false, nil, nil, nil, nil, "model", type(info) == "table" and info.name or type(info)
     end
     local internal = model.getModule(0)
     if type(internal) ~= "table" or internal.Type ~= 5
         or internal.firstChannel ~= 0 or internal.channelsCount ~= 16 then
       local value = type(internal) == "table" and (tostring(internal.Type) .. ":"
         .. tostring(internal.firstChannel) .. ":" .. tostring(internal.channelsCount)) or type(internal)
-      return false, nil, nil, nil, nil, nil, "internal_rf", value
+      return false, nil, nil, nil, nil, "internal_rf", value
     end
     local external = model.getModule(1)
     if type(external) ~= "table" or external.Type ~= 0 then
-      return false, nil, nil, nil, nil, nil, "external_rf", type(external) == "table" and external.Type or type(external)
+      return false, nil, nil, nil, nil, "external_rf", type(external) == "table" and external.Type or type(external)
     end
     local flip = getOutputValue(6)
     if type(flip) ~= "number" or not (flip >= -1100 and flip <= -900) then
-      return false, nil, nil, nil, nil, nil, "crash_flip", flip
+      return false, nil, nil, nil, nil, "crash_flip", flip
     end
     local selector, stick = getValue("sc"), getValue("rud")
     local elevator, angleSwitch = getValue("ele"), getValue("sb")
     if selector ~= -1024 and selector ~= 0 and selector ~= 1024 then
-      return false, nil, nil, nil, nil, nil, "selector", selector
+      return false, nil, nil, nil, nil, "selector", selector
     end
     if type(stick) ~= "number" or not (stick >= -1024 and stick <= 1024) then
-      return false, nil, nil, nil, nil, nil, "stick", stick
+      return false, nil, nil, nil, nil, "stick", stick
     end
     if type(elevator) ~= "number" or not (elevator >= -1024 and elevator <= 1024) then
-      return false, nil, nil, nil, nil, nil, "pitch", elevator
+      return false, nil, nil, nil, nil, "pitch", elevator
     end
     if angleSwitch ~= -1024 and angleSwitch ~= 0 and angleSwitch ~= 1024 then
-      return false, nil, nil, nil, nil, nil, "mode", angleSwitch
+      return false, nil, nil, nil, nil, "mode", angleSwitch
     end
-    local native = getLogicalSwitchValue(9) -- zero-based L10, mandatory.
-    if type(native) ~= "boolean" then
-      return false, nil, nil, nil, nil, nil, "logical_switch", native
-    end
-    return true, selector, stick, elevator, angleSwitch, native
+    return true, selector, stick, elevator, angleSwitch
   end)
   if not ok then
     local message = tostring(allowed)
     message = string.match(message, "global '([^']+)'")
       or string.gsub(message, "^[^:]+:%d+:%s*", "")
-    return false, nil, nil, nil, nil, nil, "api_exception", message
+    return false, nil, nil, nil, nil, "api_exception", message
   end
-  return allowed == true, sc, rud, ele, sb, takeover, reason, detail
+  return allowed == true, sc, rud, ele, sb, reason, detail
 end
 
-local function authority(now, sc, rud, ele, sb, native)
+local function authority(now, sc, rud, ele, sb)
   local requested = sc == -1024 and "Y" or (sc == 1024 and "D" or "N")
   if sc == 0 then
     if state ~= "M" then manual("M", "M") end
     sawMiddle = session ~= nil
-    stickSince = nil
   elseif mode ~= "N" and requested ~= mode then
     -- Crossing directly between enabled modes never changes authority in place.
     manual("M", "M")
   elseif requested == "D" and sb ~= -1024 then
     fault("G")
   elseif state == "M" and sawMiddle and math.abs(rud) <= 102
-      and (requested ~= "D" or math.abs(ele) <= 102) and not native then
+      and (requested ~= "D" or math.abs(ele) <= 102) then
     invalidate()
     state, mode, cause = "T", requested, "W"
-    pitchPhaseTo(requested == "D" and "A" or "N")
-    pitchCenteredAt, pitchResumeAt, pitchResumeTicket = nil, nil, nil
+    resetAxis(yawAxis, "A")
+    resetAxis(pitchAxis, requested == "D" and "A" or "N")
     sawMiddle = false
     enabledAt = now
     lastAccepted = nil
   end
   if state == "T" or state == "A" then
-    local magnitude = math.abs(rud)
-    if mode == "D" then magnitude = math.max(magnitude, math.abs(ele)) end
-    if native or magnitude > 512 then
-      fault("P")
-    elseif magnitude > 256 then
-      if stickSince == nil then stickSince = now end
-      if elapsed(now, stickSince) >= 20 then fault("P") end
-    else
-      stickSince = nil
-    end
-    if (state == "T" or state == "A") and mode == "D" then
-      pitchAuthority(now, ele)
-    end
+    axisAuthority(yawAxis, now, rud)
+    if mode == "D" then axisAuthority(pitchAxis, now, ele) end
+    if yawAxis.phase ~= "A" then value, fresh = 0, 0 end
+    if pitchAxis.phase ~= "A" then pitch, pitchFresh = 0, 0 end
     if enabledAt ~= nil and elapsed(now, lastAccepted or enabledAt) >= 100 then
       fault("L")
     elseif leaseIssued ~= nil and elapsed(now, leaseIssued) >= 30 then
@@ -243,7 +237,7 @@ local function number(text, maximum)
 end
 
 local function accept(line, now)
-  local begin = string.match(line, "^DB2 ([0-9a-f]+)$")
+  local begin = string.match(line, "^DB3 ([0-9a-f]+)$")
   if begin and #begin == 8 and begin ~= "00000000" then
     if begin == session then return end
     session = begin
@@ -255,7 +249,7 @@ local function accept(line, now)
   end
 
   local token, genText, ticketText, seqText, validText, valueText, pitchValidText, pitchText = string.match(
-    line, "^DS2 ([0-9a-f]+) (%d+) (%d+) (%d+) ([01]) ([%-]?%d+) ([01]) ([%-]?%d+)$")
+    line, "^DS3 ([0-9a-f]+) (%d+) (%d+) (%d+) ([01]) ([%-]?%d+) ([01]) ([%-]?%d+)$")
   local gen, issuedTicket = number(genText, MAX_SEQUENCE), number(ticketText, MAX_SEQUENCE)
   local nextSequence, nextValue = number(seqText, MAX_SEQUENCE), tonumber(valueText)
   local nextPitch = tonumber(pitchText)
@@ -324,18 +318,10 @@ local function publish(now)
   sequence = pending.sequence
   lastAccepted = now
   if pending.valid then
-    value, fresh = pending.value, 1024
-    local resume = pitchPhase == "R" and pitchResumeAt ~= nil and pitchResumeTicket ~= nil
-      and elapsed(pending.clock, pitchResumeAt) < 1073741824
-      and elapsed(pending.ticket, pitchResumeTicket) > 0
-      and elapsed(pending.ticket, pitchResumeTicket) < 1073741824
-    local allowPitch = pending.pitchValid and (pitchPhase == "A" or resume)
-    if allowPitch and resume then
-      pitchPhaseTo("A")
-      pitchCenteredAt, pitchResumeAt, pitchResumeTicket = nil, nil, nil
-    end
-    pitch = allowPitch and pending.pitch or 0
-    pitchFresh = allowPitch and 1024 or 0
+    local yawAllowed = allowAxis(yawAxis)
+    local pitchAllowed = pending.pitchValid and allowAxis(pitchAxis)
+    value, fresh = yawAllowed and pending.value or 0, yawAllowed and 1024 or 0
+    pitch, pitchFresh = pitchAllowed and pending.pitch or 0, pitchAllowed and 1024 or 0
     leaseIssued = pending.clock
     heartbeat = heartbeat <= 0 and 1024 or -1024
     if state ~= "A" then lastStatus = nil end
@@ -352,7 +338,7 @@ end
 
 local function status(now)
   if lastHello == nil or elapsed(now, lastHello) >= 100 then
-    if not write("ARGOS_DISTANCE_STREAM_V2\n") then return end
+    if not write("ARGOS_DISTANCE_STREAM_V3\n") then return end
     lastHello = now
   end
   if lastStatus == nil or elapsed(now, lastStatus) >= 10 then
@@ -364,13 +350,13 @@ local function status(now)
       for i = 1, 4 do tickets[i] = tickets[i + 1] end
       tickets[5] = nil
     end
-    if write(string.format("DY2 %s %d %d %d %s %s %s %s\n", session or "00000000",
-        generation, ticket, sequence, state, cause, mode, pitchPhase)) then lastStatus = now end
+    if write(string.format("DY3 %s %d %d %d %s %s %s %s %s\n", session or "00000000",
+        generation, ticket, sequence, state, cause, mode, yawAxis.phase, pitchAxis.phase)) then lastStatus = now end
   end
 end
 
 local function run()
-  local allowed, sc, rud, ele, sb, native, reason, detail = permitted()
+  local allowed, sc, rud, ele, sb, reason, detail = permitted()
   local clockOK, now = pcall(getTime)
   if not allowed then
     fault("G")
@@ -395,8 +381,8 @@ local function run()
   end
   blockedActive, lastBlockedAt, blockedCallbacks = false, nil, 0
   lastClock = now
-  -- Expire and inspect native pilot authority BEFORE reading delayed USB bytes.
-  authority(now, sc, rud, ele, sb, native)
+  -- Expire and inspect pilot authority BEFORE reading delayed USB bytes.
+  authority(now, sc, rud, ele, sb)
   readBatch(now)
   publish(now)
   status(now)

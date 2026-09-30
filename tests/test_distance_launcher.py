@@ -17,7 +17,7 @@ def test_preparation_binds_only_separate_profile_script_and_protocol(manual, tmp
                   radio_port="/dev/ttyACM999", vision_model="model.onnx", port=8080)
     config, manifest = distance.prepare(values)
     assert config.yaw_assist and config.vision_hz == 10
-    assert manifest["radio_protocol"] == "ARGOS_DISTANCE_STREAM_V2"
+    assert manifest["radio_protocol"] == "ARGOS_DISTANCE_STREAM_V3"
     assert manifest["radio_profile"]["model_name"] == "ARGOS DST"
     assert manifest["radio_script_sha256"] == distance._digest(Path("scripts/edgetx/ArgDst.lua"))
     profile.write_bytes(yaw_profile(manual))

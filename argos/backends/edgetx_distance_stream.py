@@ -17,7 +17,7 @@ from .edgetx_yaw_stream import SourceSample, SelectionResult
 from .yaw_stream_source import MAX_VALUE
 
 
-HELLO = b"ARGOS_DISTANCE_STREAM_V2"
+HELLO = b"ARGOS_DISTANCE_STREAM_V3"
 INTERVAL = .1
 MIN_COMMAND_INTERVAL = .05
 WRITE_TIMEOUT = .02
@@ -29,7 +29,7 @@ MAX_PITCH = 51
 MAX_LINE = 96
 # EdgeTX Lua 5.3 LUA_32BITS keeps nonnegative integer counters exact to 31 bits.
 COUNTER_MODULUS = 2**31
-_STATUS = re.compile(rb"DY2 ([0-9a-f]{8}) ([0-9]{1,10}) ([0-9]{1,10}) ([0-9]{1,10}) ([MTAF]) ([SMWATEPLIGCO]) ([NYD]) ([NAMR])")
+_STATUS = re.compile(rb"DY3 ([0-9a-f]{8}) ([0-9]{1,10}) ([0-9]{1,10}) ([0-9]{1,10}) ([MTAF]) ([SMWATEPLIGCO]) ([NYD]) ([NAMR]) ([NAMR])")
 _BLOCKED = re.compile(rb"ARGOS_DISTANCE_BLOCKED (model|internal_rf|external_rf|crash_flip|selector|stick|logical_switch|api_exception|serial_api|clock|mode|pitch) ([A-Za-z0-9_.:+-]{1,24})")
 
 
@@ -61,6 +61,7 @@ class RadioStatus:
     state: str
     cause: str
     mode: str
+    yaw_phase: str
     pitch_phase: str
 
 
@@ -68,7 +69,7 @@ def parse_status(line: bytes) -> RadioStatus:
     match = _STATUS.fullmatch(line)
     if match is None:
         raise ProbeError("invalid distance-stream radio status")
-    session, generation, ticket, ack, state, cause, mode, pitch_phase = match.groups()
+    session, generation, ticket, ack, state, cause, mode, yaw_phase, pitch_phase = match.groups()
     generation, ticket, ack = int(generation), int(ticket), int(ack)
     if generation >= COUNTER_MODULUS or ticket >= COUNTER_MODULUS or ack > MAX_SEQUENCE:
         raise ProbeError("out-of-range distance-stream radio status")
@@ -77,10 +78,12 @@ def parse_status(line: bytes) -> RadioStatus:
         raise ProbeError("inconsistent distance-stream radio state and cause")
     if (state in (b"M", b"F")) != (mode == b"N"):
         raise ProbeError("inconsistent distance-stream radio state and mode")
+    if (mode == b"N") != (yaw_phase == b"N"):
+        raise ProbeError("inconsistent distance-stream yaw phase and mode")
     if (mode == b"D") == (pitch_phase == b"N"):
         raise ProbeError("inconsistent distance-stream pitch phase and mode")
     return RadioStatus(session.decode(), generation, ticket, ack, state.decode(),
-                       cause.decode(), mode.decode(), pitch_phase.decode())
+                       cause.decode(), mode.decode(), yaw_phase.decode(), pitch_phase.decode())
 
 
 def _advances(value, previous):
@@ -150,6 +153,7 @@ class DistanceStream:
                     session=self.session, radio_state=status.state if status else None,
                     radio_cause=status.cause if status else None,
                     radio_mode=status.mode if status else None,
+                    radio_yaw_phase=status.yaw_phase if status else None,
                     radio_pitch_phase=status.pitch_phase if status else None,
                     last_sent_pitch=self.last_sent_pitch,
                     last_sent_pitch_valid=self.last_sent_pitch_valid,
@@ -422,11 +426,11 @@ class DistanceStream:
             demand = self._source(sample, now)
             if not self.greeted:
                 if now - self.started_at >= 5.:
-                    raise ProbeError("timeout waiting for ARGOS_DISTANCE_STREAM_V2")
+                    raise ProbeError("timeout waiting for ARGOS_DISTANCE_STREAM_V3")
                 return
             if self.pending_begin:
                 # A non-command prefix invalidates a partial previous input.
-                if drained and self._write(f"#\nDB2 {self.session}\n".encode(), now):
+                if drained and self._write(f"#\nDB3 {self.session}\n".encode(), now):
                     self.pending_begin = False
                     self.session_started_at = now
                 return
@@ -476,10 +480,10 @@ class DistanceStream:
             pitch = demand.pitch if pitch_valid else 0
             seq = self.sent_sequence + 1
             # Keep producing the same-reference demand during a temporary stick
-            # correction. The radio releases pitch locally and requires a new
-            # post-recenter ticket before restoring it; yaw can continue. A
-            # pitch phase change is not a target-selection transaction.
-            packet = (f"DS2 {self.session} {self.status.generation} {self.status.ticket} "
+            # correction of any amplitude. The radio releases each axis locally
+            # and requires a new post-recenter ticket before restoring it. Axis
+            # phase changes are not target-selection transactions.
+            packet = (f"DS3 {self.session} {self.status.generation} {self.status.ticket} "
                       f"{seq} {int(valid)} {value} {int(pitch_valid)} {pitch}\n").encode()
             if len(packet) - 1 > MAX_LINE:
                 raise ProbeError("distance command exceeds the radio line limit")
@@ -503,10 +507,12 @@ class DistanceStream:
                     self.reason = "manual: target selection failed; SC middle then the desired assist position to select again"
                 elif not valid:
                     self.reason = "manual requested: target temporarily unavailable"
-                elif self.status.pitch_phase == "M":
-                    self.reason = "pitch temporarily manual; yaw assistance continues"
-                elif self.status.pitch_phase == "R":
-                    self.reason = "pitch waiting for a fresh command after recentering"
+                elif self.status.yaw_phase in ("M", "R") or self.status.pitch_phase in ("M", "R"):
+                    phases = (("yaw", self.status.yaw_phase), ("pitch", self.status.pitch_phase))
+                    self.reason = "; ".join(
+                        f"{axis} temporarily manual" if phase == "M" else
+                        f"{axis} waiting for a fresh command after recentering"
+                        for axis, phase in phases if phase in ("M", "R"))
                 elif state == "A" and self.status.ack > 0:
                     self.reason = "radio reports assistance active"
                 else:

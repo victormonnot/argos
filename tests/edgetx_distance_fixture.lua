@@ -51,10 +51,6 @@ local function radio(options)
       equal(index, 6, "only crash-flip output may be checked")
       return r.flip
     end,
-    getLogicalSwitchValue = function(index)
-      equal(index, 9, "native L10 must be read")
-      return r.native
-    end,
     model = readonly({
       getInfo = function()
         if r.modelError then error("model unavailable") end
@@ -122,16 +118,16 @@ local function radio(options)
 
   function r:latestStatus()
     for i = #self.writes, 1, -1 do
-      local session, generation, ticket, sequence, state, cause, mode, pitchPhase = self.writes[i]:match(
-        "^DY2 ([0-9a-f]+) (%d+) (%d+) (%d+) ([MTAF]) ([SMWATEPLIGCO]) ([NYD]) ([NAMR])\n$")
+      local session, generation, ticket, sequence, state, cause, mode, yawPhase, pitchPhase = self.writes[i]:match(
+        "^DY3 ([0-9a-f]+) (%d+) (%d+) (%d+) ([MTAF]) ([SMWATEPLIGCO]) ([NYD]) ([NAMR]) ([NAMR])\n$")
       if session then return {session = session, generation = tonumber(generation),
-        ticket = tonumber(ticket), sequence = tonumber(sequence), state = state, cause = cause, mode = mode, pitchPhase = pitchPhase} end
+        ticket = tonumber(ticket), sequence = tonumber(sequence), state = state, cause = cause, mode = mode, yawPhase = yawPhase, pitchPhase = pitchPhase} end
     end
     error("no status emitted")
   end
 
   function r:begin(session)
-    self:step("#\nDB2 " .. (session or "abc012ef") .. "\n")
+    self:step("#\nDB3 " .. (session or "abc012ef") .. "\n")
     return self:latestStatus()
   end
 
@@ -147,7 +143,7 @@ local function radio(options)
   function r:command(sequence, value, valid, status, pitch, pitchValid)
     local s = status or self:latestStatus()
     if valid == nil then valid = true end
-    return string.format("DS2 %s %d %d %d %d %d %d %d\n", s.session,
+    return string.format("DS3 %s %d %d %d %d %d %d %d\n", s.session,
       s.generation, s.ticket, sequence, valid and 1 or 0, value, pitchValid and 1 or 0, pitch or 0)
   end
 
