@@ -26,22 +26,36 @@ oscillation; passing software checks is not a physical stability measurement.
 ## Runtime contract
 
 The host remains alive while the operator is in manual or the target is briefly
-unavailable. It sends at most 10 commands per second, without waiting for an
-acknowledgement of each command. A separate source reader supplies a single
-replaceable latest value. Slow HTTP, inference or a blocked source reader must
-not block the transmission scheduler or renew an old observation. Missed send
-slots are skipped, not replayed as a burst.
+unavailable. It normally refreshes a still-fresh command every 100 ms, without
+waiting for its acknowledgement. A genuinely newer analyzed image, or withdrawal
+of a previously valid correction, can advance that send; commands stay at least
+50 ms apart, measured after the preceding write completes. Repeated/older images
+cannot request this earlier send. Missed slots are skipped, never replayed in a
+burst. Refreshing does not extend the original image deadline or radio ticket.
 
-The source reader polls the compact `/api/vision/yaw-assist/state` at up to20Hz.
+The integrated console publishes validated immutable demands directly after its
+vision servicing, without HTTP or a separate source polling thread. The radio
+thread only reads the latest mailbox value. Physical SC selection is posted back
+to the console owner, bound to the observed camera/run and a 150 ms execution
+budget; at most one pending request is retained. The same validator, idempotent
+selection and recovery checks apply. A blocked console cannot refresh source
+health or an image deadline; invalid/lost imagery withdraws assistance.
+
+The standalone stream retains the compact `/api/vision/yaw-assist/state` HTTP
+reader at up to20Hz. Neither path lets inference, HTTP or a stalled producer
+block the serial scheduler. The launcher still caps inference at10Hz; earlier
+command delivery does not imply a higher detector cadence.
 Logging uses a separate bounded mailbox/thread, so a slow filesystem cannot
 block serial scheduling. Source wall/thread-CPU metrics are available alongside
-radio status; they do not measure total inference CPU. `source_poll.last_error`
+radio status (`source_poll.mode=in_process` for the integrated path); they do
+not measure total inference CPU. `source_poll.last_error`
 retains the latest failure message (one line, at most 240 characters), including
 after recovery; the error counter shows whether new failures are occurring.
 
 `last_command_timing` associates a valid command's analyzed frame with the exact
 sequence acknowledged in `AY1`. Image receipt is translated to an interval on
-the host clock using the HTTP request/response times, without comparing clock
+the host clock using the source snapshot call's start/end times (or HTTP
+request/response times for the standalone reader), without comparing clock
 origins. The interval stays anchored on repeated reads of the same image.
 Reported image-to-SET and image-to-ACK minimum/maximum durations include that
 uncertainty; ACK means the host observed the radio status, not aircraft response

@@ -21,6 +21,7 @@ from .yaw_stream_source import MAX_VALUE, YawDemand, YawSource
 
 HELLO = b"ARGOS_YAW_STREAM_V3"
 INTERVAL = .1
+MIN_COMMAND_INTERVAL = .05
 WRITE_TIMEOUT = .02
 HEALTH_TIMEOUT = 1.
 READ_BUDGET = 4
@@ -168,7 +169,10 @@ def _advances(value, previous):
 
 
 class YawStream:
-    """One USB connection; no SET acknowledgement blocks its 10 Hz sender.
+    """One USB connection; fresh images may advance the 10 Hz refresh sender.
+
+    Commands remain at least 50 ms apart. A new image or withdrawn target may
+    send before the next refresh, without waiting for a SET acknowledgement.
 
     Tickets are radio-issued capabilities with a radio-side 300 ms lifetime.
     Late queued commands cannot acquire a new lifetime on receipt. This bound
@@ -195,6 +199,8 @@ class YawStream:
         self.pending_since = None
         self.sent_sequence = 0
         self.next_send_at = self.started_at
+        self._last_command_at = None
+        self._last_frame_key = None
         self.session_started_at = self.started_at
         self.selection_key = None
         self.source_bad_since = None
@@ -325,6 +331,7 @@ class YawStream:
         self.sent_sequence = 0
         self.session_started_at = now
         self.next_send_at = now
+        self._last_frame_key = None
         self.pending_begin = True
         self._cancel_selection()
         self.last_sent_valid = None
@@ -504,7 +511,7 @@ class YawStream:
             if state not in ("T", "A"):
                 self.reason = "manual: SC middle then SC up required" if state == "M" else "radio fault: return SC to middle"
                 return
-            if not drained or now < self.next_send_at:
+            if not drained:
                 return
             if self.sent_sequence >= MAX_SEQUENCE:
                 self._rotate(now, "sequence exhausted")
@@ -513,6 +520,21 @@ class YawStream:
             now = self._now()
             valid = bool(demand is not None and demand.valid and demand.selection_key is not None
                          and demand.deadline > now and not self.source_fault)
+            # Keep the physical spacing even across session rotation. Neither
+            # an accumulated backlog nor a stalled scheduler earns a burst.
+            if (self._last_command_at is not None
+                    and now < self._last_command_at + MIN_COMMAND_INTERVAL):
+                return
+            frame = getattr(demand, "frame_sequence", None) if valid else None
+            frame_key = ((demand.selection_key, frame)
+                         if type(frame) is int and frame >= 0 else None)
+            new_frame = (frame_key is not None
+                         and (self._last_frame_key is None
+                              or frame_key[0] != self._last_frame_key[0]
+                              or frame_key[1] > self._last_frame_key[1]))
+            withdrawing = self.last_sent_valid is True and not valid
+            if now < self.next_send_at and not (new_frame or withdrawing):
+                return
             value = demand.value if valid else 0
             seq = self.sent_sequence + 1
             packet = (f"AS1 {self.session} {self.status.generation} {self.status.ticket} "
@@ -521,7 +543,10 @@ class YawStream:
                 self.sent_sequence = seq
                 self.last_sent_valid = valid
                 finished = self._now()
+                self._last_command_at = finished
                 self.next_send_at = finished + INTERVAL  # no catch-up bursts
+                if new_frame:
+                    self._last_frame_key = frame_key
                 if valid:
                     self._remember_timing(seq, demand, now, finished)
                 if self.pending_since is None:
@@ -543,9 +568,10 @@ class YawStream:
 
 
 def run_stream(device, source, *, duration=None, opener=open_port, clock=time.monotonic,
-               sleep=time.sleep, report=print, on_status=None, stop_event=None):
+               sleep=time.sleep, report=print, on_status=None, stop_event=None,
+               worker_factory=None):
     """Keep the source worker alive across USB reconnects; every connection rearms."""
-    worker = SourceWorker(source, clock=clock)
+    worker = (worker_factory or SourceWorker)(source, clock=clock)
     worker.start()
     started = clock()
     port = stream = None

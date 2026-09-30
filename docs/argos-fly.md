@@ -116,15 +116,21 @@ writes these attempts to `recovery.jsonl` and logger status to
 is bounded and explicitly reports overflow and write errors rather than blocking
 the control path.
 
-## Polling and the combined bench measurements
+## Demand delivery and the combined bench measurements
 
-The source reads the compact `/api/vision/yaw-assist/state` at at most 20 Hz;
-it does not serialize telemetry/events/recording lists from `/api/state`. The
-USB sender remains independent at 10 Hz. Status logs include source request
-count, errors, wall time and thread CPU time. These measure the HTTP reader and
-validation, **not total console/inference CPU**. Check live inference duration
-and completed analyses/s on the laptop alongside these metrics before claiming
-that polling has no material performance effect.
+The integrated launcher publishes a validated latest demand directly from the
+console owner, with no loopback HTTP or source polling thread. The serial thread
+reads that immutable mailbox independently. New analyzed images can trigger an
+earlier send, bounded to20Hz; a still-fresh command otherwise refreshes at10Hz.
+Original image deadlines and radio ticket expiry are unchanged. Detector cadence
+remains capped at10Hz. The standalone bridge retains its compact HTTP reader.
+
+Status logs keep the `source_poll` metrics name for compatibility; `mode` is
+`in_process` for the integrated source. Count, errors, wall time and thread CPU
+describe publication/validation, **not total console/inference CPU**. Use image
+receipt→SET/ACK measurements alongside live inference timing to assess latency;
+neither is an exposure→aircraft-response measurement. A phone stopwatch shown
+through the browser additionally includes browser display delay.
 
 Protocol V3 reports observed radio A→T transitions and their cause, including
 invalid target (`T`) versus expired ticket lease (`E`). Counts are based on

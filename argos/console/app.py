@@ -63,12 +63,16 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
         session.start()
         vision.start()
         if yaw_service is not None:
+            yaw_service.bind_console(session, asyncio.get_running_loop())
+            yaw_service.publish_source()
             yaw_service.start()
         stop = asyncio.Event()
 
         async def receive():
             while not stop.is_set():
                 session.tick()
+                if yaw_service is not None:
+                    yaw_service.publish_source()
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=vision.poll_interval)
                 except asyncio.TimeoutError:

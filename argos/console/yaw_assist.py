@@ -41,6 +41,19 @@ class YawAssistService:
         self._recovery_dropped = 0
         self._recovery_failed = 0
         self._recovery_dirty = False
+        self._local_source = None
+
+    def bind_console(self, session, loop):
+        """Use owner-published demands in the integrated app; CLI keeps HTTP."""
+        if self._thread is not None:
+            raise RuntimeError("Bind the console before starting yaw assistance")
+        if self.source_factory is YawSource:
+            from .yaw_source import LocalYawSource
+            self._local_source = LocalYawSource(session, loop.call_soon_threadsafe, clock=self.clock)
+
+    def publish_source(self):
+        if self._local_source is not None:
+            self._local_source.publish()
 
     def _recovery_status_locked(self):
         pending = len(self._recovery_items) + self._recovery_inflight
@@ -184,9 +197,12 @@ class YawAssistService:
 
     def _run(self):
         try:
-            self.runner(self.device, self.source_factory(port=self.console_port),
+            source = self._local_source or self.source_factory(port=self.console_port)
+            options = ({"worker_factory": lambda source, **kw: source}
+                       if self._local_source is not None else {})
+            self.runner(self.device, source,
                         stop_event=self._stop, on_status=self._publish,
-                        report=lambda message: print(message, flush=True))
+                        report=lambda message: print(message, flush=True), **options)
         except Exception as exc:
             self._publish({"connected": False, "radio_state": None,
                            "reason": f"Stream stopped: {type(exc).__name__}: {exc}"})
@@ -206,6 +222,8 @@ class YawAssistService:
 
     def close(self):
         self._stop.set()
+        if self._local_source is not None:
+            self._local_source.close()
         if self._thread is not None:
             self._thread.join(timeout=2.)
         self._log_stop.set()

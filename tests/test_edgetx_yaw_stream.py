@@ -979,3 +979,203 @@ def test_timing_observes_ack_after_serial_read_not_at_loop_entry():
     assert timing["ack_observed_at"] == clock()
     assert timing["set_to_ack_min_ms"] == pytest.approx(25.)
     assert timing["image_to_ack_min_ms"] == pytest.approx(276.)
+
+
+def frame_sample(clock, frame, **kwargs):
+    value = sample(clock, **kwargs)
+    return replace(value, demand=replace(value.demand, frame_sequence=frame))
+
+
+def arm_frame(host, radio, clock, frame=1):
+    radio.gen += 1
+    radio.report(state="T")
+    host.step(frame_sample(clock, frame))
+    assert radio.commands()[-1][1][-2:] == ["1", "64"]
+
+
+def test_new_analysis_sends_before_refresh_but_repeated_frame_waits():
+    host, radio, clock = setup()
+    arm_frame(host, radio, clock)
+    tick(host, radio, clock, advance=.049, value=frame_sample(clock, 2))
+    assert len(radio.commands()) == 1
+    tick(host, radio, clock, advance=.002, value=frame_sample(clock, 2))
+    assert len(radio.commands()) == 2
+    assert radio.commands()[-1][0] - radio.commands()[0][0] == pytest.approx(.051)
+    tick(host, radio, clock, advance=.051, value=frame_sample(clock, 2, value=-12))
+    assert len(radio.commands()) == 2  # Repeated HTTP/mailbox reads are not new images.
+    tick(host, radio, clock, advance=.05, value=frame_sample(clock, 2, value=-12))
+    assert len(radio.commands()) == 3
+    assert radio.commands()[-1][1][-2:] == ["1", "-12"]
+
+
+@pytest.mark.parametrize("frame", [None, True, -1, 0, 1, "2"])
+def test_missing_invalid_or_nonadvancing_frame_cannot_advance_refresh(frame):
+    host, radio, clock = setup()
+    arm_frame(host, radio, clock)
+    tick(host, radio, clock, advance=.051, value=frame_sample(clock, frame))
+    assert len(radio.commands()) == 1
+    tick(host, radio, clock, advance=.05, value=frame_sample(clock, frame))
+    assert len(radio.commands()) == 2  # Legacy demands retain their normal refresh.
+    tick(host, radio, clock, advance=.051, value=frame_sample(clock, 1))
+    assert len(radio.commands()) == 2  # A refresh cannot regress the frame watermark.
+
+
+def test_fast_new_images_are_capped_and_only_latest_value_is_sent():
+    host, radio, clock = setup()
+    arm_frame(host, radio, clock)
+    for frame in range(2, 82):
+        tick(host, radio, clock, advance=.005, value=frame_sample(clock, frame, value=frame))
+    commands = radio.commands()
+    assert 7 <= len(commands) <= 9
+    assert all(b[0] - a[0] >= .05 - 1e-9 for a, b in zip(commands, commands[1:]))
+    assert all(int(fields[-1]) > 1 for _, fields in commands[1:])
+    # After an event-loop stall, no queued intermediate frame is caught up.
+    clock.advance(.4)
+    radio.report()
+    host.step(frame_sample(clock, 100, value=100))
+    count = len(radio.commands())
+    assert radio.commands()[-1][1][-1] == "100"
+    for frame in range(101, 121):
+        host.step(frame_sample(clock, frame, value=frame))
+    assert len(radio.commands()) == count
+    tick(host, radio, clock, advance=.051, value=frame_sample(clock, 121, value=121))
+    assert len(radio.commands()) == count + 1
+    assert radio.commands()[-1][1][-1] == "121"
+
+
+@pytest.mark.parametrize("withdrawal", ["lost", "source_error", "expired"])
+def test_withdrawal_advances_refresh_without_bypassing_minimum_spacing(withdrawal):
+    host, radio, clock = setup()
+    arm_frame(host, radio, clock)
+    if withdrawal == "lost":
+        invalid = frame_sample(clock, 2, valid=False)
+    elif withdrawal == "source_error":
+        invalid = stream.SourceSample(None, clock(), True)
+    else:
+        invalid = frame_sample(clock, 2, lifetime=.025)
+    tick(host, radio, clock, advance=.03, value=invalid)
+    assert len(radio.commands()) == 1
+    tick(host, radio, clock, advance=.021, value=invalid)
+    assert len(radio.commands()) == 2
+    assert radio.commands()[-1][1][-2:] == ["0", "0"]
+    tick(host, radio, clock, advance=.051, value=invalid)
+    assert len(radio.commands()) == 2
+    tick(host, radio, clock, advance=.05, value=invalid)
+    assert len(radio.commands()) == 3
+    assert radio.commands()[-1][1][-2:] == ["0", "0"]
+
+
+def test_new_frame_expiring_while_rate_limited_is_not_sent_as_valid():
+    host, radio, clock = setup()
+    arm_frame(host, radio, clock)
+    newer = frame_sample(clock, 2, lifetime=.04)
+    tick(host, radio, clock, advance=.03, value=newer)
+    tick(host, radio, clock, advance=.021, value=newer)
+    assert radio.commands()[-1][1][-2:] == ["0", "0"]
+    # An expired candidate did not consume the next actual fresh image.
+    tick(host, radio, clock, advance=.051, value=frame_sample(clock, 3))
+    assert radio.commands()[-1][1][-2:] == ["1", "64"]
+    assert len(radio.commands()) == 3
+
+
+def test_early_command_waits_for_latest_ticket_after_bounded_input_drain():
+    host, radio, clock = setup()
+    arm_frame(host, radio, clock)
+    for _ in range(80):
+        radio.report()
+    clock.advance(.051)
+    host.step(frame_sample(clock, 2))
+    assert radio.in_waiting > 0 and len(radio.commands()) == 1
+    while radio.in_waiting:
+        host.step(frame_sample(clock, 2))
+    assert len(radio.commands()) == 2
+    assert radio.commands()[-1][1][3] == str(radio.ticket)
+
+
+def test_blocked_early_write_keeps_latest_frame_and_only_success_consumes_it():
+    host, radio, clock = setup()
+    arm_frame(host, radio, clock)
+    radio.out_waiting = 10
+    tick(host, radio, clock, advance=.051, value=frame_sample(clock, 2, value=20))
+    assert len(radio.commands()) == 1
+    radio.out_waiting = 0
+    tick(host, radio, clock, advance=.005, value=frame_sample(clock, 3, value=30))
+    assert len(radio.commands()) == 2
+    assert radio.commands()[-1][1][-2:] == ["1", "30"]
+    tick(host, radio, clock, advance=.051, value=frame_sample(clock, 3, value=30))
+    assert len(radio.commands()) == 2
+
+
+def test_new_frame_spacing_starts_after_write_completion():
+    host, radio, clock = setup()
+    radio.write_delay = .019
+    arm_frame(host, radio, clock)
+    tick(host, radio, clock, advance=.049, value=frame_sample(clock, 2))
+    assert len(radio.commands()) == 1
+    tick(host, radio, clock, advance=.002, value=frame_sample(clock, 2))
+    assert len(radio.commands()) == 2
+    assert radio.commands()[-1][0] - radio.commands()[0][0] == pytest.approx(.070)
+
+
+def test_session_rotation_resets_frame_watermark_but_keeps_wire_spacing():
+    host, radio, clock = setup()
+    arm_frame(host, radio, clock, frame=100)
+    tick(host, radio, clock, advance=.01, value=frame_sample(
+        clock, 1, key=("new-run", "camera", 8, 1)))
+    assert len(radio.commands()) == 1 and host._last_frame_key is None
+    radio.gen += 1
+    radio.report(state="T")
+    host.step(frame_sample(clock, 1, key=("new-run", "camera", 8, 1)))
+    assert len(radio.commands()) == 1
+    tick(host, radio, clock, advance=.041, value=frame_sample(
+        clock, 1, key=("new-run", "camera", 8, 1)))
+    assert len(radio.commands()) == 2
+    tick(host, radio, clock, advance=.051, value=frame_sample(
+        clock, 2, key=("new-run", "camera", 8, 1)))
+    assert len(radio.commands()) == 3
+
+
+def test_new_frame_never_bypasses_a_regressing_clock():
+    host, radio, clock = setup()
+    arm_frame(host, radio, clock)
+    clock.advance(-.01)
+    with pytest.raises(stream.ProbeError, match="regressing"):
+        host.step(frame_sample(clock, 2))
+    assert len(radio.commands()) == 1 and host.failed
+
+
+def test_run_stream_can_use_console_owned_mailbox_without_a_source_thread():
+    clock = Clock()
+    radio = Radio(clock)
+    radio.reset_input_buffer = lambda: None
+    closed = []
+    radio.close = lambda: closed.append("port")
+    statuses = []
+
+    class Mailbox:
+        def start(self):
+            self.started = True
+
+        def snapshot(self):
+            return sample(clock)
+
+        def metrics(self):
+            return {"count": 1, "errors": 0}
+
+        def close(self):
+            closed.append("mailbox")
+
+    mailbox = Mailbox()
+    factories = []
+
+    def factory(source, **kwargs):
+        factories.append((source, kwargs["clock"]))
+        return source
+
+    stream.run_stream("pocket", mailbox, duration=.1, opener=lambda _: radio,
+                      clock=clock, sleep=clock.advance, report=lambda _: None,
+                      on_status=statuses.append, worker_factory=factory)
+    assert factories == [(mailbox, clock)] and mailbox.started
+    assert closed == ["port", "mailbox"]
+    assert statuses[-1]["source_poll"] == {"count": 1, "errors": 0}
+    assert statuses[-1]["stopped"] and not radio.commands()

@@ -212,3 +212,188 @@ def test_python_source_posts_to_real_asgi_endpoint_with_matching_origin(fly, mon
     result = source.select_center("1234abcd:0")
     assert result.valid and result.selection_key[2] == 7
     assert f["session"].yaw_preview.state(1.1)["phase"] == "tracking"
+
+
+@pytest.fixture
+def local_source(fly):
+    from argos.console.yaw_source import LocalYawSource
+    callbacks = []
+    source = LocalYawSource(fly["session"], callbacks.append, clock=lambda: fly["now"][0] + 100.)
+    source.publish()
+    yield source, callbacks
+    source.close()
+
+
+def enable_local(source, callbacks, token="1234abcd:1"):
+    source.request_selection(token)
+    assert len(callbacks) == 1
+    callbacks.pop(0)()
+    return source.snapshot()
+
+
+def test_local_selection_and_new_analysis_publish_without_http(fly, local_source, monkeypatch):
+    source, callbacks = local_source
+    def forbidden(*args, **kwargs):
+        pytest.fail("Integrated demand must not open HTTP")
+    monkeypatch.setattr(yaw_stream_source.http.client, "HTTPConnection", forbidden)
+    sample = enable_local(source, callbacks)
+    assert sample.demand.valid and sample.demand.value == 205
+    assert sample.selection_result.request_token == "1234abcd:1"
+    fly["observe"](1.06, [person(7, .4)])
+    source.publish()
+    next_sample = source.snapshot()
+    assert next_sample.demand.valid and next_sample.demand.value < 0
+    assert next_sample.demand.frame_sequence > sample.demand.frame_sequence
+    assert sample.demand.value == 205  # Prior immutable value was not mutated.
+    assert source.metrics()["mode"] == "in_process"
+
+
+def test_local_publication_is_separate_from_serial_thread(fly, local_source):
+    import threading
+    source, callbacks = local_source
+    selected = fly["session"].yaw_preview.selection_epoch
+    thread = threading.Thread(target=lambda: source.request_selection("1234abcd:1"))
+    thread.start(); thread.join(timeout=1.)
+    assert not thread.is_alive()
+    assert fly["session"].yaw_preview.selection_epoch == selected
+    callbacks.pop()()
+    assert source.snapshot().selection_result.success
+
+
+def test_local_mailbox_keeps_only_latest_selection_request(fly, local_source):
+    source, callbacks = local_source
+    for generation in range(25):
+        source.request_selection(f"1234abcd:{generation}")
+    assert len(callbacks) == 1
+    callbacks.pop()()
+    assert source.snapshot().selection_result.request_token == "1234abcd:24"
+    assert source.metrics()["selections"] == 1
+
+
+def test_local_repeated_publication_never_renews_image_deadline(fly, local_source):
+    source, callbacks = local_source
+    original = enable_local(source, callbacks)
+    fly["now"][0] = 1.1
+    source.publish()
+    sample = source.snapshot()
+    assert sample.demand.deadline <= original.demand.deadline
+    assert sample.demand.deadline == pytest.approx(original.demand.deadline)
+    assert sample.demand.image_received_earliest == original.demand.image_received_earliest
+    assert sample.completed_at > original.completed_at
+    fly["now"][0] = 1.6  # No new frame, despite a healthy owner loop.
+    source.publish()
+    sample = source.snapshot()
+    assert sample.error or not sample.demand.valid
+
+
+def test_local_owner_stall_does_not_refresh_radio_health(local_source, fly):
+    source, callbacks = local_source
+    original = enable_local(source, callbacks)
+    fly["now"][0] = 2.
+    assert source.snapshot() == original
+    assert source.snapshot().completed_at == 101.
+    assert source.snapshot().demand.deadline < 102.
+
+
+def test_local_short_loss_requires_two_new_strong_images(fly, local_source):
+    source, callbacks = local_source
+    original = enable_local(source, callbacks)
+    fly["observe"](1.1, [])
+    source.publish()
+    assert not source.snapshot().demand.valid
+    fly["observe"](1.2)
+    source.publish()
+    assert not source.snapshot().demand.valid
+    fly["now"][0] += .01
+    source.publish()  # Re-reading that image does not count twice.
+    assert source.snapshot().demand is not None, source.metrics()["last_error"]
+    assert not source.snapshot().demand.valid
+    fly["observe"](1.3)
+    source.publish()
+    assert source.snapshot().demand.valid
+    assert source.snapshot().demand.selection_key == original.demand.selection_key
+
+
+@pytest.mark.parametrize("change", ["camera", "closed", "delayed"])
+def test_local_queued_selection_cannot_act_on_changed_or_late_context(fly, local_source, change):
+    source, callbacks = local_source
+    source.request_selection("1234abcd:1")
+    before = fly["session"].yaw_preview.selection_epoch
+    if change == "camera":
+        fly["session"].video_source_id = "another-camera"
+    elif change == "closed":
+        source.close()
+    else:
+        fly["now"][0] += .2
+    callbacks.pop()()
+    assert fly["session"].yaw_preview.selection_epoch == before
+    assert source.snapshot().error
+    if change != "closed":
+        assert not source.snapshot().selection_result.success
+
+
+def test_local_failed_request_does_not_select_a_future_person(fly, local_source):
+    source, callbacks = local_source
+    fly["observe"](1.1, [])
+    failed = enable_local(source, callbacks)
+    assert failed.error and not failed.selection_result.success
+    fly["observe"](1.2)
+    source.publish()
+    assert not source.snapshot().demand.valid
+    assert enable_local(source, callbacks).error  # Same token remains consumed.
+    assert enable_local(source, callbacks, "1234abcd:2").demand.valid
+
+
+def test_local_publish_failure_withdraws_previous_value(fly, local_source, monkeypatch):
+    source, callbacks = local_source
+    assert enable_local(source, callbacks).demand.valid
+    def fail(**kwargs):
+        raise RuntimeError("snapshot unavailable")
+    monkeypatch.setattr(fly["session"], "yaw_assist_state", fail)
+    source.publish()
+    sample = source.snapshot()
+    assert sample.error and sample.demand is None
+    assert "snapshot unavailable" in source.metrics()["last_error"]
+
+
+def test_local_validator_rejects_wrong_thread_and_close_is_terminal(fly, local_source):
+    import threading
+    source, callbacks = local_source
+    failures = []
+    def wrong_owner():
+        try:
+            source.publish()
+        except RuntimeError as exc:
+            failures.append(str(exc))
+    thread = threading.Thread(target=wrong_owner)
+    thread.start(); thread.join(timeout=1.)
+    assert failures == ["Yaw source must be published by the console owner"]
+    source.close()
+    source.publish()
+    source.request_selection("1234abcd:2")
+    assert not callbacks and source.snapshot().error
+
+
+def test_integrated_app_binds_owner_mailbox_before_serial_start_and_closes_it(fly, monkeypatch):
+    import threading
+    from argos.console.yaw_assist import YawAssistService
+    from argos.console.yaw_source import LocalYawSource
+    entered = threading.Event()
+    sources = []
+    def runner(device, source, *, worker_factory, stop_event, **kwargs):
+        assert isinstance(source, LocalYawSource)
+        assert worker_factory(source, clock=lambda: 0.) is source
+        assert source._owner != threading.get_ident()
+        sources.append(source)
+        entered.set()
+        stop_event.wait(2.)
+    service = YawAssistService("/dev/not-opened", 8080, runner=runner)
+    monkeypatch.setattr(fly["session"], "start", lambda: None)  # Fixture already owns its fake sources.
+    monkeypatch.setattr(fly["vision"], "start", lambda: None)
+    app = create_app(session=fly["session"], vision=fly["vision"], yaw_service=service)
+    with TestClient(app) as client:
+        assert entered.wait(1.)
+        assert client.get(STATE).status_code == 200
+        assert sources[0].metrics()["mode"] == "in_process"
+    assert sources[0].snapshot().error
+    assert service.snapshot()["reason"] == "Stream stopped"

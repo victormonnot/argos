@@ -396,9 +396,10 @@ class ConsoleSession:
         capture_action(self, operation, values, status="accepted")
         return result
 
-    def yaw_assist_state(self):
+    def yaw_assist_state(self, *, refresh=True):
         """Small source snapshot; exclude telemetry, events and recording inventory."""
-        self._observe_vision(refresh=True)
+        if refresh:
+            self._observe_vision(refresh=True)
         now, video = self.video.snapshot_current()
         video["source_id"] = self.video_source_id
         if self.reconnecting == "video":
