@@ -126,7 +126,7 @@ validation, **not total console/inference CPU**. Check live inference duration
 and completed analyses/s on the laptop alongside these metrics before claiming
 that polling has no material performance effect.
 
-Protocol V2 reports observed radio A→T transitions and their cause, including
+Protocol V3 reports observed radio A→T transitions and their cause, including
 invalid target (`T`) versus expired ticket lease (`E`). Counts are based on
 received status reports, so missed reports can miss transitions. During stable
 tracking, record both these counters and received yaw continuity. The radio

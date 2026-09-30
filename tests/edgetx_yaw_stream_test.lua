@@ -30,7 +30,7 @@ test("manual startup keeps announcing after ticket rollover before PC connects",
   end
   local greetings = 0
   for _, line in ipairs(r.writes) do
-    if line == "ARGOS_YAW_STREAM_V2\n" then greetings = greetings + 1 end
+    if line == "ARGOS_YAW_STREAM_V3\n" then greetings = greetings + 1 end
   end
   eq(greetings, 3)
   r:begin()
@@ -42,7 +42,7 @@ end)
 test("startup and BEGIN while SC up cannot enable", function()
   local r = radio({sc = -1024})
   r:step()
-  eq(r.writes[1], "ARGOS_YAW_STREAM_V2\n")
+  eq(r.writes[1], "ARGOS_YAW_STREAM_V3\n")
   eq(r:latestStatus().session, "00000000")
   eq(r:latestStatus().state, "M")
   r:begin()
@@ -369,13 +369,23 @@ test("USB read/write errors require rearm after recovery", function()
   end
 end)
 
+test("V3 accepts both full-scale twenty-percent values", function()
+  local r = active()
+  r:set(2, 205)
+  r:expect(205, 1024)
+  r:set(3, -205, true, 20)
+  r:expect(-205, 1024)
+  r:set(4, 0, false, 30)
+  r:expect(0, 0, 0)
+end)
+
 test("noncanonical, invalid and out-of-range commands cannot acquire authority", function()
   local r = active()
   r:set(2, 0, false)
   local s = r:latestStatus()
   local prefix = string.format("AS1 %s %d %d ", s.session, s.generation, s.ticket)
   for _, tail in ipairs({"03 1 128", "3 1 -0", "3 0 1", "3 2 0", "0 1 1",
-      "2147483648 1 1", "3 1 129", "3 1 -129", "3 1 1.5", "3 1 01"}) do
+      "2147483648 1 1", "3 1 206", "3 1 -206", "3 1 1.5", "3 1 01"}) do
     r:step(prefix .. tail .. "\n")
     r:expect(0, 0, 0)
   end

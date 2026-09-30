@@ -100,10 +100,10 @@ class Pair:
                               request_selection=self.requests.append if radio_selection else None)
         self.key = ("run", "camera", 7, 1, "/dev/video2")
 
-    def step(self, tick, *, sc=-1024, rud=0, takeover=False, valid=True):
+    def step(self, tick, *, sc=-1024, rud=0, takeover=False, valid=True, value=75):
         self.now = tick / 100
         output = self.port.callback(tick, sc=sc, rud=rud, takeover=takeover)
-        demand = YawDemand(75 if valid else 0, valid, self.key,
+        demand = YawDemand(value if valid else 0, valid, self.key,
                            self.now + .4 if valid else self.now,
                            "tracking" if valid else "target_paused")
         self.host.step(SourceSample(demand, self.now, selection_result=self.selection_result))
@@ -228,3 +228,16 @@ def test_lua_targeted_policy_harness():
     result = subprocess.run([LUA, "tests/edgetx_yaw_stream_test.lua"], cwd=ROOT,
                             capture_output=True, text=True, timeout=20.)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("value", [-205, 205])
+def test_v3_full_output_reaches_real_lua_then_withdraws_on_target_loss(value):
+    with actual_radio() as port:
+        pair = Pair(port)
+        pair.arm()
+        for tick in range(60, 110, 5):
+            pair.step(tick, value=value)
+        assert port.output[:2] == (value, 1024)
+        for tick in range(110, 145, 5):
+            pair.step(tick, valid=False)
+        assert port.output[:2] == (0, 0)

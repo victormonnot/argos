@@ -23,6 +23,15 @@ from .vision_bench_source import (
 RECOVERY_MAX_GAP = .7
 CONTINUOUS_RECOVERY_MAX_GAP = 3.
 RECOVERY_IMAGES = 2
+MAX_YAW = .2
+MAX_VALUE = 205  # round(20% * 1024); ArgVis remains limited to 128.
+
+
+class _ContinuousPreviewValidator(PreviewValidator):
+    """The continuous V3 transport's bound; legacy diagnostics stay separate."""
+
+    MAX_YAW = MAX_YAW
+    MAX_VALUE = MAX_VALUE
 
 
 @dataclass(frozen=True)
@@ -32,6 +41,10 @@ class YawDemand:
     selection_key: tuple | None
     deadline: float
     reason: str
+    # Diagnostic bounds on the host clock, not camera exposure timestamps.
+    frame_sequence: int | None = None
+    image_received_earliest: float | None = None
+    image_received_latest: float | None = None
 
 
 class YawValidator:
@@ -54,6 +67,7 @@ class YawValidator:
         self._last_strong_receipt = None
         self._target_id = None
         self._phase = None
+        self._frame_timing = None
 
     def validate(self, snapshot, started, finished, *, explicit_selection=False):
         try:
@@ -94,6 +108,7 @@ class YawValidator:
             self._last_strong_receipt = None
             self._target_id = None
             self._phase = None
+            self._frame_timing = None
             return YawDemand(0, False, None, finished, "selection_required")
         if phase not in ("tracking", "paused"):
             raise PreviewError("Invalid continuous yaw phase")
@@ -106,6 +121,9 @@ class YawValidator:
                _identity(config["video_endpoint"], "camera endpoint"))
         revision = _integer(preview["revision"], "preview revision", minimum=0)
         same_selection = key == self._key
+        if (same_selection and self._validator is not None
+                and continuous != isinstance(self._validator, _ContinuousPreviewValidator)):
+            raise PreviewError("Preview mode changed within a selection")
         if same_selection and self._revision is not None and revision < self._revision:
             raise PreviewError("Preview revision moved backwards")
         if (same_selection and target_id != self._target_id
@@ -138,7 +156,7 @@ class YawValidator:
             # resulting demand remains invalid and never grants authority.
             projected_preview.update(phase="tracking", error_x=0.)
         validator = (copy(self._validator) if same_selection and self._validator is not None
-                     else PreviewValidator())
+                     else (_ContinuousPreviewValidator() if continuous else PreviewValidator()))
         checked = validator.validate(projected, started, finished)
 
         missed_pause = (same_selection and self._revision is not None
@@ -177,8 +195,18 @@ class YawValidator:
         self._last_strong_receipt = last_strong
         self._target_id = target_id
         self._phase = phase
+        timing_key = key, checked.frame_sequence
+        if self._frame_timing is None or self._frame_timing[0] != timing_key:
+            # Snapshot generation occurred somewhere inside this HTTP request.
+            # Subtract only a server-clock duration; never compare clock origins.
+            age = at - checked.received_at
+            self._frame_timing = timing_key, started - age, finished - age
+        _, earliest, latest = self._frame_timing
+        # Re-reading a frame preserves its original diagnostic receipt bounds,
+        # just as the authority validator preserves its original deadline.
         return YawDemand(checked.value if valid else 0, valid, key,
-                         checked.deadline if valid else finished, reason)
+                         checked.deadline if valid else finished, reason,
+                         checked.frame_sequence, earliest, latest)
 
 
 class YawSource:

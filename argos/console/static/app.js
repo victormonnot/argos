@@ -222,7 +222,8 @@
         || ![value.frame_received_at, value.frame_age_s].every(item => nullable(item, age => finite(age) && age >= 0))
         || !finite(value.frame_max_age_s) || value.frame_max_age_s <= 0 || value.frame_max_age_s > .45
         || !nullable(value.error_x, error => finite(error) && Math.abs(error) <= 1)
-        || !finite(value.yaw_limit) || value.yaw_limit <= 0 || value.yaw_limit > .125
+        || !finite(value.yaw_limit) || value.yaw_limit <= 0
+        || value.yaw_limit > (value.continuous === true ? .2 : .125)
         || !finite(value.deadband) || value.deadband < 0 || value.deadband >= 1
         || !finite(value.yaw) || Math.abs(value.yaw) > value.yaw_limit) return null;
     if (value.phase === "paused" && (value.yaw !== 0 || value.error_x !== null
@@ -366,6 +367,9 @@
     text("yaw-preview-target", yawPreviewTarget !== null ? `Person #${yawPreviewTarget}` : "No active target");
     text("yaw-preview-error", showing ? Math.abs(view.error_x) <= view.deadband ? "Centered" : `${number.format(Math.abs(view.error_x) * 100)}% ${view.error_x < 0 ? "left" : "right"}` : "—");
     text("yaw-preview-value", `${yaw > 0 ? "+" : ""}${number.format(yaw * 100)}%`);
+    const scale = number.format((view?.yaw_limit ?? .125) * 100);
+    text("yaw-preview-min", `−${scale}%`);
+    text("yaw-preview-max", `+${scale}%`);
     element("yaw-preview-meter").style.setProperty("--yaw-position", `${50 + (view ? yaw / view.yaw_limit : 0) * 50}%`);
     element("yaw-preview-clear").disabled = yawPreviewTarget === null && !yawPreviewPending;
     let detail = yawPreviewMessage || view?.detail || "";

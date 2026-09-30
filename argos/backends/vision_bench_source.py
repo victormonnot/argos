@@ -86,6 +86,9 @@ def _status_detail(section):
 class PreviewValidator:
     """One immutable selection, permanently stopped on its first invalid read."""
 
+    MAX_YAW = MAX_YAW
+    MAX_VALUE = 128
+
     def __init__(self):
         self.failed = False
         self._identity = None
@@ -165,7 +168,7 @@ class PreviewValidator:
         if at - video_received > min(MAX_FRAME_AGE, video["age_limit_s"]):
             raise PreviewError("Camera image receipt is stale")
         age = max(age, at - received_at, video_age, vision_age)
-        cap = _number(preview["yaw_limit"], "yaw limit", maximum=MAX_YAW)
+        cap = _number(preview["yaw_limit"], "yaw limit", maximum=self.MAX_YAW)
         if cap <= 0:
             raise PreviewError("Invalid yaw limit")
         yaw = _number(preview["yaw"], "proposed yaw", minimum=-cap, maximum=cap)
@@ -188,8 +191,8 @@ class PreviewValidator:
         if deadline <= finished:
             raise PreviewError("Selected image expired before the console read completed")
         value = int(round(yaw * 1024))
-        if not -128 <= value <= 128:
-            raise PreviewError("Proposed yaw exceeds the RF-off bench limit")
+        if not -self.MAX_VALUE <= value <= self.MAX_VALUE:
+            raise PreviewError("Proposed yaw exceeds the configured limit")
         result = PreviewValue(value, deadline, sequence, target_id, revision,
                               run_id, video_id, received_at, inference)
         self._identity, self._previous = identity, result

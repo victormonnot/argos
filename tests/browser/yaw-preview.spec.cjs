@@ -265,3 +265,18 @@ test('continuous three-second recovery remains server-owned and stale radio stat
   await expect.poll(() => mock.calls.length).toBe(1);
   expect(mock.calls[0].action).toBe('clear');
 });
+
+test('continuous assistance displays its twenty-percent range while diagnostic preview keeps its bound', async ({ page, model }) => {
+  const mock = await setup(page, model);
+  await select(page);
+  await expect(page.locator('#yaw-preview-max')).toHaveText('+12.5%');
+  const original = model.modifyState;
+  model.modifyState = state => { original(state); state.yaw_assist = { enabled: true }; };
+  Object.assign(mock.preview, { continuous: true, selection_id: 7, selection_epoch: 1,
+    yaw_limit: .2, error_x: .5, yaw: .2 });
+  await expect(page.locator('#yaw-preview-value')).toHaveText('+20%');
+  await expect(page.locator('#yaw-preview-min')).toHaveText('−20%');
+  await expect(page.locator('#yaw-preview-max')).toHaveText('+20%');
+  mock.preview.yaw = .201;
+  await expect(page.locator('#yaw-preview-value')).toHaveText('0%');
+});

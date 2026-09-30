@@ -152,6 +152,11 @@ stick). These are initial preview parameters, not tuned flight gains. The sign
 describes image coordinates; actual aircraft response, camera orientation and
 radio mapping still require a separate disarmed integration test.
 
+The opt-in [continuous ARGOS FLY mode](edgetx-yaw-stream.md) has a separate
+gain 0.5 and ±20% limit, with the same image-error deadband. The display uses the
+bound reported by the current mode; these continuous settings do not change
+the finite RF-off diagnostic contract above.
+
 The selection uses server-owned detections paired with the displayed image.
 Only a current detection with confidence at least 0.5 can produce a preview.
 When that detection briefly disappears or drops below 0.5, the preview pauses:
@@ -250,6 +255,16 @@ uninformative crops can legitimately supply no descriptor. In those cases only
 mutually unique ordinary geometry remains available within its own gates; no
 expanded match is permitted. An absent person, an old image or a changed source
 does not justify selecting the nearest person.
+
+One bounded cleanup prevents an expired appearance veto from reviving an
+obsolete competing ID. If the immediately preceding and current images each
+contain exactly one strong detection, their appearance is recent and compatible,
+and ordinary geometry matches, an older overlapping singleton history with an
+expired descriptor is retired. A historical ID ever observed alongside another
+box is protected from this cleanup. Gaps, weak detections, missing or contradictory
+appearance, and current multiple detections keep the ordinary ambiguity rules.
+This removes one source of unnecessary ID changes; it does not make the
+appearance score reliable for every change in crop or viewpoint.
 
 The 208-value descriptor summarizes weighted color, brightness and gradient
 histograms over four vertical crop bands. Background and central-crop weights

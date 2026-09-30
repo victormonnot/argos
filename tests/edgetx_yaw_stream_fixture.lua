@@ -102,7 +102,7 @@ local function radio(options)
     self.lastReads = self.reads - before
     equal(self.output.n, 4, "four native outputs")
     assert(self.lastReads <= 4, "more than 256 bytes read per callback")
-    assert(self.output[1] >= -128 and self.output[1] <= 128, "yaw bound")
+    assert(self.output[1] >= -205 and self.output[1] <= 205, "yaw bound")
     assert(self.output[2] == 0 or self.output[2] == 1024, "freshness flag")
     assert(self.output[3] == 0 or self.output[3] == 1024, "sequence marker")
     assert(self.output[4] == -1024 or self.output[4] == 0 or self.output[4] == 1024,

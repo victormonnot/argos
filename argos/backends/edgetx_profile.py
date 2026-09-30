@@ -269,7 +269,7 @@ def build_artifact(source_path: Path, output_dir: Path, script_path: Path) -> di
     source = source_path.read_bytes()
     model = prepare_profile(source)
     script = script_path.read_bytes()
-    _require(b"ARGOS_YAW_STREAM_V2" in script and b'"ARGOS FLY"' in script,
+    _require(b"ARGOS_YAW_STREAM_V3" in script and b'"ARGOS FLY"' in script,
              "Expected the repository ArgFly.lua script")
     manifest = {**validate_profile(model, source=source), "script_sha256": _hash(script),
                 "model_file": "model.yml", "script_file": "SCRIPTS/MIXES/ArgFly.lua"}

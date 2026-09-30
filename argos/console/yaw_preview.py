@@ -15,6 +15,8 @@ FRAME_MAX_AGE = .45
 YAW_LIMIT = .125
 DEADBAND = .035
 GAIN = .25
+CONTINUOUS_YAW_LIMIT = .2
+CONTINUOUS_GAIN = .5
 MIN_CONFIDENCE = .5
 RECOVERY_MAX_GAP = .7
 CONTINUOUS_RECOVERY_MAX_GAP = 3.
@@ -105,6 +107,8 @@ class YawPreview:
             raise ValueError("Recovery diagnostics require a callable")
         self.enabled = bool(enabled)
         self.continuous = bool(continuous)
+        self.yaw_limit = CONTINUOUS_YAW_LIMIT if self.continuous else YAW_LIMIT
+        self.gain = CONTINUOUS_GAIN if self.continuous else GAIN
         self._on_recovery = on_recovery
         self._diagnostic_frame = None
         self._diagnostic_candidates = set()
@@ -230,7 +234,7 @@ class YawPreview:
         x, _, width, _ = target["box"]
         self._error_x = max(-1., min(1., 2 * (x + width / 2 - .5)))
         self._yaw = (0. if abs(self._error_x) <= DEADBAND else
-                     max(-YAW_LIMIT, min(YAW_LIMIT, GAIN * self._error_x)))
+                     max(-self.yaw_limit, min(self.yaw_limit, self.gain * self._error_x)))
 
     def _recovery_metrics(self, target, now):
         metrics = dict(similarity=None, dx=None, dy=None, width_ratio=None, height_ratio=None,
@@ -457,7 +461,7 @@ class YawPreview:
             "frame_received_at": None if frame is None else frame["received_at"],
             "frame_age_s": None if frame is None else max(0., now - frame["received_at"]),
             "frame_max_age_s": FRAME_MAX_AGE, "error_x": self._error_x,
-            "yaw": self._yaw, "yaw_limit": YAW_LIMIT, "deadband": DEADBAND,
+            "yaw": self._yaw, "yaw_limit": self.yaw_limit, "deadband": DEADBAND,
             "recovery_max_gap_s": self.recovery_max_gap,
             "recovery_deadline_at": (self._last_seen_at + self.recovery_max_gap
                                      if self.phase == "paused" else None),

@@ -16,14 +16,15 @@ import threading
 import time
 
 from .edgetx_probe import Lines, ProbeError, open_port
-from .yaw_stream_source import YawDemand, YawSource
+from .yaw_stream_source import MAX_VALUE, YawDemand, YawSource
 
 
-HELLO = b"ARGOS_YAW_STREAM_V2"
+HELLO = b"ARGOS_YAW_STREAM_V3"
 INTERVAL = .1
 WRITE_TIMEOUT = .02
 HEALTH_TIMEOUT = 1.
 READ_BUDGET = 4
+TIMING_PENDING_LIMIT = 32
 MAX_SEQUENCE = 2**31 - 1
 # EdgeTX Lua 5.3 LUA_32BITS keeps nonnegative integer counters exact to 31 bits.
 COUNTER_MODULUS = 2**31
@@ -210,6 +211,9 @@ class YawStream:
         self.last_sent_valid = None
         self.a_to_t_total = 0
         self.a_to_t_causes = {}
+        self._timing_pending = {}
+        self.last_command_timing = None
+        self.command_timing_samples = 0
 
     def snapshot(self):
         """Bounded status for the local UI/logger; accepted state is radio-reported."""
@@ -223,7 +227,78 @@ class YawStream:
                     last_sent_valid=self.last_sent_valid, selection_pending=self.selection_pending,
                     selection_request=self.selection_request, selection_failed=self.selection_failed,
                     radio_a_to_t_total=self.a_to_t_total,
-                    radio_a_to_t_causes=dict(self.a_to_t_causes))
+                    radio_a_to_t_causes=dict(self.a_to_t_causes),
+                    command_timing_samples=self.command_timing_samples,
+                    last_command_timing=(dict(self.last_command_timing)
+                                         if self.last_command_timing is not None else None))
+
+    def _clear_timing(self):
+        self._timing_pending.clear()
+        self.last_command_timing = None
+
+    def _prune_timing(self, now):
+        self._timing_pending = {
+            seq: item for seq, item in self._timing_pending.items()
+            if now - item["write_finished_at"] < HEALTH_TIMEOUT}
+
+    def _remember_timing(self, seq, demand, started, finished):
+        """Optional diagnostics never grant or withdraw command authority."""
+        frame = getattr(demand, "frame_sequence", None)
+        earliest = getattr(demand, "image_received_earliest", None)
+        latest = getattr(demand, "image_received_latest", None)
+        if type(earliest) not in (int, float) or type(latest) not in (int, float):
+            return
+        try:
+            earliest, latest = float(earliest), float(latest)
+        except (ValueError, OverflowError):
+            return
+        if (type(frame) is not int or frame < 0
+                or not math.isfinite(earliest) or not math.isfinite(latest)
+                or not 0 <= earliest <= latest <= started <= finished):
+            return
+        self._prune_timing(finished)
+        if len(self._timing_pending) >= TIMING_PENDING_LIMIT:
+            del self._timing_pending[next(iter(self._timing_pending))]
+        self._timing_pending[seq] = dict(
+            frame_sequence=frame, image_received_earliest=earliest,
+            image_received_latest=latest, write_started_at=started,
+            write_finished_at=finished)
+
+    def _observe_timing(self, status, previous, now):
+        if previous is None or status.generation != previous.generation:
+            self._clear_timing()
+            return
+        if type(now) not in (int, float) or not math.isfinite(now) or now < 0:
+            return
+        self._prune_timing(now)
+        if status.ack <= previous.ack:
+            return
+        # ACK is cumulative: only this exact last-accepted sequence is known
+        # to have reached Lua. Skipped intermediate commands yield no samples.
+        item = self._timing_pending.get(status.ack)
+        self._timing_pending = {seq: value for seq, value in self._timing_pending.items()
+                                if seq > status.ack}
+        if item is None:
+            return
+        earliest, latest = item["image_received_earliest"], item["image_received_latest"]
+        started, finished = item["write_started_at"], item["write_finished_at"]
+        if now < finished:
+            return
+        timing = dict(
+            session=self.session, generation=status.generation,
+            command_sequence=status.ack, frame_sequence=item["frame_sequence"],
+            valid=True, ack_observed_at=now,
+            image_to_set_min_ms=(started - latest) * 1000,
+            image_to_set_max_ms=(finished - earliest) * 1000,
+            image_to_ack_min_ms=(now - latest) * 1000,
+            image_to_ack_max_ms=(now - earliest) * 1000,
+            set_to_ack_min_ms=(now - finished) * 1000,
+            set_to_ack_max_ms=(now - started) * 1000)
+        if any(not math.isfinite(value) or value < 0
+               for name, value in timing.items() if name.endswith("_ms")):
+            return
+        self.command_timing_samples += 1
+        self.last_command_timing = timing
 
     def _cancel_selection(self):
         self.selection_pending = self.selection_failed = False
@@ -253,6 +328,7 @@ class YawStream:
         self.pending_begin = True
         self._cancel_selection()
         self.last_sent_valid = None
+        self._clear_timing()
         self.reason = reason + "; SC middle then SC up required"
 
     def _receive(self, now):
@@ -297,6 +373,9 @@ class YawStream:
                         continue
                 if status.ack > self.sent_sequence:
                     raise ProbeError("radio acknowledged a command never sent")
+                # Timestamp the received report, not the earlier loop entry.
+                # This diagnostic sample does not change authority timestamps.
+                self._observe_timing(status, previous, self.clock())
                 self._reset_without_session = False
                 self.last_status_at = now
                 if previous is None or status.generation != previous.generation:
@@ -369,7 +448,7 @@ class YawStream:
         self.source_bad_since = None
         self.source_fault = False
         demand = sample.demand
-        if (type(demand.value) is not int or not -128 <= demand.value <= 128
+        if (type(demand.value) is not int or not -MAX_VALUE <= demand.value <= MAX_VALUE
                 or type(demand.valid) is not bool or not math.isfinite(demand.deadline)
                 or (demand.selection_key is not None and not isinstance(demand.selection_key, tuple))):
             raise ProbeError("invalid source demand")
@@ -397,11 +476,12 @@ class YawStream:
             raise ProbeError("failed USB connection must be closed")
         try:
             now = self._now()
+            self._prune_timing(now)
             drained = self._receive(now)
             demand = self._source(sample, now)
             if not self.greeted:
                 if now - self.started_at >= 5.:
-                    raise ProbeError("timeout waiting for ARGOS_YAW_STREAM_V2")
+                    raise ProbeError("timeout waiting for ARGOS_YAW_STREAM_V3")
                 return
             if self.pending_begin:
                 # A non-command prefix invalidates a partial previous input.
@@ -440,7 +520,10 @@ class YawStream:
             if self._write(packet, now):
                 self.sent_sequence = seq
                 self.last_sent_valid = valid
-                self.next_send_at = self._now() + INTERVAL  # no catch-up bursts
+                finished = self._now()
+                self.next_send_at = finished + INTERVAL  # no catch-up bursts
+                if valid:
+                    self._remember_timing(seq, demand, now, finished)
                 if self.pending_since is None:
                     self.pending_since = now
                 if self.selection_pending:
@@ -454,6 +537,7 @@ class YawStream:
                 else:
                     self.reason = "correction requested: waiting for radio acceptance"
         except BaseException:
+            self._clear_timing()
             self.failed = True
             raise
 

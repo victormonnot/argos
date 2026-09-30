@@ -67,7 +67,7 @@ def test_compact_state_is_accepted_by_real_source_and_never_carries_descriptors(
     assert response.status_code == 200
     state = f["client"].get(STATE).json()
     demand = yaw_stream_source.YawValidator().validate(state, 100., 100.01)
-    assert demand.valid and demand.value == 102
+    assert demand.valid and demand.value == 205
     assert set(state) == {"schema_version", "run_id", "at", "environment", "configuration",
                           "video", "vision", "yaw_preview", "reconnecting"}
     assert not {"telemetry", "events", "recordings", "appearance", "appearances"} & set(state)

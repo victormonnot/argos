@@ -11,6 +11,16 @@ The scope is horizontal framing with a selected person, using a portable host.
 Throttle, arming, roll and pitch remain manual. No MAVLink or aircraft USB link
 is needed by the runtime; an MSP observer is useful during the later bench.
 
+Continuous mode uses `yaw = 0.5 * error_x`, limited to ±20% normalized stick,
+with the existing ±0.035 image-error deadband. This is a stick command, not a
+fixed angular speed: the aircraft's rate profile and flight mode determine the
+requested rotation. The finite ArgVis diagnostic remains at gain 0.25/±12.5%.
+The increased continuous limit requires the matching V3 script and host. Read
+back the installed SD script before using it, then confirm direction, manual
+takeover and withdrawal at the new bound with the aircraft disarmed and props
+removed. A subsequent short flight must assess overshoot and left/right
+oscillation; passing software checks is not a physical stability measurement.
+
 ## Runtime contract
 
 The host remains alive while the operator is in manual or the target is briefly
@@ -26,6 +36,18 @@ block serial scheduling. Source wall/thread-CPU metrics are available alongside
 radio status; they do not measure total inference CPU. `source_poll.last_error`
 retains the latest failure message (one line, at most 240 characters), including
 after recovery; the error counter shows whether new failures are occurring.
+
+`last_command_timing` associates a valid command's analyzed frame with the exact
+sequence acknowledged in `AY1`. Image receipt is translated to an interval on
+the host clock using the HTTP request/response times, without comparing clock
+origins. The interval stays anchored on repeated reads of the same image.
+Reported image-to-SET and image-to-ACK minimum/maximum durations include that
+uncertainty; ACK means the host observed the radio status, not aircraft response
+or the exact Lua acceptance instant. Capture before application receipt is not
+included. Cumulative ACKs supply only the last accepted sequence, never invented
+measurements for skipped commands. Diagnostics retain at most 32 pending entries
+for less than one second and reset with the session/generation. The ordinary
+status logger samples the latest result; it is not an exhaustive latency trace.
 
 The return channel remains necessary: advancing radio status and command
 acceptance establish connection health. Losing that health removes assistance;
@@ -137,7 +159,7 @@ remain alive; it is not the aircraft's RF-loss failsafe.
 
 ## Compact stream protocol
 
-The script announces `ARGOS_YAW_STREAM_V2`. The host writes nothing before
+The script announces `ARGOS_YAW_STREAM_V3`. The host writes nothing before
 recognizing that greeting. Lines are ASCII, LF-terminated and bounded to 64
 bytes of content. The version is distinct from every existing bench protocol.
 
@@ -155,14 +177,14 @@ Tickets and generations are cyclic 31-bit unsigned counters (0..2147483647);
 sequences use 1..2147483647 and require a new session before exhaustion. Integer
 clock arithmetic also handles EdgeTX's signed clock rollover. The script uses
 Lua 5.3 integer operations, including on EdgeTX's 32-bit Lua build.
-Values remain in -128..128 (up to 12.5% normalized stick travel), and invalid
+Values are in -205..205 (`round(0.20 * 1024)`, approximately 20% stick travel), and invalid
 assistance has value zero. States are M (manual / enable required), T (enabled
 without valid assistance), A (active) and F (fault / enable required).
 
 The single-character cause is S (start/session), M (manual switch), W (new enable
 waiting), A (active), T (invalid target), E (ticket expiry), P (pilot takeover),
 L (silence), I (serial I/O), G (model guard), C (clock), or O (parser overflow).
-V1 peers are rejected. The host counts **observed** A→T transitions by reported
+V1 and V2 peers receive no host writes. The host counts **observed** A→T transitions by reported
 cause, including T versus E, for the combined hardware check; missed status
 reports may hide transitions. The300ms ticket lease has not been widened.
 

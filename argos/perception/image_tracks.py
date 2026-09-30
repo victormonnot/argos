@@ -84,6 +84,9 @@ class _Track:
     seen_at: float
     appearance: tuple[float, ...] | None
     appearance_at: float | None
+    # False once this ID has appeared alongside another detected box, so a
+    # genuine multi-person history never becomes an obsolete singleton later.
+    solitary: bool
 
     def recent_appearance(self, now):
         if self.appearance_at is not None and 0 <= now - self.appearance_at <= MAX_APPEARANCE_AGE:
@@ -106,13 +109,51 @@ class ImageTracker:
     def __init__(self):
         self._tracks: dict[int, _Track] = {}
         self._last_at: float | None = None
+        self._last_singleton = False
         self._next_id = 1
         self._appearance_mode = False
 
     def reset(self) -> None:
         self._tracks.clear()
         self._last_at = None
+        self._last_singleton = False
         self._appearance_mode = False
+
+    @staticmethod
+    def _obsolete_singletons(current, descriptors, records, now, previous_at,
+                             previous_singleton):
+        """Expired singleton histories cannot outvote fresh sole continuity.
+
+        A contradicted old ID can remain in geometric memory after a replacement
+        is established. Once its appearance expires, that formerly rejected ID
+        would become a competitor again merely because its veto disappeared.
+        Retire it only when the immediately preceding sole strong observation
+        still has compatible appearance and geometry. Multi-person histories,
+        missing evidence and gaps keep the ordinary ambiguity rules.
+        """
+        if (not previous_singleton or len(current) != 1
+                or current[0]["confidence"] < STRONG_CONFIDENCE):
+            return set()
+        predecessors = [(identity, record) for identity, record in records.items()
+                        if record.seen_at == previous_at
+                        and record.detection["confidence"] >= STRONG_CONFIDENCE]
+        if len(predecessors) != 1:
+            return set()
+        identity, record = predecessors[0]
+        box = current[0]["box"]
+        previous = record.detection["box"]
+        score = similarity(record.recent_appearance(now), descriptors[0])
+        if (score is None or score < GROSS_CONTRADICTION
+                or not (_iou(previous, box) >= MIN_IOU or (
+                    now - record.seen_at <= NEARBY_MAX_GAP and _nearby(previous, box)))):
+            return set()
+        return {old_id for old_id, old in records.items()
+                if old_id != identity and old.solitary and old.seen_at < previous_at
+                and old.appearance_at is not None
+                and now - old.appearance_at > MAX_APPEARANCE_AGE
+                and (_iou(old.detection["box"], box) >= MIN_IOU or (
+                    now - old.seen_at <= NEARBY_MAX_GAP
+                    and _nearby(old.detection["box"], box)))}
 
     @staticmethod
     def _geometry(current, descriptors, records, indices, identities, now):
@@ -179,6 +220,10 @@ class ImageTracker:
             descriptors = validate_appearances(appearances, len(current))
         remembered = {identity: record for identity, record in self._tracks.items()
                       if captured_at - record.seen_at <= TRACK_TTL}
+        for identity in self._obsolete_singletons(
+                current, descriptors, remembered, captured_at, self._last_at,
+                self._last_singleton):
+            del remembered[identity]
         strong = [i for i, detection in enumerate(current) if detection["confidence"] >= STRONG_CONFIDENCE]
         weak = [i for i, detection in enumerate(current) if detection["confidence"] < STRONG_CONFIDENCE]
         matches, blocked_indices, blocked_ids = self._geometry(
@@ -208,10 +253,13 @@ class ImageTracker:
                 appearance_at = previous.appearance_at if previous else None
                 if detection["confidence"] >= STRONG_CONFIDENCE and descriptors[index] is not None:
                     appearance, appearance_at = descriptors[index], float(captured_at)
-                remembered[identity] = _Track(detection, float(captured_at), appearance, appearance_at)
+                solitary = len(current) == 1 and (previous is None or previous.solitary)
+                remembered[identity] = _Track(detection, float(captured_at), appearance,
+                                               appearance_at, solitary)
             result.append({**detection, "box": list(detection["box"]), "track_id": identity})
         newest = sorted(remembered, key=lambda key: remembered[key].seen_at, reverse=True)
         self._tracks = {identity: remembered[identity] for identity in newest[:MAX_TRACKS]}
         self._last_at, self._next_id = float(captured_at), next_id
+        self._last_singleton = len(current) == 1
         self._appearance_mode = self._appearance_mode or appearances is not None
         return result

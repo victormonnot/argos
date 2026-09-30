@@ -74,3 +74,30 @@ def test_transient_ambiguity_recovers_after_explicit_preview_reselection():
         assert state["phase"] == "tracking"
         assert state["target_id"] == identity == recovered
         assert state["yaw"] < 0.
+
+
+def test_expired_rejected_history_does_not_pause_selected_successor():
+    tracker = ImageTracker()
+    preview = YawPreview(True)
+    previous_appearance = [1.] + [0.] * 207
+    current_appearance = [0., 1.] + [0.] * 206
+    person = {"box": [.6, .2, .2, .5], "confidence": .9}
+
+    def observe(sequence, at, descriptor):
+        associated = tracker.update([person], at, appearances=[descriptor])
+        preview.observe({"run_id": "run", "video_id": "camera",
+                         "sequence": sequence, "received_at": at,
+                         "width": 640, "height": 480,
+                         "detections": associated}, now=at)
+        return associated[0]["track_id"]
+
+    old = observe(1, 1., previous_appearance)
+    selected = observe(2, 1.1, current_appearance)
+    assert selected != old
+    preview.select(selected, revision=preview.revision, now=1.1)
+    revision = preview.revision
+    for sequence, at in enumerate([1.2, 1.3, 1.36, 1.46, 1.56], 3):
+        assert observe(sequence, at, current_appearance) == selected
+        state = preview.state(at)
+        assert state["phase"] == "tracking" and state["yaw"] > 0
+        assert state["target_id"] == selected and state["revision"] == revision

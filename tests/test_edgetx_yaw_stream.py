@@ -675,14 +675,15 @@ def test_lease_or_target_pause_does_not_create_an_operator_selection_event():
     assert host.a_to_t_causes == {"E": 1, "T": 1}  # detached UI snapshot.
 
 
-def test_old_radio_protocol_never_gets_a_host_write():
+@pytest.mark.parametrize("version", [1, 2])
+def test_old_radio_protocol_never_gets_a_host_write(version):
     clock = Clock()
     radio = Radio(clock)
-    radio.incoming = deque([b"ARGOS_YAW_STREAM_V1\nAY1 abc012ef 1 1 0 M\n"])
+    radio.incoming = deque([f"ARGOS_YAW_STREAM_V{version}\nAY1 abc012ef 1 1 0 M\n".encode()])
     host = stream.YawStream(radio, clock=clock)
     host.step(sample(clock))
     clock.advance(5)
-    with pytest.raises(stream.ProbeError, match="V2"):
+    with pytest.raises(stream.ProbeError, match="V3"):
         host.step(sample(clock))
     assert radio.writes == []
 
@@ -849,3 +850,132 @@ def test_owned_shutdown_stops_reconnects_and_publishes_final_metrics(monkeypatch
     assert opened == ["test-pocket"] and radio.closed
     assert statuses[-1]["stopped"] and not statuses[-1]["connected"]
     assert statuses[-1]["source_poll"]["count"] == 7
+
+
+@pytest.mark.parametrize("value", [-206, 206])
+def test_v3_host_rejects_out_of_range_before_writing(value):
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    before = len(radio.writes)
+    with pytest.raises(stream.ProbeError, match="invalid source demand"):
+        host.step(sample(clock, value=value))
+    assert len(radio.writes) == before
+
+
+def timed_sample(clock, *, frame=42, earliest=None, latest=None):
+    value = sample(clock)
+    return replace(value, demand=replace(
+        value.demand, frame_sequence=frame,
+        image_received_earliest=clock() - .2 if earliest is None else earliest,
+        image_received_latest=clock() - .15 if latest is None else latest))
+
+
+def test_timing_reports_only_exact_cumulative_ack_and_detaches_snapshot():
+    host, radio, clock = setup()
+    arm(host, radio, clock)  # Legacy demand has no diagnostic metadata.
+    radio.accept = False
+    tick(host, radio, clock, advance=.101, value=timed_sample(clock, frame=42))
+    tick(host, radio, clock, advance=.101, value=timed_sample(clock, frame=43))
+    assert host.command_timing_samples == 0
+    radio.report(ack=3, state="A")
+    host.step(sample(clock))
+    timing = host.snapshot()["last_command_timing"]
+    assert host.command_timing_samples == 1  # Never infer that command 2 executed.
+    assert timing["command_sequence"] == 3 and timing["frame_sequence"] == 43
+    assert timing["valid"] is True
+    assert timing["image_to_set_min_ms"] == pytest.approx(251.)
+    assert timing["image_to_set_max_ms"] == pytest.approx(301.)
+    assert timing["image_to_ack_min_ms"] == pytest.approx(251.)
+    assert timing["image_to_ack_max_ms"] == pytest.approx(301.)
+    assert timing["set_to_ack_min_ms"] == pytest.approx(0.)
+    assert not host._timing_pending
+    timing["frame_sequence"] = -1
+    assert host.snapshot()["last_command_timing"]["frame_sequence"] == 43
+    radio.report(ack=3)
+    host.step(sample(clock))
+    assert host.command_timing_samples == 1
+
+
+@pytest.mark.parametrize("metadata", [
+    {}, {"frame_sequence": True}, {"image_received_earliest": float("nan")},
+    {"image_received_latest": float("inf")}, {"image_received_earliest": -1.},
+    {"image_received_earliest": 101.}, {"image_received_earliest": "99"},
+    {"image_received_earliest": 10**500}, {"image_received_latest": 98.},
+])
+def test_bad_or_absent_diagnostics_never_change_authority(metadata):
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    demand = sample(clock).demand
+    if metadata:
+        demand = replace(timed_sample(clock).demand, **metadata)
+    tick(host, radio, clock, advance=.101, value=replace(sample(clock), demand=demand))
+    radio.report(state="A")
+    host.step(sample(clock))
+    assert radio.commands()[-1][1][-2:] == ["1", "64"]
+    assert host.snapshot()["last_command_timing"] is None
+    assert host.command_timing_samples == 0 and not host.failed
+
+
+@pytest.mark.parametrize("reset", ["generation", "session", "partial", "backpressure", "expired"])
+def test_timing_never_survives_reset_or_records_rejected_write(reset):
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    if reset == "partial":
+        radio.partial = True
+    if reset == "backpressure":
+        radio.out_waiting = 10
+    if reset == "partial":
+        with pytest.raises(stream.ProbeError, match="partial"):
+            tick(host, radio, clock, advance=.101, value=timed_sample(clock))
+        assert not host._timing_pending and host.last_command_timing is None
+        return
+    tick(host, radio, clock, advance=.101, value=timed_sample(clock))
+    if reset == "backpressure":
+        assert not host._timing_pending
+        return
+    assert host._timing_pending
+    if reset == "session":
+        host._rotate(clock(), "test reset")
+    elif reset == "generation":
+        radio.gen += 1
+        radio.report(state="M")
+        host.step(sample(clock))
+    else:
+        # Even a very late exact ACK cannot turn an expired diagnostic into a sample.
+        clock.advance(1.01)
+        radio.report(state="A")
+        host.step(sample(clock))
+    assert host.last_command_timing is None and host.command_timing_samples == 0
+    assert len(host._timing_pending) <= 1  # A fresh command may now be outstanding.
+
+
+def test_diagnostic_pending_storage_has_count_and_time_bounds():
+    host, radio, clock = setup()
+    demand = timed_sample(clock).demand
+    for seq in range(100):
+        host._remember_timing(seq, demand, clock(), clock())
+    assert len(host._timing_pending) == stream.TIMING_PENDING_LIMIT
+    clock.advance(stream.HEALTH_TIMEOUT)
+    host._prune_timing(clock())
+    assert host._timing_pending == {}
+
+
+def test_timing_observes_ack_after_serial_read_not_at_loop_entry():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    tick(host, radio, clock, advance=.101, value=timed_sample(clock))
+    radio.report(state="A")
+    original_read = radio.read
+
+    def delayed_read(maximum):
+        data = original_read(maximum)
+        if data:
+            clock.advance(.025)
+        return data
+
+    radio.read = delayed_read
+    host.step(sample(clock))
+    timing = host.snapshot()["last_command_timing"]
+    assert timing["ack_observed_at"] == clock()
+    assert timing["set_to_ack_min_ms"] == pytest.approx(25.)
+    assert timing["image_to_ack_min_ms"] == pytest.approx(276.)

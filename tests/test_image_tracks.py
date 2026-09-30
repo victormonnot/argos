@@ -319,6 +319,103 @@ def test_stale_appearance_is_unavailable_to_veto_ordinary_geometry():
     assert result[0]["track_id"] == old
 
 
+def singleton_replacement(tracker, *, multi_person_history=False):
+    first = [person()]
+    descriptors = [appearance()]
+    if multi_person_history:
+        first.append(person(.7))
+        descriptors.append(appearance(basis=10))
+    old = tracker.update(first, 1., appearances=descriptors)[0]["track_id"]
+    current = tracker.update([person(.11)], 1.1,
+                             appearances=[appearance(0.)])[0]["track_id"]
+    assert current != old  # The contradictory replacement must still get a new ID.
+    tracker.update([person(.12)], 1.2, appearances=[appearance(0.)])
+    return old, current
+
+
+def test_expiring_rejected_singleton_does_not_interrupt_observed_successor():
+    tracker = ImageTracker()
+    old, current = singleton_replacement(tracker)
+    # The rejected history still exists while its contradiction is available.
+    assert old in tracker._tracks
+    for at in [1.3, 1.36, 1.46, 1.56]:
+        assert tracker.update([person(.12)], at,
+                              appearances=[appearance(0.)])[0]["track_id"] == current
+    assert old not in tracker._tracks
+
+
+@pytest.mark.parametrize("gap", ["empty", "weak", "missing_current_appearance",
+                                "contradictory_appearance"])
+def test_obsolete_singleton_retirement_requires_continuous_strong_evidence(gap):
+    tracker = ImageTracker()
+    old, current = singleton_replacement(tracker)
+    descriptor = appearance(0.)
+    if gap == "empty":
+        tracker.update([], 1.3, appearances=[])
+    elif gap == "weak":
+        tracker.update([person(.12, confidence=.4)], 1.3, appearances=[descriptor])
+    elif gap == "missing_current_appearance":
+        descriptor = None
+    else:
+        descriptor = appearance(basis=10)
+    result = tracker.update([person(.12)], 1.36, appearances=[descriptor])
+    assert result[0]["track_id"] != current
+
+
+def test_old_appearance_cannot_prioritize_an_otherwise_continuous_singleton():
+    tracker = ImageTracker()
+    old = tracker.update([person(.2)], 1., appearances=[appearance()])[0]["track_id"]
+    current = tracker.update([person(.4)], 1.1,
+                             appearances=[appearance(0.)])[0]["track_id"]
+    for at in [1.2, 1.3]:
+        assert tracker.update([person(.4)], at,
+                              appearances=[None])[0]["track_id"] == current
+    # Both histories overlap the midpoint; the last appearance of the observed
+    # predecessor is now too old to establish priority over the earlier person.
+    result = tracker.update([person(.3)], 1.5, appearances=[appearance(0.)])[0]
+    assert result["track_id"] not in {old, current}
+
+
+def test_obsolete_singleton_rule_does_not_choose_between_multiple_current_people():
+    tracker = ImageTracker()
+    old, current = singleton_replacement(tracker)
+    result = tracker.update([person(.11), person(.13)], 1.36,
+                            appearances=[appearance(0.), appearance(0.)])
+    assert all(item["track_id"] not in {old, current} for item in result)
+
+
+def test_previous_extra_weak_box_prevents_singleton_priority():
+    tracker = ImageTracker()
+    old, current = singleton_replacement(tracker)
+    tracker.update([person(.12), person(.7, confidence=.4)], 1.3,
+                   appearances=[appearance(0.), appearance(basis=10)])
+    result = tracker.update([person(.12)], 1.36,
+                            appearances=[appearance(0.)])[0]
+    assert result["track_id"] not in {old, current}
+
+
+def test_previously_coobserved_person_still_competes_after_appearance_expires():
+    tracker = ImageTracker()
+    old, current = singleton_replacement(tracker, multi_person_history=True)
+    result = tracker.update([person(.12)], 1.36,
+                            appearances=[appearance(0.)])[0]
+    assert result["track_id"] not in {old, current}
+
+
+def test_coobserved_history_is_not_forgotten_when_an_old_person_later_appears_alone():
+    tracker = ImageTracker()
+    old = tracker.update([person(), person(.7)], 1.,
+                         appearances=[appearance(), appearance(basis=10)])[0]["track_id"]
+    assert tracker.update([person()], 1.05,
+                          appearances=[appearance()])[0]["track_id"] == old
+    current = tracker.update([person(.11)], 1.1,
+                             appearances=[appearance(0.)])[0]["track_id"]
+    tracker.update([person(.12)], 1.3, appearances=[appearance(0.)])
+    result = tracker.update([person(.12)], 1.46,
+                            appearances=[appearance(0.)])[0]
+    assert result["track_id"] not in {old, current}
+
+
 def test_expanded_matching_does_not_bridge_an_empty_accepted_frame():
     tracker = ImageTracker()
     old = tracker.update([narrow()], 1, appearances=[appearance()])[0]["track_id"]

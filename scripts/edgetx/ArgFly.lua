@@ -8,6 +8,7 @@
 -- its lease by arriving late. Expiry still needs Lua/native mixer execution;
 -- this protocol does not establish a hardware failsafe or image-age bound.
 local MAX_SEQUENCE = 2147483647
+local MAX_VALUE = 205 -- round(20% * 1024), continuous V3 only.
 local session = nil
 local generation = 0
 local ticket = 0
@@ -210,7 +211,7 @@ local function accept(line, now)
       or not nextSequence or nextSequence <= sequence
       or (pending and nextSequence <= pending.sequence)
       or not nextValue or math.type(nextValue) ~= "integer"
-      or nextValue < -128 or nextValue > 128 or valueText ~= tostring(nextValue)
+      or nextValue < -MAX_VALUE or nextValue > MAX_VALUE or valueText ~= tostring(nextValue)
       or (validText == "0" and nextValue ~= 0) then return end
   for _, issued in ipairs(tickets) do
     if issued.number == issuedTicket and issued.generation == generation
@@ -283,7 +284,7 @@ end
 
 local function status(now)
   if lastHello == nil or elapsed(now, lastHello) >= 100 then
-    if not write("ARGOS_YAW_STREAM_V2\n") then return end
+    if not write("ARGOS_YAW_STREAM_V3\n") then return end
     lastHello = now
   end
   if lastStatus == nil or elapsed(now, lastStatus) >= 10 then

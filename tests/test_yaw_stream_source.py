@@ -35,11 +35,49 @@ def pause(state, *, deadline=10.6):
     return state
 
 
+@pytest.mark.parametrize("yaw,expected", [(.2, 205), (-.2, -205), (.125, 128)])
+def test_v3_continuous_bound_is_explicit_and_legacy_bench_rejects_it(yaw, expected):
+    from argos.backends.vision_bench_source import PreviewValidator
+    state = snapshot()
+    state["yaw_preview"].update(continuous=True, selection_id=7, recovery_max_gap_s=3.,
+                                yaw_limit=.2, yaw=yaw)
+    demand = source.YawValidator().validate(state, 100., 100.01)
+    assert demand.valid and demand.value == expected
+    with pytest.raises(source.PreviewError, match="yaw limit"):
+        PreviewValidator().validate(state, 100., 100.01)
+    state["yaw_preview"]["continuous"] = False
+    state["yaw_preview"]["recovery_max_gap_s"] = .7
+    with pytest.raises(source.PreviewError, match="yaw limit"):
+        source.YawValidator().validate(state, 100., 100.01)
+
+
+@pytest.mark.parametrize("cap,yaw", [(.201, .2), (.2, .201), (.2, -.201)])
+def test_v3_source_still_rejects_excess_authority(cap, yaw):
+    state = snapshot()
+    state["yaw_preview"].update(continuous=True, selection_id=7, recovery_max_gap_s=3.,
+                                yaw_limit=cap, yaw=yaw)
+    with pytest.raises(source.PreviewError):
+        source.YawValidator().validate(state, 100., 100.01)
+
+
+def test_cap_mode_cannot_change_inside_an_existing_selection():
+    validator = source.YawValidator()
+    first = snapshot()
+    first["yaw_preview"].update(continuous=True, selection_id=7, recovery_max_gap_s=3.)
+    validator.validate(first, 100., 100.01)
+    changed = snapshot(at=10.1, received=10., sequence=43)
+    with pytest.raises(source.PreviewError, match="mode changed"):
+        validator.validate(changed, 100.1, 100.11)
+
+
 def test_demand_is_immutable_and_charges_full_http_time():
     demand = source.YawValidator().validate(snapshot(), 100., 100.04)
     assert demand.valid and demand.value == 102 and demand.reason == "tracking"
     assert demand.deadline == pytest.approx(100.35)
     assert demand.selection_key == ("run-one", "camera-one", 7, 1, "/dev/video3")
+    assert demand.frame_sequence == 42
+    assert demand.image_received_earliest == pytest.approx(99.9)
+    assert demand.image_received_latest == pytest.approx(99.94)
     with pytest.raises(FrozenInstanceError):
         demand.value = 128
 
@@ -87,8 +125,18 @@ def test_repeated_image_never_renews_deadline_even_across_bad_reads():
         validator.validate(bad, 100.1, 100.11)
     fresh_read = validator.validate(snapshot(at=10.03), 100.2, 100.21)
     assert fresh_read.deadline == first.deadline
+    assert fresh_read.image_received_earliest == first.image_received_earliest
+    assert fresh_read.image_received_latest == first.image_received_latest
     with pytest.raises(source.PreviewError, match="expired"):
         validator.validate(snapshot(at=10.04), 100.36, 100.37)
+
+
+def test_diagnostic_receipt_uses_duration_not_remote_clock_origin():
+    far_server = snapshot(at=100000., received=99999.9)
+    demand = source.YawValidator().validate(far_server, 100., 100.03)
+    assert demand.image_received_earliest == pytest.approx(99.9)
+    assert demand.image_received_latest == pytest.approx(99.93)
+    assert demand.deadline == pytest.approx(100.35)
 
 
 @pytest.mark.parametrize("kind", ["epoch", "target", "run", "camera", "endpoint"])
