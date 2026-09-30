@@ -272,6 +272,138 @@ def test_reassociation_without_recovery_or_excessive_recovery_window_is_rejected
         validator.validate(changed, 100.1, 100.11)
 
 
+@pytest.mark.parametrize("observe_second_pause", [True, False])
+def test_two_close_gaps_use_last_strong_image_and_still_require_two_confirmations(observe_second_pause):
+    preview, validator = YawPreview(True, continuous=True), source.YawValidator()
+
+    def observe(at, sequence, present=True, consume=True):
+        preview.observe({"run_id": "run-one", "video_id": "camera-one", "sequence": sequence,
+                         "received_at": at, "width": 640, "height": 480,
+                         "detections": ([{"track_id": 7, "confidence": .9,
+                                          "box": [.6, .2, .2, .5]}] if present else [])}, now=at)
+        if sequence == 1:
+            preview.select(7, revision=0, now=at)
+        state = fly_snapshot(at=at, received=at, sequence=sequence)
+        state["yaw_preview"] = preview.state(at)
+        if consume:
+            return validator.validate(state, at + 90., at + 90.01)
+
+    assert observe(10., 1).valid
+    assert not observe(10.1, 2, False).valid  # Deadline 13.
+    assert not observe(12.8, 3).valid  # First strong image, authority still withdrawn.
+    observe(12.9, 4, False, consume=observe_second_pause)  # New gap bounded to 15.8.
+    first = observe(13., 5)
+    assert not first.valid and first.reason == "target_recovering"
+    assert observe(13.1, 6).valid
+
+
+def test_weak_images_and_revision_changes_cannot_extend_a_gap_without_strong_evidence():
+    validator = source.YawValidator()
+    validator.validate(fly_snapshot(at=10., received=10.), 100., 100.01)
+    validator.validate(pause(fly_snapshot(at=10.1, received=10.1, sequence=43), deadline=13.),
+                       100.1, 100.11)
+    for sequence, at in enumerate((11., 12.), 44):
+        state = pause(fly_snapshot(at=at, received=at, sequence=sequence), deadline=at + 2.9)
+        state["yaw_preview"]["revision"] = sequence
+        assert not validator.validate(state, at + 90., at + 90.01).valid
+    late = fly_snapshot(at=13., received=13., sequence=46)
+    late["yaw_preview"]["revision"] = 46
+    with pytest.raises(source.PreviewError, match="recovery window"):
+        validator.validate(late, 103., 103.01)
+
+
+def exhausted_recovery():
+    validator = source.YawValidator()
+    validator.validate(fly_snapshot(at=10., received=10.), 100., 100.01)
+    validator.validate(pause(fly_snapshot(at=10.1, received=10.1, sequence=43), deadline=13.),
+                       100.1, 100.11)
+    state = fly_snapshot(at=12.9, received=12.9, sequence=44)
+    state["yaw_preview"]["revision"] = 2
+    assert not validator.validate(state, 102.9, 102.91).valid
+    return validator
+
+
+@pytest.mark.parametrize("revision, at", [(2, 13.), (3, 15.9)])
+def test_a_gap_cannot_renew_without_new_revision_or_after_last_strong_bound(revision, at):
+    validator = exhausted_recovery()
+    state = pause(fly_snapshot(at=12.95, received=12.95, sequence=45), deadline=15.9)
+    state["yaw_preview"]["revision"] = revision
+    assert not validator.validate(state, 102.95, 102.96).valid
+    returned = fly_snapshot(at=at, received=at, sequence=46)
+    returned["yaw_preview"]["revision"] = revision
+    with pytest.raises(source.PreviewError, match="recovery window"):
+        validator.validate(returned, at + 90., at + 90.01)
+
+
+@pytest.mark.parametrize("failure", [None, "token", "camera", "http_time", "stale", "paused", "validation_expiry"])
+def test_only_valid_matching_operator_post_clears_exhausted_recovery(monkeypatch, failure):
+    reader = source.YawSource()
+    reader.validator = exhausted_recovery()
+    original = reader.validator
+    reader._context = ("run-one", "camera-one")
+    current = fly_snapshot(at=13.1, received=13.1, sequence=45)
+    current["yaw_preview"]["revision"] = 2
+    with pytest.raises(source.PreviewError, match="recovery window"):
+        original.validate(current, 103.1, 103.11)
+    selected = deepcopy(current)
+    response = {"request_id": "1234abcd:3", "state": selected}
+    if failure == "token":
+        response["request_id"] = "ffffffff:3"
+    elif failure == "camera":
+        selected["run_id"] = selected["yaw_preview"]["run_id"] = "other-run"
+    elif failure == "stale":
+        selected["yaw_preview"]["frame_age_s"] = .6
+    elif failure == "paused":
+        pause(selected, deadline=13.5)
+
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return Reply(json.dumps(response).encode())
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(source.http.client, "HTTPConnection", Connection)
+    if failure == "validation_expiry":
+        selected["yaw_preview"]["frame_max_age_s"] = .015
+    times = iter([103.1, 103.11, 103.3 if failure == "http_time" else 103.12])
+    reader.clock = lambda: next(times)
+    if failure:
+        with pytest.raises(source.PreviewError):
+            reader.select_center("1234abcd:3")
+        assert reader.validator is original
+        with pytest.raises(source.PreviewError, match="recovery window"):
+            original.validate(current, 103.1, 103.11)
+    else:
+        result = reader.select_center("1234abcd:3")
+        assert result.valid and reader.validator is not original
+        next_frame = fly_snapshot(at=13.2, received=13.2, sequence=46)
+        next_frame["yaw_preview"]["revision"] = 2
+        assert reader.validator.validate(next_frame, 103.2, 103.21).valid
+
+
+@pytest.mark.parametrize("failure", ["expired", "rewritten", "sequence"])
+def test_explicit_selection_preserves_existing_image_fences(failure):
+    validator = exhausted_recovery()
+    state = fly_snapshot(at=13.1, received=12.9, sequence=44)
+    state["yaw_preview"]["revision"] = 2
+    started = 103.1
+    if failure == "expired":
+        started = 103.36  # Server age alone still looks recent; local deadline has elapsed.
+    elif failure == "rewritten":
+        state["yaw_preview"]["yaw"] = -.1
+    else:
+        state["yaw_preview"]["frame_sequence"] = 43
+    with pytest.raises(source.PreviewError):
+        validator.validate(state, started, started + .01, explicit_selection=True)
+
+
 @pytest.mark.parametrize("wrong", [None, "token", "camera"])
 def test_radio_selection_http_is_bound_to_observed_context_and_echoed_transaction(monkeypatch, wrong):
     target = snapshot(at=10.1, received=10., sequence=43)

@@ -53,16 +53,17 @@ class YawValidator:
         self._recovery_deadline = None
         self._last_strong_receipt = None
         self._target_id = None
+        self._phase = None
 
-    def validate(self, snapshot, started, finished):
+    def validate(self, snapshot, started, finished, *, explicit_selection=False):
         try:
-            return self._validate(snapshot, started, finished)
+            return self._validate(snapshot, started, finished, explicit_selection=explicit_selection)
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             if isinstance(exc, PreviewError):
                 raise
             raise PreviewError("Invalid continuous yaw snapshot") from exc
 
-    def _validate(self, snapshot, started, finished):
+    def _validate(self, snapshot, started, finished, *, explicit_selection):
         started = _number(started, "local request time")
         finished = _number(finished, "local response time")
         if not 0 <= finished - started <= HTTP_TIMEOUT:
@@ -92,6 +93,7 @@ class YawValidator:
             self._recovery_deadline = None
             self._last_strong_receipt = None
             self._target_id = None
+            self._phase = None
             return YawDemand(0, False, None, finished, "selection_required")
         if phase not in ("tracking", "paused"):
             raise PreviewError("Invalid continuous yaw phase")
@@ -115,6 +117,12 @@ class YawValidator:
         projected["yaw_preview"] = projected_preview
         recovery_deadline = self._recovery_deadline if same_selection else None
         last_strong = self._last_strong_receipt if same_selection else None
+        # A new pause after an accepted strong image is a new gap, even if
+        # authority still awaited its second confirmation image. Anchor that
+        # gap to the actual image receipt, never to polling or a weak image.
+        if (same_selection and self._phase == "tracking" and revision != self._revision
+                and last_strong is not None):
+            recovery_deadline = last_strong + recovery_gap
         if phase == "paused":
             if preview["yaw"] != 0 or preview["error_x"] is not None:
                 raise PreviewError("An uncertain target must withdraw its correction")
@@ -138,7 +146,13 @@ class YawValidator:
         recovering = self._recovering if same_selection else False
         strong_count = self._strong_count if same_selection else 0
         strong_sequence = self._strong_sequence if same_selection else None
-        if phase == "paused" or missed_pause:
+        if explicit_selection and phase == "tracking":
+            # Only the matching operator POST can clear an exhausted recovery.
+            # The strict image validator above still checks receipt/order and
+            # preserves an already observed image's immutable local deadline.
+            recovering, strong_count, strong_sequence = False, 0, None
+            recovery_deadline = None
+        elif phase == "paused" or missed_pause:
             recovering, strong_count, strong_sequence = True, 0, None
         valid, reason = phase == "tracking", "tracking"
         if phase == "paused":
@@ -162,6 +176,7 @@ class YawValidator:
         self._recovery_deadline = recovery_deadline
         self._last_strong_receipt = last_strong
         self._target_id = target_id
+        self._phase = phase
         return YawDemand(checked.value if valid else 0, valid, key,
                          checked.deadline if valid else finished, reason)
 
@@ -244,16 +259,19 @@ class YawSource:
                 if (snapshot["run_id"], snapshot["video"]["source_id"]) != requested_context:
                     raise PreviewError("Camera changed during radio target selection")
             finished = self.clock()
-            result = self.validator.validate(snapshot, started, finished)
+            validator = copy(self.validator)
+            result = validator.validate(snapshot, started, finished,
+                                        explicit_selection=method == "POST")
             checked_at = _number(self.clock(), "local completion time")
             if checked_at < finished or checked_at - started > HTTP_TIMEOUT:
                 raise PreviewError("Console read exceeded its time budget or clock moved backwards")
             if result.valid and checked_at >= result.deadline:
                 raise PreviewError("Console image expired while validating the response")
-            self._context = (_identity(snapshot["run_id"], "console run"),
-                             _identity(snapshot["video"]["source_id"], "camera source"))
+            context = (_identity(snapshot["run_id"], "console run"),
+                       _identity(snapshot["video"]["source_id"], "camera source"))
             if method == "POST" and not result.valid:
                 raise PreviewError("Radio selection did not produce a fresh visible target")
+            self.validator, self._context = validator, context
             return result
         except (OSError, http.client.HTTPException, ValueError, TypeError,
                 OverflowError, RecursionError) as exc:

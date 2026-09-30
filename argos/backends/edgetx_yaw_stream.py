@@ -66,7 +66,7 @@ class SourceWorker:
         self._selection_result = None
         self._metrics = dict(count=0, errors=0, selections=0, wall_ms_total=0.,
                              wall_ms_max=0., cpu_ms_total=0., cpu_ms_max=0.,
-                             last_wall_ms=0., last_cpu_ms=0.)
+                             last_wall_ms=0., last_cpu_ms=0., last_error=None)
         self._thread = threading.Thread(target=self._run, name="argos-yaw-source", daemon=True)
 
     def start(self):
@@ -93,6 +93,7 @@ class SourceWorker:
                     request = self._selection_request
                     self._selection_request = None
                 started, cpu_started = self.clock(), self.cpu_clock()
+                error_message = None
                 try:
                     demand = (self.source.read() if request is None
                               else self.source.select_center(request))
@@ -102,8 +103,10 @@ class SourceWorker:
                             request, finished, demand.selection_key,
                             demand.selection_key is not None)
                     sample = SourceSample(demand, finished, False, self._selection_result)
-                except Exception:
+                except Exception as exc:
                     finished = self.clock()
+                    error_message = (f"{type(exc).__name__}: {exc}"
+                                     .replace("\r", " ").replace("\n", " "))[:240]
                     if request is not None:
                         self._selection_result = SelectionResult(request, finished, None, False)
                     sample = SourceSample(None, finished, True, self._selection_result)
@@ -114,6 +117,8 @@ class SourceWorker:
                     m = self._metrics
                     m["count"] += 1
                     m["errors"] += int(sample.error)
+                    if error_message is not None:
+                        m["last_error"] = error_message
                     m["selections"] += int(request is not None)
                     m["wall_ms_total"] += wall_ms
                     m["cpu_ms_total"] += cpu_ms
@@ -335,6 +340,23 @@ class YawStream:
         if (not isinstance(sample, SourceSample)
                 or not math.isfinite(sample.completed_at) or sample.completed_at > now):
             raise ProbeError("invalid source mailbox timestamp")
+        result = None
+        if self.selection_pending and sample.selection_result is not None:
+            candidate = sample.selection_result
+            if not isinstance(candidate, SelectionResult) or type(candidate.success) is not bool:
+                raise ProbeError("invalid radio selection transaction result")
+            if candidate.request_token == self.selection_request:
+                if (not math.isfinite(candidate.completed_at)
+                        or not self.selection_requested_at <= candidate.completed_at <= sample.completed_at
+                        or (candidate.selection_key is not None and not isinstance(candidate.selection_key, tuple))):
+                    raise ProbeError("invalid radio selection transaction result")
+                result = candidate
+                if not result.success or result.selection_key is None:
+                    # A failed POST is final for this SC cycle, even when GET
+                    # validation is also failing. Success still requires the
+                    # fresh, validated demand below before it can bind a key.
+                    self.selection_pending = False
+                    self.selection_failed = True
         bad = sample.error or sample.demand is None or now - sample.completed_at >= HEALTH_TIMEOUT
         if bad:
             if self.source_bad_since is None:
@@ -352,20 +374,10 @@ class YawStream:
                 or (demand.selection_key is not None and not isinstance(demand.selection_key, tuple))):
             raise ProbeError("invalid source demand")
         if self.selection_pending:
-            result = sample.selection_result
             if result is None:
                 return None  # An in-flight pre-enable HTTP read confers no authority.
-            if not isinstance(result, SelectionResult) or type(result.success) is not bool:
-                raise ProbeError("invalid radio selection transaction result")
-            if result.request_token != self.selection_request:
-                return None
-            if (not math.isfinite(result.completed_at)
-                    or not self.selection_requested_at <= result.completed_at <= sample.completed_at
-                    or (result.selection_key is not None and not isinstance(result.selection_key, tuple))):
-                raise ProbeError("invalid radio selection transaction result")
             self.selection_pending = False
-            if (not result.success or result.selection_key is None
-                    or result.selection_key != demand.selection_key):
+            if result.selection_key != demand.selection_key:
                 self.selection_failed = True
                 return None
             # This exact new key was selected by a fresh radio-observed SC cycle.
@@ -434,7 +446,7 @@ class YawStream:
                 if self.selection_pending:
                     self.reason = "manual requested: selecting target for this SC cycle"
                 elif self.selection_failed:
-                    self.reason = "manual: no unambiguous target; SC middle then SC up to select again"
+                    self.reason = "manual: target selection failed; SC middle then SC up to select again"
                 elif not valid:
                     self.reason = "manual requested: target temporarily unavailable"
                 elif state == "A" and self.status.ack > 0:

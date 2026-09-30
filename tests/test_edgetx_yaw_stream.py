@@ -551,6 +551,112 @@ def test_failed_selection_stays_manual_until_new_operator_request():
     assert len(requested) == 1
 
 
+def test_failed_selection_is_consumed_during_source_error_and_requires_new_cycle():
+    host, radio, clock = setup()
+    requested = []
+    host.request_selection = requested.append
+    arm(host, radio, clock)
+    clock.advance(.101)
+    radio.report(state="T", cause="T")
+    failed = stream.SelectionResult(requested[-1], clock(), None, False)
+    host.step(stream.SourceSample(None, clock(), True, failed))
+    assert host.selection_failed and not host.selection_pending
+    assert radio.commands()[-1][1][-2:] == ["0", "0"]
+
+    # Subsequent valid GETs cannot turn that failed selection into an enable.
+    tick(host, radio, clock, advance=.101)
+    assert host.selection_failed and radio.commands()[-1][1][-2:] == ["0", "0"]
+    assert "SC middle" in host.reason
+
+    clock.advance(.101)
+    radio.gen += 1
+    radio.report(state="M")
+    host.step(sample(clock))
+    clock.advance(.101)
+    arm(host, radio, clock)
+    assert requested[-1] != failed.request_token
+    clock.advance(.101)
+    radio.report(state="T", cause="T")
+    fresh = sample(clock)
+    result = stream.SelectionResult(requested[-1], clock(), fresh.demand.selection_key, True)
+    host.step(replace(fresh, selection_result=result))
+    assert not host.selection_pending and not host.selection_failed
+    assert radio.commands()[-1][1][-2:] == ["1", "64"]
+
+
+def test_failed_selection_during_error_preserves_source_outage_session_rotation():
+    host, radio, clock = setup()
+    requested = []
+    host.request_selection = requested.append
+    arm(host, radio, clock)
+    session = host.session
+    failed = stream.SelectionResult(requested[-1], clock(), None, False)
+    for _ in range(13):
+        clock.advance(.101)
+        state = "T" if host.session == session else "M"
+        radio.report(state=state, cause=state)
+        host.step(stream.SourceSample(None, clock(), True, failed))
+    assert host.session != session and host.source_fault
+    assert len(radio.begins()) == 2
+    assert all(fields[-2:] == ["0", "0"] for _, fields in radio.commands())
+
+
+@pytest.mark.parametrize("missing_demand", [False, True])
+def test_successful_selection_waits_for_healthy_demand(missing_demand):
+    host, radio, clock = setup()
+    requested = []
+    host.request_selection = requested.append
+    arm(host, radio, clock)
+    chosen = ("new-selection",)
+    clock.advance(.101)
+    radio.report(state="T", cause="T")
+    result = stream.SelectionResult(requested[-1], clock(), chosen, True)
+    current = sample(clock, key=chosen)
+    broken = stream.SourceSample(None if missing_demand else current.demand,
+                                 clock(), not missing_demand, result)
+    host.step(broken)
+    assert host.selection_pending and host.selection_key != chosen
+    assert radio.commands()[-1][1][-2:] == ["0", "0"]
+    clock.advance(.101)
+    radio.report(state="T", cause="T")
+    host.step(replace(sample(clock, key=chosen), selection_result=result))
+    assert not host.selection_pending and host.selection_key == chosen
+    assert radio.commands()[-1][1][-2:] == ["1", "64"]
+
+
+def test_old_failed_selection_cannot_cancel_new_request_during_source_error():
+    host, radio, clock = setup()
+    requested = []
+    host.request_selection = requested.append
+    arm(host, radio, clock)
+    old = stream.SelectionResult(requested[-1], clock(), None, False)
+    clock.advance(.101)
+    radio.gen += 1
+    radio.report(state="M")
+    host.step(sample(clock))
+    clock.advance(.101)
+    arm(host, radio, clock)
+    clock.advance(.101)
+    radio.report(state="T", cause="T")
+    host.step(stream.SourceSample(None, clock(), True, old))
+    assert host.selection_pending and not host.selection_failed
+    assert radio.commands()[-1][1][-2:] == ["0", "0"]
+
+
+@pytest.mark.parametrize("completed_offset", [-.01, .5, float("nan")])
+def test_failed_selection_timestamps_are_checked_even_during_source_error(completed_offset):
+    host, radio, clock = setup()
+    requested = []
+    host.request_selection = requested.append
+    arm(host, radio, clock)
+    failed = stream.SelectionResult(requested[-1], clock() + completed_offset, None, False)
+    clock.advance(.101)
+    radio.report(state="T", cause="T")
+    with pytest.raises(stream.ProbeError, match="selection transaction"):
+        host.step(stream.SourceSample(None, clock(), True, failed))
+    assert host.failed
+
+
 def test_lease_or_target_pause_does_not_create_an_operator_selection_event():
     host, radio, clock = setup()
     arm(host, radio, clock)
@@ -652,6 +758,49 @@ def test_worker_selection_is_async_and_result_survives_subsequent_reads():
         assert metrics["cpu_ms_total"] >= metrics["cpu_ms_max"] >= 0
     finally:
         release.set()
+        worker.close()
+
+
+@pytest.mark.parametrize("selection", [False, True])
+def test_worker_retains_bounded_error_diagnostic_after_recovery(selection):
+    class Source:
+        failed = False
+
+        def fail_once(self):
+            if not self.failed:
+                self.failed = True
+                raise ValueError("expired recovery\r\n" + "x" * 400)
+
+        def read(self):
+            if not selection:
+                self.fail_once()
+            return YawDemand(20, True, ("person",), time.monotonic() + .4, "tracking")
+
+        def select_center(self, token):
+            self.fail_once()
+
+        def close(self):
+            pass
+
+    worker = stream.SourceWorker(Source(), interval=.001)
+    assert worker.metrics()["last_error"] is None
+    if selection:
+        worker.request_selection("abc012ef:4")
+    worker.start()
+    try:
+        deadline = time.monotonic() + 1
+        while worker.metrics()["count"] < 2 and time.monotonic() < deadline:
+            time.sleep(.001)
+        metrics = worker.metrics()
+        assert metrics["count"] >= 2 and metrics["errors"] == 1
+        assert not worker.snapshot().error
+        assert metrics["last_error"].startswith("ValueError: expired recovery  ")
+        assert len(metrics["last_error"]) == 240
+        assert "\n" not in metrics["last_error"] and "\r" not in metrics["last_error"]
+        if selection:
+            result = worker.snapshot().selection_result
+            assert result.request_token == "abc012ef:4" and not result.success
+    finally:
         worker.close()
 
 

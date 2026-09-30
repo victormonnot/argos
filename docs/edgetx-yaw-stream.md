@@ -23,7 +23,9 @@ slots are skipped, not replayed as a burst.
 The source reader polls the compact `/api/vision/yaw-assist/state` at up to20Hz.
 Logging uses a separate bounded mailbox/thread, so a slow filesystem cannot
 block serial scheduling. Source wall/thread-CPU metrics are available alongside
-radio status; they do not measure total inference CPU.
+radio status; they do not measure total inference CPU. `source_poll.last_error`
+retains the latest failure message (one line, at most 240 characters), including
+after recovery; the error counter shows whether new failures are occurring.
 
 The return channel remains necessary: advancing radio status and command
 acceptance establish connection health. Losing that health removes assistance;
@@ -55,6 +57,12 @@ candidate, conservative appearance/geometry support and two distinct images.
 Multiple candidates during loss, expired memory and stale/missing imagery remove
 authority; a single visible stranger is not automatically accepted.
 
+The source also requires two distinct strong images after a pause before
+restoring authority. If another pause follows the first strong image, its
+window is bounded by that image's receipt time plus three seconds. Repeated
+polls and weak images cannot renew it; correction stays withdrawn until the
+new gap has its own two-image confirmation.
+
 A strong detection can still lack usable appearance evidence, for example when
 its crop touches the image edge. Such an image does not erase the last usable
 appearance reference. That reference retains its original box and image receipt
@@ -69,6 +77,10 @@ unless two candidates are nearly tied. The request is bound to the camera/run
 and radio session/generation; only its matching completed response may adopt a
 new selection without a second SC cycle. Delayed results cannot authorize a
 different generation. A failed selection requires another deliberate cycle.
+An explicit matching selection response can clear an exhausted source recovery
+even when the server still tracks the same target. This retains the existing
+image-order and immutable-deadline checks; a failed or delayed response cannot
+reset them or authorize a later read.
 
 ## Mode 2 takeover policy
 
