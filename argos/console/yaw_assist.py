@@ -1,4 +1,5 @@
 """Own the continuous serial worker separately from the HTTP event loop."""
+from collections import deque
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -11,7 +12,10 @@ from argos.backends.yaw_stream_source import YawSource
 
 class YawAssistService:
     def __init__(self, device, console_port, *, manifest=None, directory=None,
-                 runner=run_stream, source_factory=YawSource, clock=time.monotonic):
+                 runner=run_stream, source_factory=YawSource, clock=time.monotonic,
+                 recovery_log_capacity=1024):
+        if type(recovery_log_capacity) is not int or recovery_log_capacity < 1:
+            raise ValueError("Recovery log capacity must be a positive integer")
         self.device, self.console_port = device, console_port
         self.manifest = manifest or {}
         self.directory = Path(directory) if directory is not None else None
@@ -29,6 +33,61 @@ class YawAssistService:
         self._log_wake = threading.Event()
         self._log_stop = threading.Event()
         self._log_dropped = 0
+        self._recovery_capacity = recovery_log_capacity
+        self._recovery_items = deque()
+        self._recovery_inflight = 0
+        self._recovery_queued = 0
+        self._recovery_written = 0
+        self._recovery_dropped = 0
+        self._recovery_failed = 0
+        self._recovery_dirty = False
+
+    def _recovery_status_locked(self):
+        pending = len(self._recovery_items) + self._recovery_inflight
+        return dict(queued=self._recovery_queued, written=self._recovery_written,
+                    dropped=self._recovery_dropped, failed=self._recovery_failed,
+                    pending=pending, capacity=self._recovery_capacity,
+                    shutdown_incomplete=self._log_stop.is_set() and pending > 0)
+
+    def _start_logger_locked(self):
+        # Called under the short mailbox lock: the HTTP and serial producers
+        # cannot create two writers racing over the same files.
+        if self._log_thread is None:
+            thread = threading.Thread(target=self._log_loop, name="argos-yaw-log", daemon=True)
+            try:
+                thread.start()
+            except RuntimeError as exc:
+                self._log_error = f"Cannot start session logger: {exc}"
+            else:
+                self._log_thread = thread
+        self._log_wake.set()
+
+    def record_recovery(self, event):
+        """Queue every recovery attempt without doing disk I/O on its caller.
+
+        Unlike sampled bridge status, recovery events are an ordered FIFO: no
+        deduplication or replacement. The explicit dropped counter is the only
+        permitted overflow behavior; disk failure is reported separately.
+        """
+        if self.directory is None:
+            return False
+        if not isinstance(event, dict):
+            raise TypeError("Recovery event must be a dictionary")
+        record = {"monotonic_at": self.clock(), "event": deepcopy(event)}
+        with self._lock:
+            self._recovery_dirty = True
+            if (self._stop.is_set()
+                    or len(self._recovery_items) + self._recovery_inflight >= self._recovery_capacity):
+                self._recovery_dropped += 1
+                reason = "service is stopping" if self._stop.is_set() else "queue is full"
+                self._log_error = (f"Recovery log {reason}; "
+                                   f"{self._recovery_dropped} event(s) not recorded")
+                self._log_wake.set()
+                return False
+            self._recovery_items.append(record)
+            self._recovery_queued += 1
+            self._start_logger_locked()
+        return True
 
     def start(self):
         if self._thread is not None:
@@ -53,10 +112,7 @@ class YawAssistService:
                 self._log_dropped += 1
             self._log_item = {"monotonic_at": now, **deepcopy(value),
                               "log_samples_replaced": self._log_dropped}
-        if self._log_thread is None:
-            self._log_thread = threading.Thread(target=self._log_loop, name="argos-yaw-log", daemon=True)
-            self._log_thread.start()
-        self._log_wake.set()
+            self._start_logger_locked()
 
     def _write_log(self, record):
         try:
@@ -67,26 +123,64 @@ class YawAssistService:
             temporary.replace(self.directory / "status.json")
             with (self.directory / "events.jsonl").open("a") as output:
                 output.write(text)
+        except (OSError, TypeError, ValueError) as exc:
+            with self._lock:
+                self._log_error = str(exc)
+
+    def _write_recovery_log(self, records):
+        self.directory.mkdir(parents=True, exist_ok=True)
+        text = "".join(json.dumps(record, allow_nan=False, separators=(",", ":")) + "\n"
+                       for record in records)
+        with (self.directory / "recovery.jsonl").open("a") as output:
+            output.write(text)
+
+    def _write_recovery_status(self):
+        with self._lock:
+            summary = {**self._recovery_status_locked(), "log_error": self._log_error}
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            temporary = self.directory / "recovery-status.json.tmp"
+            temporary.write_text(json.dumps(summary, allow_nan=False, separators=(",", ":")) + "\n")
+            temporary.replace(self.directory / "recovery-status.json")
         except OSError as exc:
-            self._log_error = str(exc)
+            with self._lock:
+                self._log_error = f"Cannot write recovery log summary: {exc}"
 
     def _log_loop(self):
-        # Disk work can stall without holding the USB sender or accumulating an
-        # unbounded event queue. Cumulative radio counters survive overwritten
-        # log samples; this is sampled status, not a lossless serial capture.
+        # Status may replace older samples; recovery attempts never do. Both
+        # have bounded storage and share this sole disk writer.
         while True:
             self._log_wake.wait()
             self._log_wake.clear()
-            with self._lock:
-                item, self._log_item = self._log_item, None
-            if item is not None:
-                self._write_log(item)
-            if self._log_stop.is_set():
+            while True:
                 with self._lock:
                     item, self._log_item = self._log_item, None
+                    recovery = [self._recovery_items.popleft()
+                                for _ in range(min(64, len(self._recovery_items)))]
+                    self._recovery_inflight = len(recovery)
+                    dirty, self._recovery_dirty = self._recovery_dirty, False
+                    stopping = self._log_stop.is_set()
+                if item is None and not recovery and not dirty:
+                    if stopping:
+                        return
+                    break
                 if item is not None:
                     self._write_log(item)
-                return
+                if recovery:
+                    try:
+                        self._write_recovery_log(recovery)
+                    except (OSError, TypeError, ValueError) as exc:
+                        with self._lock:
+                            self._recovery_failed += len(recovery)
+                            self._log_error = f"Cannot write recovery log: {exc}"
+                    else:
+                        with self._lock:
+                            self._recovery_written += len(recovery)
+                    finally:
+                        with self._lock:
+                            self._recovery_inflight = 0
+                if recovery or dirty:
+                    self._write_recovery_status()
 
     def _run(self):
         try:
@@ -100,9 +194,11 @@ class YawAssistService:
     def snapshot(self):
         with self._lock:
             value, at = deepcopy(self._status), self._at
+            recovery_log = self._recovery_status_locked()
+            log_error = self._log_error
         age = None if at is None else max(0., self.clock() - at)
         value.update(enabled=True, status_age_s=age, manifest=self.manifest,
-                     log_error=self._log_error)
+                     log_error=log_error, recovery_log=recovery_log)
         if at is None or age >= 1.5 or self._stop.is_set():
             value.update(connected=False, radio_state=None,
                          reason="Stream stopped" if self._stop.is_set() else "Waiting for stream status")
@@ -113,6 +209,8 @@ class YawAssistService:
         if self._thread is not None:
             self._thread.join(timeout=2.)
         self._log_stop.set()
+        with self._lock:
+            self._recovery_dirty = True
         self._log_wake.set()
         if self._log_thread is not None:
             self._log_thread.join(timeout=.2)

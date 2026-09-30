@@ -43,6 +43,8 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
                                      threads=session.config.vision_threads,
                                      max_hz=session.config.vision_hz)
     session.vision = vision
+    if yaw_service is not None and session.config.yaw_assist:
+        session.yaw_recovery_sink = yaw_service.record_recovery
 
     def snapshot():
         # A display read can land between receiver ticks. Deliver an already

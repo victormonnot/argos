@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 
-from argos.perception.appearance import MIN_SIMILARITY, similarity, validate_descriptor
+from argos.perception.appearance import similarity, validate_descriptor
 
 
 FRAME_MAX_AGE = .45
@@ -18,6 +18,9 @@ GAIN = .25
 MIN_CONFIDENCE = .5
 RECOVERY_MAX_GAP = .7
 CONTINUOUS_RECOVERY_MAX_GAP = 3.
+CONTINUOUS_RECOVERY_MIN_SIMILARITY = .88
+CONTINUOUS_RECOVERY_MAX_DX = .25
+CONTINUOUS_RECOVERY_MAX_DY = .15
 CENTER_SELECTION_MARGIN = .02
 MAX_SAFE_INTEGER = 2**53 - 1
 
@@ -97,9 +100,14 @@ class YawPreview:
     appearance associations are not proof of a person's real-world identity.
     """
 
-    def __init__(self, enabled: bool, *, continuous=False):
+    def __init__(self, enabled: bool, *, continuous=False, on_recovery=None):
+        if on_recovery is not None and not callable(on_recovery):
+            raise ValueError("Recovery diagnostics require a callable")
         self.enabled = bool(enabled)
         self.continuous = bool(continuous)
+        self._on_recovery = on_recovery
+        self._diagnostic_frame = None
+        self._diagnostic_candidates = set()
         self.recovery_max_gap = (CONTINUOUS_RECOVERY_MAX_GAP if self.continuous
                                  else RECOVERY_MAX_GAP)
         self.phase = "idle" if self.enabled else "disabled"
@@ -162,13 +170,16 @@ class YawPreview:
         if self.phase not in ("tracking", "paused"):
             return
         if self._frame is None:
+            self._recovery_diagnostics(now, "image_unavailable")
             self._stop("No recent analyzed image")
             return
         if not 0 <= now - self._frame["received_at"] <= FRAME_MAX_AGE:
+            self._recovery_diagnostics(now, "stale_image")
             self._stop("Selected target image is stale")
             return
         deadline = self._last_seen_at + self.recovery_max_gap
         if (self.phase == "paused" or self.continuous) and now >= deadline:
+            self._recovery_diagnostics(now, "recovery_deadline")
             self._stop("Selected person was lost; select a person again")
             return
         target = next((item for item in self._frame["detections"]
@@ -177,6 +188,7 @@ class YawPreview:
                   if item["confidence"] >= MIN_CONFIDENCE]
         lost = target is None or target["confidence"] < MIN_CONFIDENCE
         if self.continuous and (self.phase == "paused" or lost) and len(strong) > 1:
+            self._recovery_diagnostics(now, "ambiguous_candidates")
             self._stop("Target recovery is ambiguous; cycle SC to select the centered person")
             return
         if lost:
@@ -189,14 +201,17 @@ class YawPreview:
             self._detail = "Person briefly obscured or uncertain; preview paused with zero correction"
             self._error_x = None
             self._yaw = 0.
-            target = self._recover_unique(strong) if self.continuous else None
+            target = self._recover_unique(strong, now) if self.continuous else None
             if target is None:
                 return
             self._target_id = target["track_id"]
         if (self.phase == "paused"
                 and self._frame["received_at"] <= self._last_seen_at):
             # A changed sequence with the old receipt cannot renew evidence.
+            self._emit_recovery(target, now, False, "old_image_receipt")
             return
+        if self.phase == "paused":
+            self._emit_recovery(target, now, True, "accepted_same_track")
         self.phase = "tracking"
         self._detail = "Horizontal yaw preview only; no commands sent"
         self._last_seen_at = self._frame["received_at"]
@@ -207,31 +222,95 @@ class YawPreview:
         self._yaw = (0. if abs(self._error_x) <= DEADBAND else
                      max(-YAW_LIMIT, min(YAW_LIMIT, GAIN * self._error_x)))
 
-    def _recover_unique(self, strong):
+    def _recovery_metrics(self, target):
+        metrics = dict(similarity=None, dx=None, dy=None, width_ratio=None, height_ratio=None)
+        if target is None or self._reference is None:
+            return metrics
+        a, b = self._reference["box"], target["box"]
+        return dict(similarity=similarity(self._reference.get("appearance"), target.get("appearance")),
+                    dx=abs(b[0] + b[2] / 2 - a[0] - a[2] / 2),
+                    dy=abs(b[1] + b[3] / 2 - a[1] - a[3] / 2),
+                    width_ratio=b[2] / a[2], height_ratio=b[3] / a[3])
+
+    def _emit_recovery(self, target, now, accepted, reason, metrics=None):
+        """Scalar diagnostic callback only; repeated HTTP polls add no events."""
+        if not self.continuous or self._on_recovery is None:
+            return
+        frame = self._frame
+        context = None if frame is None else frame["context"]
+        frame_key = (context, None if frame is None else frame["sequence"], self.selection_epoch)
+        if frame_key != self._diagnostic_frame:
+            self._diagnostic_frame = frame_key
+            self._diagnostic_candidates = set()
+        identity = None if target is None else target["track_id"]
+        if identity in self._diagnostic_candidates:
+            return
+        self._diagnostic_candidates.add(identity)
+        record = {
+            "event": "yaw_recovery", "at": now,
+            "run_id": None if context is None else context[0],
+            "video_id": None if context is None else context[1],
+            "frame_sequence": None if frame is None else frame["sequence"],
+            "frame_received_at": None if frame is None else frame["received_at"],
+            "selection_id": self._selection_id, "selection_epoch": self.selection_epoch,
+            "previous_track_id": self._target_id, "track_id": identity,
+            "confidence": None if target is None else target["confidence"],
+            **(self._recovery_metrics(target) if metrics is None else metrics),
+            "accepted": bool(accepted), "reason": reason,
+        }
+        try:
+            self._on_recovery(record)
+        except Exception:
+            # Diagnostics must neither grant nor withdraw target authority.
+            pass
+
+    def _recovery_diagnostics(self, now, reason):
+        candidates = [] if self._frame is None else self._frame["detections"]
+        for target in candidates or [None]:
+            self._emit_recovery(target, now, False, reason)
+
+    def _recover_unique(self, strong, now):
         """Two real images plus appearance and geometry, never uniqueness alone."""
+        for target in self._frame["detections"]:
+            if target["confidence"] < MIN_CONFIDENCE:
+                self._emit_recovery(target, now, False, "low_confidence")
         if len(strong) != 1 or self._reference is None:
+            if not self._frame["detections"]:
+                self._emit_recovery(None, now, False, "no_candidate")
+            elif self._reference is None:
+                self._recovery_diagnostics(now, "no_reference")
             self._recovery_candidate = None
             return None
         target = strong[0]
-        score = similarity(self._reference.get("appearance"), target.get("appearance"))
-        a, b = self._reference["box"], target["box"]
-        dx = abs(b[0] + b[2] / 2 - a[0] - a[2] / 2)
-        dy = abs(b[1] + b[3] / 2 - a[1] - a[3] / 2)
-        if (score is None or score < MIN_SIMILARITY
-                or not .5 <= b[2] / a[2] <= 2
-                or not .75 <= b[3] / a[3] <= 4 / 3
-                or dx > min(.13, 3 * max(a[2], b[2]))
-                or dy > min(.05, .35 * max(a[3], b[3]))
-                or self._frame["received_at"] <= self._last_seen_at):
+        metrics = self._recovery_metrics(target)
+        reason = None
+        if metrics["similarity"] is None:
+            reason = "appearance_unavailable"
+        elif metrics["similarity"] < CONTINUOUS_RECOVERY_MIN_SIMILARITY:
+            reason = "appearance_similarity"
+        elif not .5 <= metrics["width_ratio"] <= 2:
+            reason = "width_ratio"
+        elif not .75 <= metrics["height_ratio"] <= 4 / 3:
+            reason = "height_ratio"
+        elif metrics["dx"] > CONTINUOUS_RECOVERY_MAX_DX + 1e-12:
+            reason = "horizontal_distance"
+        elif metrics["dy"] > CONTINUOUS_RECOVERY_MAX_DY + 1e-12:
+            reason = "vertical_distance"
+        elif self._frame["received_at"] <= self._last_seen_at:
+            reason = "old_image_receipt"
+        if reason is not None:
+            self._emit_recovery(target, now, False, reason, metrics)
             self._recovery_candidate = None
             return None
         candidate = (target["track_id"], self._frame["sequence"], self._frame["received_at"])
         previous = self._recovery_candidate
         if (previous is not None and previous[0] == candidate[0]
                 and candidate[1] > previous[1] and candidate[2] > previous[2]):
+            self._emit_recovery(target, now, True, "accepted_appearance", metrics)
             return target
         if previous is None or previous[0] != candidate[0]:
             self._recovery_candidate = candidate
+        self._emit_recovery(target, now, False, "pending_second_image", metrics)
         return None
 
     def observe(self, observation, now):
@@ -245,6 +324,9 @@ class YawPreview:
                 raise ValueError("Image receipt is in the future")
         except (KeyError, TypeError, ValueError, OverflowError):
             self._frame = None
+            if self.phase in ("tracking", "paused"):
+                self._emit_recovery(None, now, False,
+                                    "image_unavailable" if observation is None else "invalid_image")
             self._stop("No recent analyzed image" if observation is None else
                        "Invalid analyzed image metadata")
             return

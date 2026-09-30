@@ -501,7 +501,7 @@ def test_single_visible_person_alone_cannot_prove_identity(reason):
     preview = fly_selected()
     for seq, at in enumerate((2., 2.1, 2.2), start=2):
         frame = fly_observation(sequence=seq, at=at, track_id=81 + (seq if reason == "changing_id" else 0),
-                                center=.9 if reason == "far_geometry" else .72,
+                                center=.4 if reason == "far_geometry" else .72,
                                 appearance=reason != "missing_appearance")
         if reason == "different_appearance":
             frame["appearances"] = [[0., 1.] + [0.] * 206]
@@ -559,3 +559,153 @@ def test_radio_selection_rejects_near_ties_and_does_not_wait_for_future_candidat
     assert preview.state(1.2)["target_id"] is None
     with pytest.raises(RuntimeError, match="No recent"):
         preview.select_center(now=1.7)
+
+
+def recovery_candidate(sequence, at, *, score=.90, dx=.25, dy=.15, confidence=.9):
+    frame = fly_observation(sequence=sequence, at=at, track_id=81, confidence=confidence)
+    frame["appearances"] = [[score, math.sqrt(1 - score * score)] + [0.] * 206]
+    frame["detections"][0]["box"] = [.234375 + dx, .21875 + dy, .03125, .0625]
+    return frame
+
+
+def recovery_reference(callback=None, *, continuous=True):
+    preview = YawPreview(True, continuous=continuous, on_recovery=callback)
+    frame = fly_observation()
+    frame["detections"][0]["box"] = [.234375, .21875, .03125, .0625]
+    preview.observe(frame, now=1.)
+    preview.select(7, revision=0, now=1.)
+    return preview
+
+
+@pytest.mark.parametrize("score,accepted", [(.86, False), (.88, True), (.90, True)])
+def test_continuous_similarity_threshold_is_separate_and_keeps_two_image_gate(score, accepted):
+    from argos.perception.appearance import MIN_SIMILARITY
+    records = []
+    preview = recovery_reference(records.append)
+    preview.observe(recovery_candidate(2, 1.1, score=score), now=1.1)
+    assert preview.state(1.1)["phase"] == "paused"
+    preview.observe(recovery_candidate(3, 1.2, score=score), now=1.2)
+    assert preview.state(1.2)["phase"] == ("tracking" if accepted else "paused")
+    assert records[-1]["accepted"] is accepted
+    assert records[-1]["reason"] == ("accepted_appearance" if accepted else "appearance_similarity")
+    assert records[-1]["similarity"] == pytest.approx(score)
+    assert MIN_SIMILARITY == .95  # The ordinary appearance association is unchanged.
+
+
+@pytest.mark.parametrize("dx,dy,reason", [(.25, .15, "accepted_appearance"),
+                                        (.2501, .15, "horizontal_distance"),
+                                        (.25, .1501, "vertical_distance")])
+def test_continuous_geometry_uses_image_distance_without_small_box_relative_caps(dx, dy, reason):
+    records = []
+    preview = recovery_reference(records.append)
+    for seq, at in ((2, 1.1), (3, 1.2)):
+        preview.observe(recovery_candidate(seq, at, dx=dx, dy=dy), now=at)
+    assert records[-1]["reason"] == reason
+    assert records[-1]["dx"] == pytest.approx(dx)
+    assert records[-1]["dy"] == pytest.approx(dy)
+    assert records[-1]["width_ratio"] == records[-1]["height_ratio"] == 1.
+    assert preview.state(1.2)["phase"] == ("tracking" if reason == "accepted_appearance" else "paused")
+
+
+def test_relaxed_continuous_recovery_does_not_change_the_diagnostic_preview():
+    records = []
+    preview = recovery_reference(records.append, continuous=False)
+    preview.observe(recovery_candidate(2, 1.1), now=1.1)
+    preview.observe(recovery_candidate(3, 1.2), now=1.2)
+    assert preview.state(1.2)["phase"] == "paused"
+    assert preview.state(1.2)["target_id"] == 7
+    assert preview.state(1.2)["recovery_max_gap_s"] == .7
+    assert records == []
+
+
+@pytest.mark.parametrize("axis,ratio,reason", [(2, .49, "width_ratio"), (2, 2.01, "width_ratio"),
+                                               (3, .749, "height_ratio"), (3, 1.334, "height_ratio")])
+def test_relaxed_distances_do_not_remove_size_compatibility(axis, ratio, reason):
+    records = []
+    preview = recovery_reference(records.append)
+    for seq, at in ((2, 1.1), (3, 1.2)):
+        frame = recovery_candidate(seq, at, dx=.1, dy=.05)
+        frame["detections"][0]["box"][axis] *= ratio
+        preview.observe(frame, now=at)
+    assert preview.state(1.2)["phase"] == "paused"
+    assert records[-1]["reason"] == reason and not records[-1]["accepted"]
+
+
+def test_recovery_diagnostics_deduplicate_polls_and_contain_scalar_decision_evidence():
+    records = []
+    preview = recovery_reference(records.append)
+    first = recovery_candidate(2, 1.1)
+    preview.observe(first, now=1.1)
+    for now in (1.11, 1.12, 1.13):
+        preview.state(now)
+        preview.observe(first, now=now)
+    assert len(records) == 1 and records[0]["reason"] == "pending_second_image"
+    assert records[0]["accepted"] is False
+    preview.observe(recovery_candidate(3, 1.2), now=1.2)
+    preview.state(1.21)
+    assert len(records) == 2
+    result = records[-1]
+    assert result["event"] == "yaw_recovery" and result["reason"] == "accepted_appearance"
+    assert result["run_id"] == "run" and result["video_id"] == "camera"
+    assert result["frame_sequence"] == 3 and result["frame_received_at"] == 1.2
+    assert result["selection_id"] == result["previous_track_id"] == 7
+    assert result["selection_epoch"] == 1 and result["track_id"] == 81
+    assert all(value is None or type(value) in (str, int, float, bool) for value in result.values())
+    assert "appearance" not in result and "box" not in result
+
+
+@pytest.mark.parametrize("failure", ["ambiguous", "low_confidence", "no_appearance", "no_candidate",
+                                      "deadline", "stale"])
+def test_recovery_diagnostics_report_refusal_cause_without_fabricating_metrics(failure):
+    records = []
+    preview = recovery_reference(records.append)
+    frame = recovery_candidate(2, 1.1)
+    now = 1.1
+    if failure == "ambiguous":
+        frame["detections"].append({**frame["detections"][0], "track_id": 82})
+        frame["appearances"].append(frame["appearances"][0])
+    elif failure == "low_confidence":
+        frame["detections"][0]["confidence"] = .49
+    elif failure == "no_appearance":
+        frame["appearances"] = [None]
+    elif failure == "no_candidate":
+        frame["detections"], frame["appearances"] = [], []
+    elif failure == "deadline":
+        now = frame["received_at"] = 4.
+    else:
+        now = 1.6
+    preview.observe(frame, now=now)
+    reasons = {"ambiguous": "ambiguous_candidates", "low_confidence": "low_confidence",
+               "no_appearance": "appearance_unavailable", "no_candidate": "no_candidate",
+               "deadline": "recovery_deadline", "stale": "stale_image"}
+    assert all(record["reason"] == reasons[failure] and not record["accepted"] for record in records)
+    assert len(records) == (2 if failure == "ambiguous" else 1)
+    if failure in ("no_appearance", "no_candidate"):
+        assert records[0]["similarity"] is None
+    if failure == "no_candidate":
+        assert records[0]["dx"] is records[0]["dy"] is None
+
+
+def test_recovery_callback_failure_cannot_change_acceptance_or_manual_gap():
+    def failing(_record):
+        raise OSError("logger unavailable")
+    preview = recovery_reference(failing)
+    preview.observe(recovery_candidate(2, 1.1), now=1.1)
+    assert preview.state(1.1)["yaw"] == 0 and preview.state(1.1)["phase"] == "paused"
+    preview.observe(recovery_candidate(3, 1.2), now=1.2)
+    assert preview.state(1.2)["phase"] == "tracking"
+
+
+def test_missing_image_diagnostics_require_an_existing_active_selection():
+    records = []
+    preview = YawPreview(True, continuous=True, on_recovery=records.append)
+    preview.observe(None, now=0.)
+    preview.observe({}, now=.1)
+    assert records == []
+    preview.observe(fly_observation(), now=1.)
+    preview.select(7, revision=0, now=1.)
+    preview.observe(None, now=1.1)
+    assert len(records) == 1 and records[0]["reason"] == "image_unavailable"
+    assert records[0]["selection_id"] == 7
+    preview.observe(None, now=1.2)
+    assert len(records) == 1

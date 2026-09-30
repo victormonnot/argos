@@ -146,6 +146,36 @@ def test_session_private_appearance_wiring_recovers_a_new_track_without_new_sele
     assert recovered["selection_epoch"] == first["selection_epoch"]
 
 
+def test_recovery_attempts_reach_run_log_through_app_and_session(fly, tmp_path):
+    from argos.console.yaw_assist import YawAssistService
+
+    f = fly
+    service = YawAssistService("/dev/not-opened", 8080, directory=tmp_path / "run")
+    create_app(session=f["session"], vision=f["vision"], yaw_service=service)
+    try:
+        assert f["select"]().status_code == 200
+        f["observe"](1.1, [])
+        f["observe"](1.2, [person(81, .72)])
+        for _ in range(5):
+            f["client"].get(STATE)  # Display/source polling is not another attempt.
+        f["observe"](1.3, [person(81, .73)])
+        assert f["client"].get(STATE).json()["yaw_preview"]["target_id"] == 81
+    finally:
+        service.close()
+    records = [json.loads(line)["event"] for line in
+               (tmp_path / "run/recovery.jsonl").read_text().splitlines()]
+    pending = [record for record in records if record["reason"] == "pending_second_image"]
+    accepted = [record for record in records if record["reason"] == "accepted_appearance"]
+    assert len(pending) == len(accepted) == 1
+    assert accepted[0]["accepted"] is True
+    assert accepted[0]["similarity"] == pytest.approx(1.)
+    assert accepted[0]["dx"] == pytest.approx(.03)
+    assert accepted[0]["dy"] == pytest.approx(0.)
+    assert accepted[0]["width_ratio"] == pytest.approx(1.)
+    assert accepted[0]["height_ratio"] == pytest.approx(1.)
+    assert "appearance" not in accepted[0] and "appearances" not in accepted[0]
+
+
 def test_python_source_posts_to_real_asgi_endpoint_with_matching_origin(fly, monkeypatch):
     """Exercise source HTTP headers/body and actual endpoint/validator together."""
     f = fly

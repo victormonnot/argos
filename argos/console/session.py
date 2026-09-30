@@ -58,10 +58,15 @@ class ConsoleSession:
         self.messages = LiveMessages()
         self.control = FlightControl(enabled=config.sim_control, framing_enabled=config.sim_framing, system=config.system,
                                      component=config.component)
+        self.yaw_recovery_sink = None
         self.yaw_preview = YawPreview(enabled=(config.environment == "real"
             and config.video_source == "device" and config.vision_model is not None),
-            continuous=config.yaw_assist)
+            continuous=config.yaw_assist, on_recovery=self._record_yaw_recovery)
         self._yaw_requests = {}
+
+    def _record_yaw_recovery(self, event):
+        if self.yaw_recovery_sink is not None:
+            self.yaw_recovery_sink(event)
 
     def _open_link(self):
         config = self.config

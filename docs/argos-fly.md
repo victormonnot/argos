@@ -88,8 +88,13 @@ Observe **SC middle for about 0.2 s**, then **SC↑**, with yaw centered.
   Another deliberate SC cycle is needed.
 - Brief detection loss withdraws assistance and keeps a visual reference for up
   to **3 s**, while real images continue to arrive. The same track can recover;
-  a new track must also satisfy conservative appearance/geometry checks and two
-  distinct images. Uniqueness alone is insufficient evidence of identity.
+  a new track needs one unique confident candidate, appearance similarity
+  **at least 0.88**, and two distinct fresh images. Its center may move by at
+  most **25% of image width** horizontally and **15% of image height** vertically,
+  independent of person-box size. Width ratio stays within **0.5–2** and height
+  ratio within **0.75–4/3**. These thresholds apply only to continuous recovery;
+  ordinary tracking and the diagnostic preview retain their existing settings.
+  Uniqueness alone is insufficient evidence of identity.
 - Multiple strong candidates during recovery or an expired memory require a new
   SC selection. Missing/stale camera images and changed sources remove authority.
 - Deliberate stick takeover stays manual until the SC cycle, even if vision has
@@ -100,6 +105,16 @@ Appearance similarity is a short visual association, not reliable human identity
 Similar clothing, occlusion and crossings can still fool it. The initial demo
 should use a cooperative target and controlled framing. The operator remains
 responsible for manual takeover.
+
+Recovery diagnostics identify each evaluated image and candidate once, with
+similarity, horizontal/vertical distance, size ratios, acceptance and its reason
+(including waiting for the second image). Missing measurements are null; raw
+appearance descriptors are never logged. Diagnostics are passed to the session
+logger without performing disk I/O in the recovery decision. Each session run
+writes these attempts to `recovery.jsonl` and logger status to
+`recovery-status.json`. Ordinary attempts are not sampled; the asynchronous queue
+is bounded and explicitly reports overflow and write errors rather than blocking
+the control path.
 
 ## Polling and the combined bench measurements
 
