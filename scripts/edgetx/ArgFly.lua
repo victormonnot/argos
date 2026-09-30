@@ -27,6 +27,9 @@ local stickSince = nil
 local buffer = ""
 local dropping = false
 local pending = nil
+local blockedActive = false
+local lastBlockedAt = nil
+local blockedCallbacks = 0
 
 local function elapsed(now, before)
   -- EdgeTX uses Lua 5.3 with 32-bit integers/single-precision floats. Keep time
@@ -68,23 +71,77 @@ local function write(line)
   return ok
 end
 
+local function validClock(now)
+  return type(now) == "number" and type(math.type) == "function"
+    and math.type(now) == "integer" and now >= -2147483647 - 1 and now <= MAX_SEQUENCE
+end
+
+local function observed(value)
+  -- Diagnostics stay inside the existing 64-byte ASCII framing limit.
+  return string.sub(string.gsub(tostring(value), "[^A-Za-z0-9_.:+%-]", "_"), 1, 24)
+end
+
+local function blocked(reason, detail, now)
+  if type(serialWrite) ~= "function" then return end
+  local emit = not blockedActive
+  if blockedActive then
+    if validClock(now) and lastBlockedAt ~= nil then
+      emit = elapsed(now, lastBlockedAt) >= 100
+    else
+      -- A broken clock cannot give a real-time rate; bound diagnostic attempts.
+      blockedCallbacks = blockedCallbacks + 1
+      emit = blockedCallbacks >= 20
+    end
+  end
+  if emit then
+    pcall(serialWrite, "ARGOS_YAW_BLOCKED " .. reason .. " " .. observed(detail) .. "\n")
+    blockedActive = true
+    lastBlockedAt = validClock(now) and now or nil
+    blockedCallbacks = 0
+  end
+end
+
 local function permitted()
-  local ok, allowed, sc, rud, takeover = pcall(function()
+  local ok, allowed, sc, rud, takeover, reason, detail = pcall(function()
     local info = model.getInfo()
-    local internal, external = model.getModule(0), model.getModule(1)
+    if type(info) ~= "table" or info.name ~= "ARGOS FLY" then
+      return false, nil, nil, nil, "model", type(info) == "table" and info.name or type(info)
+    end
+    local internal = model.getModule(0)
+    if type(internal) ~= "table" or internal.Type ~= 5
+        or internal.firstChannel ~= 0 or internal.channelsCount ~= 16 then
+      local value = type(internal) == "table" and (tostring(internal.Type) .. ":"
+        .. tostring(internal.firstChannel) .. ":" .. tostring(internal.channelsCount)) or type(internal)
+      return false, nil, nil, nil, "internal_rf", value
+    end
+    local external = model.getModule(1)
+    if type(external) ~= "table" or external.Type ~= 0 then
+      return false, nil, nil, nil, "external_rf", type(external) == "table" and external.Type or type(external)
+    end
     local flip = getOutputValue(6)
+    if type(flip) ~= "number" or not (flip >= -1100 and flip <= -900) then
+      return false, nil, nil, nil, "crash_flip", flip
+    end
     local selector, stick = getValue("sc"), getValue("rud")
+    if selector ~= -1024 and selector ~= 0 and selector ~= 1024 then
+      return false, nil, nil, nil, "selector", selector
+    end
+    if type(stick) ~= "number" or not (stick >= -1024 and stick <= 1024) then
+      return false, nil, nil, nil, "stick", stick
+    end
     local native = getLogicalSwitchValue(9) -- zero-based L10, mandatory.
-    return type(info) == "table" and info.name == "ARGOS FLY"
-      and type(internal) == "table" and internal.Type == 5
-      and internal.firstChannel == 0 and internal.channelsCount == 16
-      and type(external) == "table" and external.Type == 0
-      and type(flip) == "number" and flip >= -1100 and flip <= -900
-      and (selector == -1024 or selector == 0 or selector == 1024)
-      and type(stick) == "number" and stick >= -1024 and stick <= 1024
-      and type(native) == "boolean", selector, stick, native
+    if type(native) ~= "boolean" then
+      return false, nil, nil, nil, "logical_switch", native
+    end
+    return true, selector, stick, native
   end)
-  return ok and allowed == true, sc, rud, takeover
+  if not ok then
+    local message = tostring(allowed)
+    message = string.match(message, "global '([^']+)'")
+      or string.gsub(message, "^[^:]+:%d+:%s*", "")
+    return false, nil, nil, nil, "api_exception", message
+  end
+  return allowed == true, sc, rud, takeover, reason, detail
 end
 
 local function authority(now, sc, rud, native)
@@ -232,25 +289,42 @@ local function status(now)
   if lastStatus == nil or elapsed(now, lastStatus) >= 10 then
     ticket = ticket == MAX_SEQUENCE and 0 or ticket + 1
     tickets[#tickets + 1] = {number = ticket, clock = now, generation = generation}
-    if #tickets > 4 then table.remove(tickets, 1) end
+    -- EdgeTX Pocket omits the table library. Keep the four newest tickets
+    -- with bounded assignments, preserving each ticket's original issue clock.
+    if #tickets > 4 then
+      for i = 1, 4 do tickets[i] = tickets[i + 1] end
+      tickets[5] = nil
+    end
     if write(string.format("AY1 %s %d %d %d %s %s\n", session or "00000000",
         generation, ticket, sequence, state, cause)) then lastStatus = now end
   end
 end
 
 local function run()
-  local allowed, sc, rud, native = permitted()
-  if not allowed or type(serialRead) ~= "function" or type(serialWrite) ~= "function" then
+  local allowed, sc, rud, native, reason, detail = permitted()
+  local clockOK, now = pcall(getTime)
+  if not allowed then
     fault("G")
+    blocked(reason, detail, clockOK and now or nil)
     return 0, 0, 0, 0
   end
-  local now = getTime()
-  if type(now) ~= "number" or math.type(now) ~= "integer"
-      or now < -2147483647 - 1 or now > MAX_SEQUENCE then
+  if type(serialRead) ~= "function" or type(serialWrite) ~= "function" then
+    fault("I")
+    blocked("serial_api", type(serialRead) .. ":" .. type(serialWrite), clockOK and now or nil)
+    return 0, 0, 0, 0
+  end
+  if not clockOK or not validClock(now) then
     fault("C")
+    blocked("clock", clockOK and now or "api_exception", nil)
     return 0, 0, 0, 0
   end
-  if lastClock ~= nil and elapsed(now, lastClock) >= 1073741824 then fault("C") end
+  if lastClock ~= nil and elapsed(now, lastClock) >= 1073741824 then
+    fault("C")
+    lastClock = now
+    blocked("clock", "regressed", now)
+    return 0, 0, 0, 0
+  end
+  blockedActive, lastBlockedAt, blockedCallbacks = false, nil, 0
   lastClock = now
   -- Expire and inspect native pilot authority BEFORE reading delayed USB bytes.
   authority(now, sc, rud, native)

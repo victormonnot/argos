@@ -151,6 +151,36 @@ def test_source_comparison_rejects_pilot_tuning_or_identity_change(manual):
             validate_profile(result.replace(before, after), source=manual)
 
 
+def _edit_sticky_state(result, value):
+    prefix, sticky = result.split(b'func: "FUNC_STICKY"', 1)
+    return prefix + b'func: "FUNC_STICKY"' + sticky.replace(b'lsState: 0', b'lsState: ' + value, 1)
+
+
+@pytest.mark.parametrize("state", [b'0', b'1'])
+def test_readback_accepts_only_binary_transient_l10_state(manual, state):
+    result = _edit_sticky_state(prepare_profile(manual), state)
+    report = validate_profile(result, source=manual)
+    assert report["preservation_checked"] is True
+    assert report["hardware_validated"] is False
+
+
+@pytest.mark.parametrize("state", [b'-1', b'2', b'true', b'01'])
+def test_readback_rejects_nonbinary_l10_state(manual, state):
+    with pytest.raises(ProfileError, match="L10 lsState"):
+        validate_profile(_edit_sticky_state(prepare_profile(manual), state))
+
+
+def test_transient_state_exception_does_not_relax_gate_policy(manual):
+    result = _edit_sticky_state(prepare_profile(manual), b'1')
+    prefix, sticky = result.split(b'func: "FUNC_STICKY"', 1)
+    persistent = prefix + b'func: "FUNC_STICKY"' + sticky.replace(b'lsPersist: 0', b'lsPersist: 1', 1)
+    wrong_reset = result.replace(b'"L9,SC1"', b'"L9,SC0"')
+    other_state = result.replace(b'lsState: 0', b'lsState: 1', 1)
+    for changed in (persistent, wrong_reset, other_state):
+        with pytest.raises(ProfileError, match="gate"):
+            validate_profile(changed)
+
+
 @pytest.mark.parametrize("raw", [
     b'', b'[]', b'header: {}\nheader: {}\n', b'header: &h {}\nother: *h\n',
     b'!!python/object:example {}', b'\xff', b'{broken',

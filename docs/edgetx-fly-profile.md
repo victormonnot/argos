@@ -76,6 +76,12 @@ text outside the changed fields is preserved, including zero-padded masks,
 receiver IDs and strings such as `OFF`. An old `semver` in a model export is
 serialization metadata; read the installed firmware version on the radio.
 
+After use, EdgeTX may save L10 `lsState` as either 0 or 1: it records the last
+Sticky result even with `lsPersist: 0`. The validator accepts only those two
+runtime values for L10; persistence must still be off, and every gate function,
+source, reset switch, delay and duration must match exactly. This readback field
+does not establish the current physical switch position or grant assistance.
+
 ## Install once, when the radio is available
 
 1. Keep the aircraft disconnected. On the Pocket, duplicate the ordinary

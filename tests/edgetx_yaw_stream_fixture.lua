@@ -34,9 +34,12 @@ local function radio(options)
     writeError = false, badRead = false, missingRead = false, missingWrite = false,
   }
   local allowed = {
-    math = math, string = string, table = table, tonumber = tonumber,
+    math = math, string = string, tonumber = tonumber,
     tostring = tostring, type = type, pcall = pcall, ipairs = ipairs,
-    getTime = function() return r.now end,
+    getTime = function()
+      if r.clockError then error("clock unavailable") end
+      return r.now
+    end,
     getValue = function(source)
       if source == "sc" then return r.sc end
       equal(source, "rud", "only raw yaw/SC sources may be accessed")
@@ -79,6 +82,8 @@ local function radio(options)
   }
   local environment = setmetatable({}, {
     __index = function(_, key)
+      -- Pocket's runtime has no global table library; Lua table values work.
+      if key == "table" then return nil end
       if (key == "serialRead" and r.missingRead)
           or (key == "serialWrite" and r.missingWrite) then return nil end
       assert(allowed[key] ~= nil, "undeclared capability: " .. tostring(key))

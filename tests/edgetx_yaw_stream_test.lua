@@ -21,6 +21,24 @@ local function active()
   return r
 end
 
+test("manual startup keeps announcing after ticket rollover before PC connects", function()
+  local r = radio()
+  for tick = 0, 200, 10 do
+    r:step(nil, tick)
+    r:expect(0, 0, 0)
+    eq(r:latestStatus().state, "M")
+  end
+  local greetings = 0
+  for _, line in ipairs(r.writes) do
+    if line == "ARGOS_YAW_STREAM_V2\n" then greetings = greetings + 1 end
+  end
+  eq(greetings, 3)
+  r:begin()
+  r:arm()
+  r:set(1, -40)
+  r:expect(-40, 1024)
+end)
+
 test("startup and BEGIN while SC up cannot enable", function()
   local r = radio({sc = -1024})
   r:step()
@@ -255,7 +273,58 @@ test("backwards radio clock is a latched fault", function()
   r:set(2, 80, true, 10)
   r:step(nil, 9)
   r:expect(0, 0, 0)
+  eq(r.writes[#r.writes], "ARGOS_YAW_BLOCKED clock regressed\n")
+  r:step(nil, 10)
   eq(r:latestStatus().state, "F")
+end)
+
+test("every failed authority guard announces a bounded diagnostic without greeting or commands", function()
+  local cases = {
+    {"model ARGOS_VIS", function(r) r.name = "ARGOS VIS" end},
+    {"internal_rf 0:0:16", function(r) r.internal.Type = 0 end},
+    {"internal_rf 5:0:8", function(r) r.internal.channelsCount = 8 end},
+    {"internal_rf 5:1:16", function(r) r.internal.firstChannel = 1 end},
+    {"external_rf 5", function(r) r.external.Type = 5 end},
+    {"crash_flip 0", function(r) r.flip = 0 end},
+    {"selector 512", function(r) r.sc = 512 end},
+    {"stick 1100", function(r) r.rud = 1100 end},
+    {"logical_switch nil", function(r) r.native = nil end},
+    {"api_exception model_unavailable", function(r) r.modelError = true end},
+    {"serial_api nil:function", function(r) r.missingRead = true end},
+    {"clock bad", function(r) r.now = "bad" end},
+    {"clock api_exception", function(r) r.clockError = true end},
+  }
+  for _, case in ipairs(cases) do
+    local r = radio()
+    case[2](r)
+    r:step("AB1 abc012ef\nAS1 abc012ef 1 1 1 1 128\n")
+    r:expect(0, 0, 0)
+    eq(r.lastReads, 0)
+    eq(#r.writes, 1)
+    eq(r.writes[1], "ARGOS_YAW_BLOCKED " .. case[1] .. "\n")
+    for _ = 1, 5 do
+      r:step()
+      r:expect(0, 0, 0)
+    end
+    eq(#r.writes, 1)
+  end
+end)
+
+test("blocked diagnostics use one second or twenty callbacks for an invalid clock", function()
+  local r = radio({name = "wrong\nmodel/with a long unsupported name"})
+  r:step()
+  r:step(nil, 99)
+  eq(#r.writes, 1)
+  r:step(nil, 100)
+  eq(#r.writes, 2)
+  assert(#r.writes[1] <= 64 and not r.writes[1]:sub(1, -2):find("\n"))
+  local broken = radio()
+  broken.now = "bad"
+  broken:step()
+  for _ = 1, 19 do broken:step() end
+  eq(#broken.writes, 1)
+  broken:step()
+  eq(#broken.writes, 2)
 end)
 
 test("model, module, crash flip and native input guards fail closed", function()

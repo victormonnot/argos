@@ -581,6 +581,33 @@ def test_old_radio_protocol_never_gets_a_host_write():
     assert radio.writes == []
 
 
+@pytest.mark.parametrize("diagnostic", ["model ARGOS_VIS", "internal_rf 5:0:8",
+                                       "external_rf 5", "crash_flip 0", "selector 512",
+                                       "stick 1100", "logical_switch nil",
+                                       "api_exception getLogicalSwitchValue",
+                                       "serial_api nil:function", "clock bad"])
+def test_blocked_radio_diagnostic_is_reported_before_greeting_without_host_writes(diagnostic):
+    clock = Clock()
+    radio = Radio(clock)
+    radio.incoming = deque([f"ARGOS_YAW_BLOCKED {diagnostic}\n".encode()])
+    host = stream.YawStream(radio, clock=clock)
+    with pytest.raises(stream.ProbeError, match=f"ArgFly blocked: {diagnostic.split()[0]}"):
+        host.step(sample(clock))
+    assert host.failed and not host.greeted
+    assert host.snapshot()["reason"].startswith("ArgFly blocked:")
+    assert radio.writes == []
+
+
+def test_malformed_blocked_diagnostic_never_authorizes_or_writes():
+    clock = Clock()
+    radio = Radio(clock)
+    radio.incoming = deque([b"ARGOS_YAW_BLOCKED unknown unsafe\n"])
+    host = stream.YawStream(radio, clock=clock)
+    with pytest.raises(stream.ProbeError, match="invalid.*diagnostic"):
+        host.step(sample(clock))
+    assert radio.writes == []
+
+
 def test_worker_selection_is_async_and_result_survives_subsequent_reads():
     selected, release, second_read = threading.Event(), threading.Event(), threading.Event()
     key = ("new-selection",)

@@ -232,7 +232,15 @@ def validate_profile(raw: bytes, *, source: bytes | None = None) -> dict[str, An
         else:
             _manual_row(row, channel, _MANUAL_SOURCES[channel])
     _require(mixes[4] == _NEW_MIX, "CH4 Lua replacement must follow manual yaw and use L7")
-    _require(model.get("logicalSw") == _gate(), "Native L01–L11 gate differs from the reviewed contract")
+    expected_gate = _gate()
+    gate = model.get("logicalSw")
+    # EdgeTX saves the Sticky runtime result even when persistence is off.
+    # Only L10's binary state is observational; every policy field stays exact.
+    if isinstance(gate, dict) and isinstance(gate.get("9"), dict):
+        sticky_state = gate["9"].get("lsState")
+        _require(sticky_state in ("0", "1"), "Native L10 lsState must be 0 or 1")
+        expected_gate["9"]["lsState"] = sticky_state
+    _require(gate == expected_gate, "Native L01–L11 gate differs from the reviewed contract")
     _require(model.get("scriptsData") == {"0": {"file": SCRIPT_NAME, "name": ""}},
              "Only ArgFly in LUA1 is allowed")
     if source is not None:

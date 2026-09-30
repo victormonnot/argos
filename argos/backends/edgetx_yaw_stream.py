@@ -28,6 +28,7 @@ MAX_SEQUENCE = 2**31 - 1
 # EdgeTX Lua 5.3 LUA_32BITS keeps nonnegative integer counters exact to 31 bits.
 COUNTER_MODULUS = 2**31
 _STATUS = re.compile(rb"AY1 ([0-9a-f]{8}) ([0-9]{1,10}) ([0-9]{1,10}) ([0-9]{1,10}) ([MTAF]) ([SMWATEPLIGCO])")
+_BLOCKED = re.compile(rb"ARGOS_YAW_BLOCKED (model|internal_rf|external_rf|crash_flip|selector|stick|logical_switch|api_exception|serial_api|clock) ([A-Za-z0-9_.:+-]{1,24})")
 
 
 @dataclass(frozen=True)
@@ -257,6 +258,13 @@ class YawStream:
             for line in self.lines.feed(chunk):
                 if not line:
                     continue
+                if line.startswith(b"ARGOS_YAW_BLOCKED"):
+                    diagnostic = _BLOCKED.fullmatch(line)
+                    if diagnostic is None:
+                        raise ProbeError("invalid ArgFly blocked diagnostic")
+                    reason, observed = (part.decode("ascii") for part in diagnostic.groups())
+                    self.reason = f"ArgFly blocked: {reason} (observed {observed}); radio remains manual"
+                    raise ProbeError(self.reason)
                 if line == HELLO:
                     if not self.greeted:
                         self.greeted = True
