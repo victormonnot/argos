@@ -113,10 +113,10 @@ local function radio(options)
 
   function r:latestStatus()
     for i = #self.writes, 1, -1 do
-      local session, generation, ticket, sequence, state = self.writes[i]:match(
-        "^AY1 ([0-9a-f]+) (%d+) (%d+) (%d+) ([MTAF])\n$")
+      local session, generation, ticket, sequence, state, cause = self.writes[i]:match(
+        "^AY1 ([0-9a-f]+) (%d+) (%d+) (%d+) ([MTAF]) ([SMWATEPLIGCO])\n$")
       if session then return {session = session, generation = tonumber(generation),
-        ticket = tonumber(ticket), sequence = tonumber(sequence), state = state} end
+        ticket = tonumber(ticket), sequence = tonumber(sequence), state = state, cause = cause} end
     end
     error("no status emitted")
   end

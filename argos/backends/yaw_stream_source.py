@@ -11,6 +11,7 @@ from copy import copy
 from dataclasses import dataclass
 import http.client
 import json
+import re
 import time
 
 from .vision_bench_source import (
@@ -20,6 +21,7 @@ from .vision_bench_source import (
 
 
 RECOVERY_MAX_GAP = .7
+CONTINUOUS_RECOVERY_MAX_GAP = 3.
 RECOVERY_IMAGES = 2
 
 
@@ -50,6 +52,7 @@ class YawValidator:
         self._strong_sequence = None
         self._recovery_deadline = None
         self._last_strong_receipt = None
+        self._target_id = None
 
     def validate(self, snapshot, started, finished):
         try:
@@ -72,6 +75,12 @@ class YawValidator:
         if state["environment"] != "real" or config["environment"] != "real":
             raise PreviewError("A physical camera in the real environment is required")
         epoch = _integer(preview["selection_epoch"], "selection epoch", minimum=0)
+        continuous = preview.get("continuous", False)
+        if type(continuous) is not bool:
+            raise PreviewError("Invalid continuous yaw mode")
+        recovery_gap = CONTINUOUS_RECOVERY_MAX_GAP if continuous else RECOVERY_MAX_GAP
+        if preview.get("recovery_max_gap_s", recovery_gap) != recovery_gap:
+            raise PreviewError("Invalid target recovery limit")
         phase = preview["phase"]
         if preview["enabled"] is not True or phase in ("idle", "disabled", "stopped"):
             # An explicit selection is needed; do not retain identity from an
@@ -82,20 +91,27 @@ class YawValidator:
             self._recovering = False
             self._recovery_deadline = None
             self._last_strong_receipt = None
+            self._target_id = None
             return YawDemand(0, False, None, finished, "selection_required")
         if phase not in ("tracking", "paused"):
             raise PreviewError("Invalid continuous yaw phase")
+        target_id = _integer(preview["target_id"], "selected person")
+        selection_id = (_integer(preview["selection_id"], "original selected person")
+                        if continuous else target_id)
         key = (_identity(preview["run_id"], "preview run"),
                _identity(preview["video_id"], "preview camera"),
-               _integer(preview["target_id"], "selected person"), epoch,
+               selection_id, epoch,
                _identity(config["video_endpoint"], "camera endpoint"))
         revision = _integer(preview["revision"], "preview revision", minimum=0)
         same_selection = key == self._key
         if same_selection and self._revision is not None and revision < self._revision:
             raise PreviewError("Preview revision moved backwards")
+        if (same_selection and target_id != self._target_id
+                and revision == self._revision and not self._recovering):
+            raise PreviewError("Target reassociation requires a recovery observation")
         at = _number(state["at"], "server snapshot time")
         projected = dict(state)
-        projected_preview = dict(preview, revision=epoch)
+        projected_preview = dict(preview, revision=epoch, target_id=selection_id)
         projected["yaw_preview"] = projected_preview
         recovery_deadline = self._recovery_deadline if same_selection else None
         last_strong = self._last_strong_receipt if same_selection else None
@@ -103,11 +119,11 @@ class YawValidator:
             if preview["yaw"] != 0 or preview["error_x"] is not None:
                 raise PreviewError("An uncertain target must withdraw its correction")
             declared = _number(preview["recovery_deadline_at"], "target recovery deadline")
-            if not 0 < declared - at <= RECOVERY_MAX_GAP:
+            if not 0 < declared - at <= recovery_gap:
                 raise PreviewError("Target recovery window expired or is invalid")
             recovery_deadline = min(declared, recovery_deadline or declared)
             if last_strong is not None:
-                recovery_deadline = min(recovery_deadline, last_strong + RECOVERY_MAX_GAP)
+                recovery_deadline = min(recovery_deadline, last_strong + recovery_gap)
             if at >= recovery_deadline:
                 raise PreviewError("Target recovery window expired")
             # Only the projection enters the strict image validator. The
@@ -145,6 +161,7 @@ class YawValidator:
         self._strong_sequence = strong_sequence
         self._recovery_deadline = recovery_deadline
         self._last_strong_receipt = last_strong
+        self._target_id = target_id
         return YawDemand(checked.value if valid else 0, valid, key,
                          checked.deadline if valid else finished, reason)
 
@@ -164,16 +181,42 @@ class YawSource:
         self.validator = YawValidator()
         self._connection = None
         self._closed = False
+        self._context = None
 
     def read(self):
+        return self._request("GET", "/api/vision/yaw-assist/state")
+
+    def select_center(self, request_token):
+        """Execute one explicit SC-cycle selection bound to the observed camera.
+
+        No retry is performed; a delayed result is independently fenced by the
+        radio session/generation at the stream owner.
+        """
+        if (not isinstance(request_token, str)
+                or not re.fullmatch(r"[0-9a-f]{8}:(?:0|[1-9][0-9]{0,9})", request_token)
+                or int(request_token.split(":")[1]) > 2**31 - 1):
+            raise PreviewError("Invalid radio selection request token")
+        if self._context is None:
+            raise PreviewError("Read the current camera before selecting from the radio")
+        return self._request("POST", "/api/vision/yaw-assist/select-center", {
+            "request_id": request_token, "run_id": self._context[0], "video_id": self._context[1]})
+
+    def _request(self, method, path, body=None):
         if self._closed:
             raise PreviewError("Continuous yaw source is closed")
+        request_token = None if body is None else body["request_id"]
+        requested_context = None if body is None else (body["run_id"], body["video_id"])
         started = self.clock()
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=HTTP_TIMEOUT)
         self._connection = connection
         try:
-            connection.request("GET", "/api/state", headers={
-                "Accept": "application/json", "Cache-Control": "no-cache", "Connection": "close"})
+            headers = {"Accept": "application/json", "Cache-Control": "no-cache", "Connection": "close"}
+            if body is None:
+                connection.request(method, path, headers=headers)
+            else:
+                headers["Content-Type"] = "application/json"
+                headers["Origin"] = f"http://127.0.0.1:{self.port}"
+                connection.request(method, path, body=json.dumps(body), headers=headers)
             response = connection.getresponse()
             if response.status != 200:
                 raise PreviewError(f"Console returned HTTP {response.status}; no redirects followed")
@@ -193,6 +236,13 @@ class YawSource:
                 raise PreviewError("Console response ended before its declared length")
             snapshot = json.loads(body.decode("utf-8"), object_pairs_hook=_unique_object,
                                   parse_constant=_nonfinite, parse_float=_finite_float)
+            if method == "POST":
+                if (not isinstance(snapshot, dict) or set(snapshot) != {"request_id", "state"}
+                        or snapshot["request_id"] != request_token):
+                    raise PreviewError("Console selection response does not match its radio request")
+                snapshot = snapshot["state"]
+                if (snapshot["run_id"], snapshot["video"]["source_id"]) != requested_context:
+                    raise PreviewError("Camera changed during radio target selection")
             finished = self.clock()
             result = self.validator.validate(snapshot, started, finished)
             checked_at = _number(self.clock(), "local completion time")
@@ -200,6 +250,10 @@ class YawSource:
                 raise PreviewError("Console read exceeded its time budget or clock moved backwards")
             if result.valid and checked_at >= result.deadline:
                 raise PreviewError("Console image expired while validating the response")
+            self._context = (_identity(snapshot["run_id"], "console run"),
+                             _identity(snapshot["video"]["source_id"], "camera source"))
+            if method == "POST" and not result.valid:
+                raise PreviewError("Radio selection did not produce a fresh visible target")
             return result
         except (OSError, http.client.HTTPException, ValueError, TypeError,
                 OverflowError, RecursionError) as exc:

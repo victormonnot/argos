@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import math
 
+from argos.perception.appearance import MIN_SIMILARITY, similarity, validate_descriptor
+
 
 FRAME_MAX_AGE = .45
 YAW_LIMIT = .125
@@ -15,6 +17,8 @@ DEADBAND = .035
 GAIN = .25
 MIN_CONFIDENCE = .5
 RECOVERY_MAX_GAP = .7
+CONTINUOUS_RECOVERY_MAX_GAP = 3.
+CENTER_SELECTION_MARGIN = .02
 MAX_SAFE_INTEGER = 2**53 - 1
 
 
@@ -67,6 +71,12 @@ def _observation(value):
         identities.add(identity)
         detections.append({"track_id": identity, "box": tuple(map(float, box)),
                            "confidence": float(confidence)})
+    appearances = value.get("appearances")
+    if appearances is not None:
+        if not isinstance(appearances, (list, tuple)) or len(appearances) != len(detections):
+            raise ValueError("Appearance metadata must align with detections")
+        for detection, appearance in zip(detections, appearances):
+            detection["appearance"] = validate_descriptor(appearance)
     return {"context": context, "dimensions": (width, height),
             "sequence": sequence, "received_at": _time(value["received_at"]),
             "detections": detections}
@@ -76,16 +86,22 @@ class YawPreview:
     """An explicitly selected image identity and bounded, latched preview.
 
     A short detection gap retains selection without producing a correction.
-    Only the same identity in a new strong image can resume within that gap.
+    The diagnostic default recovers only the same track. Opt-in continuous mode
+    retains selection for three seconds and may associate a unique new track
+    using two fresh images with compatible appearance and nearby geometry.
     Invalid or stale imagery and expired recovery still latch a cleared target.
     Entering a gap changes revision, fencing command sessions even if they miss
     the paused snapshot. Clear, expiry and source reset also change revision.
     Selection epoch is separate: a recoverable gap retains it, while an explicit
-    selection or terminal loss changes it for continuous consumers.
+    selection or terminal loss changes it for continuous consumers. These short
+    appearance associations are not proof of a person's real-world identity.
     """
 
-    def __init__(self, enabled: bool):
+    def __init__(self, enabled: bool, *, continuous=False):
         self.enabled = bool(enabled)
+        self.continuous = bool(continuous)
+        self.recovery_max_gap = (CONTINUOUS_RECOVERY_MAX_GAP if self.continuous
+                                 else RECOVERY_MAX_GAP)
         self.phase = "idle" if self.enabled else "disabled"
         self.revision = 0
         self.selection_epoch = 0
@@ -95,7 +111,10 @@ class YawPreview:
         self._last_frame = None
         self._last_now = None
         self._target_id = None
+        self._selection_id = None
         self._last_seen_at = None
+        self._reference = None
+        self._recovery_candidate = None
         self._error_x = None
         self._yaw = 0.
 
@@ -106,7 +125,9 @@ class YawPreview:
             self.selection_epoch += 1
             self._detail = detail
         self._target_id = None
+        self._selection_id = None
         self._last_seen_at = None
+        self._reference = self._recovery_candidate = None
         self._error_x = None
         self._yaw = 0.
 
@@ -146,13 +167,19 @@ class YawPreview:
         if not 0 <= now - self._frame["received_at"] <= FRAME_MAX_AGE:
             self._stop("Selected target image is stale")
             return
-        deadline = self._last_seen_at + RECOVERY_MAX_GAP
-        if self.phase == "paused" and now >= deadline:
+        deadline = self._last_seen_at + self.recovery_max_gap
+        if (self.phase == "paused" or self.continuous) and now >= deadline:
             self._stop("Selected person was lost; select a person again")
             return
         target = next((item for item in self._frame["detections"]
                        if item["track_id"] == self._target_id), None)
-        if target is None or target["confidence"] < MIN_CONFIDENCE:
+        strong = [item for item in self._frame["detections"]
+                  if item["confidence"] >= MIN_CONFIDENCE]
+        lost = target is None or target["confidence"] < MIN_CONFIDENCE
+        if self.continuous and (self.phase == "paused" or lost) and len(strong) > 1:
+            self._stop("Target recovery is ambiguous; cycle SC to select the centered person")
+            return
+        if lost:
             if now >= deadline:
                 self._stop("Selected person was lost; select a person again")
                 return
@@ -162,7 +189,10 @@ class YawPreview:
             self._detail = "Person briefly obscured or uncertain; preview paused with zero correction"
             self._error_x = None
             self._yaw = 0.
-            return
+            target = self._recover_unique(strong) if self.continuous else None
+            if target is None:
+                return
+            self._target_id = target["track_id"]
         if (self.phase == "paused"
                 and self._frame["received_at"] <= self._last_seen_at):
             # A changed sequence with the old receipt cannot renew evidence.
@@ -170,10 +200,39 @@ class YawPreview:
         self.phase = "tracking"
         self._detail = "Horizontal yaw preview only; no commands sent"
         self._last_seen_at = self._frame["received_at"]
+        self._reference = target
+        self._recovery_candidate = None
         x, _, width, _ = target["box"]
         self._error_x = max(-1., min(1., 2 * (x + width / 2 - .5)))
         self._yaw = (0. if abs(self._error_x) <= DEADBAND else
                      max(-YAW_LIMIT, min(YAW_LIMIT, GAIN * self._error_x)))
+
+    def _recover_unique(self, strong):
+        """Two real images plus appearance and geometry, never uniqueness alone."""
+        if len(strong) != 1 or self._reference is None:
+            self._recovery_candidate = None
+            return None
+        target = strong[0]
+        score = similarity(self._reference.get("appearance"), target.get("appearance"))
+        a, b = self._reference["box"], target["box"]
+        dx = abs(b[0] + b[2] / 2 - a[0] - a[2] / 2)
+        dy = abs(b[1] + b[3] / 2 - a[1] - a[3] / 2)
+        if (score is None or score < MIN_SIMILARITY
+                or not .5 <= b[2] / a[2] <= 2
+                or not .75 <= b[3] / a[3] <= 4 / 3
+                or dx > min(.13, 3 * max(a[2], b[2]))
+                or dy > min(.05, .35 * max(a[3], b[3]))
+                or self._frame["received_at"] <= self._last_seen_at):
+            self._recovery_candidate = None
+            return None
+        candidate = (target["track_id"], self._frame["sequence"], self._frame["received_at"])
+        previous = self._recovery_candidate
+        if (previous is not None and previous[0] == candidate[0]
+                and candidate[1] > previous[1] and candidate[2] > previous[2]):
+            return target
+        if previous is None or previous[0] != candidate[0]:
+            self._recovery_candidate = candidate
+        return None
 
     def observe(self, observation, now):
         """Accept only server-owned image metadata, never renewing its receipt."""
@@ -226,6 +285,7 @@ class YawPreview:
             raise ValueError("A positive safe-integer target identity is required")
         self._target(now, track_id)
         self._target_id = track_id
+        self._selection_id = track_id
         self._last_seen_at = self._frame["received_at"]
         self.phase = "tracking"
         self._detail = "Horizontal yaw preview only; no commands sent"
@@ -234,10 +294,42 @@ class YawPreview:
         self._update(now)
         return self._snapshot(now)
 
+    def select_center(self, *, now):
+        """An explicit radio cycle retains a valid target or chooses the center.
+
+        No request stays pending waiting for somebody to walk into the image.
+        Near ties are refused so an explicit gesture cannot choose arbitrarily.
+        """
+        if not self.continuous:
+            raise RuntimeError("Radio target selection requires continuous yaw assistance")
+        now, valid_clock = self._clock(now)
+        self._update(now)
+        if not self.enabled or not valid_clock:
+            raise RuntimeError("Yaw assistance is unavailable")
+        if self.phase == "tracking":
+            return self._snapshot(now)
+        if self._frame is None or not 0 <= now - self._frame["received_at"] <= FRAME_MAX_AGE:
+            raise RuntimeError("No recent analyzed image for radio selection")
+        candidates = []
+        for target in self._frame["detections"]:
+            if target["confidence"] < MIN_CONFIDENCE:
+                continue
+            x, y, width, height = target["box"]
+            candidates.append((math.hypot(x + width / 2 - .5, y + height / 2 - .5),
+                               target["track_id"]))
+        candidates.sort()
+        if not candidates:
+            raise RuntimeError("No confident person is visible; cycle SC again when ready")
+        if len(candidates) > 1 and candidates[1][0] - candidates[0][0] < CENTER_SELECTION_MARGIN:
+            raise RuntimeError("Centered person is ambiguous; reframe and cycle SC again")
+        return self.select(candidates[0][1], revision=self.revision, now=now)
+
     def clear(self, reason="Preview cleared"):
         """Cancel selection, including any select request from an older revision."""
         self._target_id = None
+        self._selection_id = None
         self._last_seen_at = None
+        self._reference = self._recovery_candidate = None
         self._error_x = None
         self._yaw = 0.
         self.revision += 1
@@ -252,6 +344,7 @@ class YawPreview:
             "enabled": self.enabled, "phase": self.phase, "detail": self._detail,
             "revision": self.revision, "target_id": self._target_id,
             "selection_epoch": self.selection_epoch,
+            "selection_id": self._selection_id, "continuous": self.continuous,
             "run_id": None if context is None else context[0],
             "video_id": None if context is None else context[1],
             "frame_sequence": None if frame is None else frame["sequence"],
@@ -259,8 +352,8 @@ class YawPreview:
             "frame_age_s": None if frame is None else max(0., now - frame["received_at"]),
             "frame_max_age_s": FRAME_MAX_AGE, "error_x": self._error_x,
             "yaw": self._yaw, "yaw_limit": YAW_LIMIT, "deadband": DEADBAND,
-            "recovery_max_gap_s": RECOVERY_MAX_GAP,
-            "recovery_deadline_at": (self._last_seen_at + RECOVERY_MAX_GAP
+            "recovery_max_gap_s": self.recovery_max_gap,
+            "recovery_deadline_at": (self._last_seen_at + self.recovery_max_gap
                                      if self.phase == "paused" else None),
         }
 

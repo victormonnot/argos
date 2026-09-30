@@ -365,6 +365,8 @@ def test_only_matching_accepted_job_can_supply_appearance(runtime):
     assert frame.result["detections"] == [{**narrow_person(.39), "track_id": original}]
     assert set(frame.result) == {"width", "height", "inference_ms", "detections"}
     assert set(frame.result["detections"][0]) == {"box", "confidence", "track_id"}
+    assert frame.appearances == (tuple(descriptor()),)
+    assert "appearances" not in vision.state(session)
 
 
 def test_rejected_stale_result_cannot_refresh_appearance_or_identity(runtime):

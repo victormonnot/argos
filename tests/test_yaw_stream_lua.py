@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from argos.backends.edgetx_yaw_stream import SourceSample, YawStream
+from argos.backends.edgetx_yaw_stream import SelectionResult, SourceSample, YawStream
 from argos.backends.yaw_stream_source import YawDemand
 
 
@@ -89,12 +89,15 @@ def actual_radio():
 
 
 class Pair:
-    def __init__(self, port):
+    def __init__(self, port, *, radio_selection=False):
         self.now = 0.
         self.port = port
         serial = itertools.count(1)
+        self.requests = []
+        self.selection_result = None
         self.host = YawStream(port, clock=lambda: self.now,
-                              nonce=lambda: f"{next(serial):08x}")
+                              nonce=lambda: f"{next(serial):08x}",
+                              request_selection=self.requests.append if radio_selection else None)
         self.key = ("run", "camera", 7, 1, "/dev/video2")
 
     def step(self, tick, *, sc=-1024, rud=0, takeover=False, valid=True):
@@ -103,7 +106,7 @@ class Pair:
         demand = YawDemand(75 if valid else 0, valid, self.key,
                            self.now + .4 if valid else self.now,
                            "tracking" if valid else "target_paused")
-        self.host.step(SourceSample(demand, self.now))
+        self.host.step(SourceSample(demand, self.now, selection_result=self.selection_result))
         return output
 
     def arm(self):
@@ -175,6 +178,50 @@ def test_actual_lua_rejects_delayed_ticket_and_old_connection_until_operator_cyc
         for tick in range(245, 285, 5):
             pair.step(tick)
         assert port.output[:2] == (75, 1024)
+
+
+def test_actual_radio_enable_selects_new_target_once_and_reports_withdrawal_cause():
+    with actual_radio() as port:
+        pair = Pair(port, radio_selection=True)
+        for tick in range(0, 20, 5):
+            pair.step(tick, sc=0)
+        session = pair.host.session
+        pair.step(20)
+        assert len(pair.requests) == 1 and pair.host.selection_pending
+        token = pair.requests[-1]
+        for tick in range(25, 50, 5):
+            assert pair.step(tick)[:2] == (0, 0), "pre-enable image cannot acquire authority"
+
+        pair.key = ("run", "camera", 91, 2, "/dev/video2")
+        pair.selection_result = SelectionResult(token, pair.now, pair.key, True)
+        for tick in range(50, 85, 5):
+            pair.step(tick)
+        assert port.output[:2] == (75, 1024)
+        assert pair.host.session == session and pair.host.selection_key == pair.key
+        assert len(pair.requests) == 1
+
+        for tick in range(85, 130, 5):
+            pair.step(tick, valid=False)
+        assert port.output[:2] == (0, 0)
+        assert pair.host.status.cause == "T"
+        assert pair.host.snapshot()["radio_a_to_t_causes"] == {"T": 1}
+        assert len(pair.requests) == 1, "occlusion does not imitate a physical SC edge"
+        for tick in range(130, 160, 5):
+            pair.step(tick)
+        assert port.output[:2] == (75, 1024)
+
+        # Explicit manual rearm generates a new transaction. The previous
+        # selection result is still present but cannot satisfy that new token.
+        pair.step(160, sc=0)
+        pair.step(165, sc=0)
+        pair.step(170)
+        assert len(pair.requests) == 2 and pair.requests[-1] != token
+        for tick in range(175, 200, 5):
+            assert pair.step(tick)[:2] == (0, 0)
+        pair.selection_result = SelectionResult(pair.requests[-1], pair.now, pair.key, True)
+        for tick in range(200, 235, 5):
+            pair.step(tick)
+        assert port.output[:2] == (75, 1024) and pair.host.session == session
 
 
 def test_lua_targeted_policy_harness():

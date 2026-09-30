@@ -64,12 +64,13 @@ class Radio:
                 self.ack = int(fields[4])
         return len(packet)
 
-    def report(self, *, ticket=None, state=None, ack=None):
+    def report(self, *, ticket=None, state=None, ack=None, cause=None):
         self.ticket = self.ticket + 1 if ticket is None else ticket
         if state is not None:
             self.state = state
+        cause = cause or {"M": "M", "T": "W", "A": "A", "F": "L"}[self.state]
         self.incoming.append((f"AY1 {self.session} {self.gen} {self.ticket} "
-                              f"{self.ack if ack is None else ack} {self.state}\n").encode())
+                              f"{self.ack if ack is None else ack} {self.state} {cause}\n").encode())
 
     def commands(self):
         return [(at, packet.decode().split()) for at, packet in self.writes if packet.startswith(b"AS1 ")]
@@ -225,7 +226,7 @@ def test_generation_change_discards_old_ticket_and_does_not_reuse_output_after_m
     radio.report(state="M")
     host.step(sample(clock))
     count = len(radio.commands())
-    radio.incoming.append(f"AY1 {host.session} {oldgen} {oldticket + 100} 1 A\n".encode())
+    radio.incoming.append(f"AY1 {host.session} {oldgen} {oldticket + 100} 1 A A\n".encode())
     clock.advance(.101)
     host.step(sample(clock))
     assert len(radio.commands()) == count and host.status.state == "M"
@@ -271,10 +272,12 @@ def test_stalled_output_and_partial_write_end_this_connection():
     assert len(radio.writes) == count
 
 
-@pytest.mark.parametrize("line", [b"AY1 ab 1 2 3 A", b"AY1 00000001 2147483648 1 0 M",
-                                   b"AY1 00000001 1 2147483648 0 M",
-                                   b"AY1 00000001 1 2 2147483648 M", b"x" * 65,
-                                   b"AY1 00000001 1 2 0 X", b"CLI prompt"])
+@pytest.mark.parametrize("line", [b"AY1 ab 1 2 3 A A", b"AY1 00000001 2147483648 1 0 M M",
+                                   b"AY1 00000001 1 2147483648 0 M M",
+                                   b"AY1 00000001 1 2 2147483648 M M", b"x" * 65,
+                                   b"AY1 00000001 1 2 0 X A", b"AY1 00000001 1 2 0 M",
+                                   b"AY1 00000001 1 2 0 T Z", b"AY1 00000001 1 2 0 T A",
+                                   b"CLI prompt"])
 def test_invalid_radio_framing_fails_connection(line):
     host, radio, clock = setup()
     radio.incoming.append(line + b"\n")
@@ -431,7 +434,7 @@ def test_radio_reset_requires_new_nonce_even_with_old_healthy_source():
     arm(host, radio, clock)
     old = host.session
     clock.advance(.101)
-    radio.incoming.append(b"AY1 00000000 1 8 0 M\n")
+    radio.incoming.append(b"AY1 00000000 1 8 0 M S\n")
     host.step(sample(clock))
     assert host.session != old and len(radio.commands()) == 1
     assert b"AB1 " in radio.writes[-1][1]
@@ -479,3 +482,194 @@ def test_wrapped_ticket_rejects_delayed_pre_wrap_status():
     radio.report(ticket=2**31 - 2)
     host.step(sample(clock))
     assert host.status.ticket == 0
+
+
+def test_radio_selection_transaction_binds_new_target_without_second_sc_cycle():
+    host, radio, clock = setup()
+    requested = []
+    host.request_selection = requested.append
+    session = host.session
+    arm(host, radio, clock)
+    token = f"{session}:{radio.gen}"
+    assert requested == [token]
+    assert host.selection_pending and radio.commands()[-1][1][-2:] == ["0", "0"]
+
+    # The old request finishing after SC has no selection transaction marker.
+    tick(host, radio, clock, advance=.101)
+    assert radio.commands()[-1][1][-2:] == ["0", "0"]
+    chosen = ("run", "camera", 19, 2)
+    clock.advance(.101)
+    radio.report(state="T", cause="T")
+    result = stream.SelectionResult(token, clock(), chosen, True)
+    fresh = replace(sample(clock, key=chosen), selection_result=result)
+    host.step(fresh)
+    assert host.session == session and host.selection_key == chosen
+    assert not host.selection_pending and not host.selection_failed
+    assert radio.commands()[-1][1][-2:] == ["1", "64"]
+    assert len(radio.begins()) == 1 and requested == [token]
+
+    # A later browser target change still requires a fresh manual cycle.
+    clock.advance(.101)
+    radio.report(state="A")
+    host.step(sample(clock, key=("run", "camera", 20, 3)))
+    assert host.session != session
+
+
+def test_old_radio_selection_result_cannot_bind_after_a_second_sc_cycle():
+    host, radio, clock = setup()
+    requested = []
+    host.request_selection = requested.append
+    arm(host, radio, clock)
+    old_token = requested[-1]
+    old_result = stream.SelectionResult(old_token, clock(), ("old-selection",), True)
+    clock.advance(.1)
+    radio.gen += 1
+    radio.report(state="M")
+    host.step(sample(clock))
+    clock.advance(.1)
+    arm(host, radio, clock)
+    assert requested[-1] != old_token
+    clock.advance(.101)
+    radio.report(state="T", cause="T")
+    host.step(replace(sample(clock, key=("old-selection",)), selection_result=old_result))
+    assert host.selection_pending and radio.commands()[-1][1][-2:] == ["0", "0"]
+
+
+def test_failed_selection_stays_manual_until_new_operator_request():
+    host, radio, clock = setup()
+    requested = []
+    host.request_selection = requested.append
+    arm(host, radio, clock)
+    failed = stream.SelectionResult(requested[-1], clock(), None, False)
+    for _ in range(3):
+        clock.advance(.101)
+        radio.report(state="T", cause="T")
+        host.step(replace(sample(clock), selection_result=failed))
+        assert radio.commands()[-1][1][-2:] == ["0", "0"]
+    assert host.selection_failed and not host.selection_pending
+    assert "SC middle" in host.reason
+    assert len(requested) == 1
+
+
+def test_lease_or_target_pause_does_not_create_an_operator_selection_event():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    requested = []
+    host.request_selection = requested.append
+    for state, cause in (("A", "A"), ("T", "E"), ("A", "A"), ("T", "T")):
+        clock.advance(.101)
+        radio.report(state=state, cause=cause)
+        host.step(sample(clock))
+    assert requested == []
+    metrics = host.snapshot()
+    assert metrics["radio_a_to_t_total"] == 2
+    assert metrics["radio_a_to_t_causes"] == {"E": 1, "T": 1}
+    assert metrics["radio_cause"] == "T"
+    metrics["radio_a_to_t_causes"].clear()
+    assert host.a_to_t_causes == {"E": 1, "T": 1}  # detached UI snapshot.
+
+
+def test_old_radio_protocol_never_gets_a_host_write():
+    clock = Clock()
+    radio = Radio(clock)
+    radio.incoming = deque([b"ARGOS_YAW_STREAM_V1\nAY1 abc012ef 1 1 0 M\n"])
+    host = stream.YawStream(radio, clock=clock)
+    host.step(sample(clock))
+    clock.advance(5)
+    with pytest.raises(stream.ProbeError, match="V2"):
+        host.step(sample(clock))
+    assert radio.writes == []
+
+
+def test_worker_selection_is_async_and_result_survives_subsequent_reads():
+    selected, release, second_read = threading.Event(), threading.Event(), threading.Event()
+    key = ("new-selection",)
+
+    class Source:
+        reads = 0
+
+        def read(self):
+            self.reads += 1
+            if self.reads >= 2:
+                second_read.set()
+            return YawDemand(20, True, key, time.monotonic() + .4, "tracking")
+
+        def select_center(self, token):
+            assert token == "abc012ef:4"
+            selected.set()
+            release.wait(1)
+            return self.read()
+
+        def close(self):
+            pass
+
+    worker = stream.SourceWorker(Source())
+    assert worker.interval == .05
+    worker.request_selection("abc012ef:4")
+    worker.start()
+    try:
+        assert selected.wait(1)
+        assert worker.snapshot().error  # The pending selection did not block snapshots.
+        release.set()
+        assert second_read.wait(1)
+        # second_read is signalled within source.read, just before publication.
+        deadline = time.monotonic() + 1
+        while worker.metrics()["count"] < 2 and time.monotonic() < deadline:
+            time.sleep(.001)
+        result = worker.snapshot().selection_result
+        assert result.request_token == "abc012ef:4" and result.success
+        assert result.selection_key == key
+        metrics = worker.metrics()
+        assert metrics["count"] >= 2 and metrics["selections"] == 1
+        assert metrics["wall_ms_total"] >= metrics["wall_ms_max"] >= 0
+        assert metrics["cpu_ms_total"] >= metrics["cpu_ms_max"] >= 0
+    finally:
+        release.set()
+        worker.close()
+
+
+def test_owned_shutdown_stops_reconnects_and_publishes_final_metrics(monkeypatch):
+    clock = Clock()
+    stop = threading.Event()
+
+    class Worker:
+        def __init__(self, source, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def snapshot(self):
+            return sample(clock)
+
+        def metrics(self):
+            return {"count": 7, "wall_ms_total": 12., "cpu_ms_total": 2.}
+
+        def close(self):
+            pass
+
+    class Port(Radio):
+        def reset_input_buffer(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    radio, statuses, opened = Port(clock), [], []
+
+    def opener(device):
+        opened.append(device)
+        return radio
+
+    def sleep(delta):
+        clock.advance(delta)
+        if clock() >= 100.2:
+            stop.set()
+
+    monkeypatch.setattr(stream, "SourceWorker", Worker)
+    stream.run_stream("test-pocket", object(), opener=opener, clock=clock,
+                      sleep=sleep, stop_event=stop, on_status=statuses.append,
+                      report=lambda _: None)
+    assert opened == ["test-pocket"] and radio.closed
+    assert statuses[-1]["stopped"] and not statuses[-1]["connected"]
+    assert statuses[-1]["source_poll"]["count"] == 7

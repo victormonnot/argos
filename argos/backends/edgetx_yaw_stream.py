@@ -19,7 +19,7 @@ from .edgetx_probe import Lines, ProbeError, open_port
 from .yaw_stream_source import YawDemand, YawSource
 
 
-HELLO = b"ARGOS_YAW_STREAM_V1"
+HELLO = b"ARGOS_YAW_STREAM_V2"
 INTERVAL = .1
 WRITE_TIMEOUT = .02
 HEALTH_TIMEOUT = 1.
@@ -27,7 +27,15 @@ READ_BUDGET = 4
 MAX_SEQUENCE = 2**31 - 1
 # EdgeTX Lua 5.3 LUA_32BITS keeps nonnegative integer counters exact to 31 bits.
 COUNTER_MODULUS = 2**31
-_STATUS = re.compile(rb"AY1 ([0-9a-f]{8}) ([0-9]{1,10}) ([0-9]{1,10}) ([0-9]{1,10}) ([MTAF])")
+_STATUS = re.compile(rb"AY1 ([0-9a-f]{8}) ([0-9]{1,10}) ([0-9]{1,10}) ([0-9]{1,10}) ([MTAF]) ([SMWATEPLIGCO])")
+
+
+@dataclass(frozen=True)
+class SelectionResult:
+    request_token: str
+    completed_at: float
+    selection_key: tuple | None
+    success: bool
 
 
 @dataclass(frozen=True)
@@ -37,18 +45,27 @@ class SourceSample:
     demand: YawDemand | None
     completed_at: float
     error: bool = False
+    selection_result: SelectionResult | None = None
 
 
 class SourceWorker:
     """One reader, one overwrite-only mailbox; never a queue of old analyses."""
 
-    def __init__(self, source, *, clock=time.monotonic, interval=.025):
+    def __init__(self, source, *, clock=time.monotonic, interval=.05,
+                 cpu_clock=time.thread_time):
         self.source = source
         self.clock = clock
+        self.cpu_clock = cpu_clock
         self.interval = interval
         self._lock = threading.Lock()
         self._sample = SourceSample(None, clock(), True)
         self._stop = threading.Event()
+        self._wake = threading.Event()
+        self._selection_request = None
+        self._selection_result = None
+        self._metrics = dict(count=0, errors=0, selections=0, wall_ms_total=0.,
+                             wall_ms_max=0., cpu_ms_total=0., cpu_ms_max=0.,
+                             last_wall_ms=0., last_cpu_ms=0.)
         self._thread = threading.Thread(target=self._run, name="argos-yaw-source", daemon=True)
 
     def start(self):
@@ -58,21 +75,58 @@ class SourceWorker:
         with self._lock:
             return self._sample
 
+    def request_selection(self, request_token):
+        """Only the newest radio enable transaction is retained; never block USB."""
+        with self._lock:
+            self._selection_request = request_token
+        self._wake.set()
+
+    def metrics(self):
+        with self._lock:
+            return dict(self._metrics)
+
     def _run(self):
         try:
             while not self._stop.is_set():
+                with self._lock:
+                    request = self._selection_request
+                    self._selection_request = None
+                started, cpu_started = self.clock(), self.cpu_clock()
                 try:
-                    sample = SourceSample(self.source.read(), self.clock())
+                    demand = (self.source.read() if request is None
+                              else self.source.select_center(request))
+                    finished = self.clock()
+                    if request is not None:
+                        self._selection_result = SelectionResult(
+                            request, finished, demand.selection_key,
+                            demand.selection_key is not None)
+                    sample = SourceSample(demand, finished, False, self._selection_result)
                 except Exception:
-                    sample = SourceSample(None, self.clock(), True)
+                    finished = self.clock()
+                    if request is not None:
+                        self._selection_result = SelectionResult(request, finished, None, False)
+                    sample = SourceSample(None, finished, True, self._selection_result)
+                wall_ms = max(0., finished - started) * 1000
+                cpu_ms = max(0., self.cpu_clock() - cpu_started) * 1000
                 with self._lock:
                     self._sample = sample
-                self._stop.wait(self.interval)
+                    m = self._metrics
+                    m["count"] += 1
+                    m["errors"] += int(sample.error)
+                    m["selections"] += int(request is not None)
+                    m["wall_ms_total"] += wall_ms
+                    m["cpu_ms_total"] += cpu_ms
+                    m["wall_ms_max"] = max(m["wall_ms_max"], wall_ms)
+                    m["cpu_ms_max"] = max(m["cpu_ms_max"], cpu_ms)
+                    m["last_wall_ms"], m["last_cpu_ms"] = wall_ms, cpu_ms
+                self._wake.wait(max(0., self.interval - (self.clock() - started)))
+                self._wake.clear()
         finally:
             self.source.close()
 
     def close(self):
         self._stop.set()
+        self._wake.set()
         # A broken HTTP implementation must not prevent serial shutdown.
         self._thread.join(timeout=.2)
 
@@ -84,17 +138,21 @@ class RadioStatus:
     ticket: int
     ack: int
     state: str
+    cause: str
 
 
 def parse_status(line: bytes) -> RadioStatus:
     match = _STATUS.fullmatch(line)
     if match is None:
         raise ProbeError("invalid yaw-stream radio status")
-    session, generation, ticket, ack, state = match.groups()
+    session, generation, ticket, ack, state, cause = match.groups()
     generation, ticket, ack = int(generation), int(ticket), int(ack)
     if generation >= COUNTER_MODULUS or ticket >= COUNTER_MODULUS or ack > MAX_SEQUENCE:
         raise ProbeError("out-of-range yaw-stream radio status")
-    return RadioStatus(session.decode(), generation, ticket, ack, state.decode())
+    if cause not in {b"M": (b"S", b"M"), b"T": (b"W", b"T", b"E"),
+                    b"A": (b"A",), b"F": (b"P", b"L", b"I", b"G", b"C", b"O")}[state]:
+        raise ProbeError("inconsistent yaw-stream radio state and cause")
+    return RadioStatus(session.decode(), generation, ticket, ack, state.decode(), cause.decode())
 
 
 def _advances(value, previous):
@@ -112,10 +170,12 @@ class YawStream:
     expires separately on the radio's callback clock.
     """
 
-    def __init__(self, port, *, clock=time.monotonic, nonce=lambda: secrets.token_hex(4)):
+    def __init__(self, port, *, clock=time.monotonic, nonce=lambda: secrets.token_hex(4),
+                 request_selection=None):
         self.port = port
         self.clock = clock
         self.nonce = nonce
+        self.request_selection = request_selection
         self.lines = Lines()
         self.port.timeout = 0
         self.port.write_timeout = WRITE_TIMEOUT
@@ -137,6 +197,31 @@ class YawStream:
         self.reason = "waiting for ArgFly greeting"
         self._backpressure_since = None
         self._reset_without_session = False
+        self.selection_request = None
+        self.selection_requested_at = None
+        self.selection_pending = False
+        self.selection_failed = False
+        self.last_sent_valid = None
+        self.a_to_t_total = 0
+        self.a_to_t_causes = {}
+
+    def snapshot(self):
+        """Bounded status for the local UI/logger; accepted state is radio-reported."""
+        status = self.status
+        return dict(connected=not self.failed and self.greeted, reason=self.reason,
+                    session=self.session, radio_state=status.state if status else None,
+                    radio_cause=status.cause if status else None,
+                    generation=status.generation if status else None,
+                    ticket=status.ticket if status else None,
+                    ack=status.ack if status else None, sent_sequence=self.sent_sequence,
+                    last_sent_valid=self.last_sent_valid, selection_pending=self.selection_pending,
+                    selection_request=self.selection_request, selection_failed=self.selection_failed,
+                    radio_a_to_t_total=self.a_to_t_total,
+                    radio_a_to_t_causes=dict(self.a_to_t_causes))
+
+    def _cancel_selection(self):
+        self.selection_pending = self.selection_failed = False
+        self.selection_request = self.selection_requested_at = None
 
     def _now(self):
         now = self.clock()
@@ -160,6 +245,8 @@ class YawStream:
         self.session_started_at = now
         self.next_send_at = now
         self.pending_begin = True
+        self._cancel_selection()
+        self.last_sent_valid = None
         self.reason = reason + "; SC middle then SC up required"
 
     def _receive(self, now):
@@ -207,6 +294,16 @@ class YawStream:
                     self.pending_since = None if status.ack == self.sent_sequence else now
                 if status.state not in ("T", "A"):
                     self.pending_since = None
+                    self._cancel_selection()
+                if previous is not None and previous.state == "A" and status.state == "T":
+                    self.a_to_t_total += 1
+                    self.a_to_t_causes[status.cause] = self.a_to_t_causes.get(status.cause, 0) + 1
+                if (self.request_selection is not None and status.state == "T" and status.cause == "W"
+                        and (previous is None or status.generation != previous.generation)):
+                    self.selection_request = f"{self.session}:{status.generation}"
+                    self.selection_requested_at = now
+                    self.selection_pending, self.selection_failed = True, False
+                    self.request_selection(self.selection_request)
                 self.status = status
         # Drain bounded chunks over later ticks; never send against an old
         # status while a backlog remains to be read.
@@ -246,6 +343,28 @@ class YawStream:
                 or type(demand.valid) is not bool or not math.isfinite(demand.deadline)
                 or (demand.selection_key is not None and not isinstance(demand.selection_key, tuple))):
             raise ProbeError("invalid source demand")
+        if self.selection_pending:
+            result = sample.selection_result
+            if result is None:
+                return None  # An in-flight pre-enable HTTP read confers no authority.
+            if not isinstance(result, SelectionResult) or type(result.success) is not bool:
+                raise ProbeError("invalid radio selection transaction result")
+            if result.request_token != self.selection_request:
+                return None
+            if (not math.isfinite(result.completed_at)
+                    or not self.selection_requested_at <= result.completed_at <= sample.completed_at
+                    or (result.selection_key is not None and not isinstance(result.selection_key, tuple))):
+                raise ProbeError("invalid radio selection transaction result")
+            self.selection_pending = False
+            if (not result.success or result.selection_key is None
+                    or result.selection_key != demand.selection_key):
+                self.selection_failed = True
+                return None
+            # This exact new key was selected by a fresh radio-observed SC cycle.
+            # Bind it once without requiring a second cycle for the same action.
+            self.selection_key = result.selection_key
+        if self.selection_failed:
+            return None
         if demand.selection_key != self.selection_key:
             self.selection_key = demand.selection_key
             if self.greeted:
@@ -262,7 +381,7 @@ class YawStream:
             demand = self._source(sample, now)
             if not self.greeted:
                 if now - self.started_at >= 5.:
-                    raise ProbeError("timeout waiting for ARGOS_YAW_STREAM_V1")
+                    raise ProbeError("timeout waiting for ARGOS_YAW_STREAM_V2")
                 return
             if self.pending_begin:
                 # A non-command prefix invalidates a partial previous input.
@@ -300,10 +419,15 @@ class YawStream:
                       f"{seq} {int(valid)} {value}\n").encode()
             if self._write(packet, now):
                 self.sent_sequence = seq
+                self.last_sent_valid = valid
                 self.next_send_at = self._now() + INTERVAL  # no catch-up bursts
                 if self.pending_since is None:
                     self.pending_since = now
-                if not valid:
+                if self.selection_pending:
+                    self.reason = "manual requested: selecting target for this SC cycle"
+                elif self.selection_failed:
+                    self.reason = "manual: no unambiguous target; SC middle then SC up to select again"
+                elif not valid:
                     self.reason = "manual requested: target temporarily unavailable"
                 elif state == "A" and self.status.ack > 0:
                     self.reason = "radio reports assistance active"
@@ -315,7 +439,7 @@ class YawStream:
 
 
 def run_stream(device, source, *, duration=None, opener=open_port, clock=time.monotonic,
-               sleep=time.sleep, report=print):
+               sleep=time.sleep, report=print, on_status=None, stop_event=None):
     """Keep the source worker alive across USB reconnects; every connection rearms."""
     worker = SourceWorker(source, clock=clock)
     worker.start()
@@ -323,14 +447,17 @@ def run_stream(device, source, *, duration=None, opener=open_port, clock=time.mo
     port = stream = None
     reconnect_at = started
     previous_reason = None
+    next_status_at = started
     try:
-        while duration is None or clock() - started < duration:
+        while ((stop_event is None or not stop_event.is_set())
+               and (duration is None or clock() - started < duration)):
             now = clock()
             if stream is None and now >= reconnect_at:
                 try:
                     port = opener(device)
                     port.reset_input_buffer()
-                    stream = YawStream(port, clock=clock)
+                    stream = YawStream(port, clock=clock,
+                                       request_selection=getattr(worker, "request_selection", None))
                 except (OSError, ProbeError):
                     if port is not None:
                         port.close()
@@ -348,11 +475,24 @@ def run_stream(device, source, *, duration=None, opener=open_port, clock=time.mo
                 if reason != previous_reason:
                     report(reason)
                     previous_reason = reason
+            if on_status is not None and now >= next_status_at:
+                status = (stream.snapshot() if stream is not None else
+                          dict(connected=False, reason=previous_reason or "waiting for Pocket USB"))
+                metrics = getattr(worker, "metrics", None)
+                status["source_poll"] = metrics() if metrics is not None else {}
+                on_status(status)
+                next_status_at = now + INTERVAL
             sleep(.005)
     finally:
         if port is not None:
             port.close()
         worker.close()
+        if on_status is not None:
+            status = stream.snapshot() if stream is not None else {}
+            metrics = getattr(worker, "metrics", None)
+            status.update(connected=False, reason="sending stopped", stopped=True,
+                          source_poll=metrics() if metrics is not None else {})
+            on_status(status)
 
 
 def main(argv=None):

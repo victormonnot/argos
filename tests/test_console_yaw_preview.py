@@ -445,3 +445,117 @@ def test_invalid_clock_fails_closed(now):
     with pytest.raises(ValueError, match="session time"):
         preview.state(now)
     assert_stopped(preview, 1.)
+
+
+def fly_observation(*, appearance=True, **kwargs):
+    frame = observation(**kwargs)
+    descriptor = [1.] + [0.] * 207
+    frame["appearances"] = [descriptor if appearance else None]
+    return frame
+
+
+def fly_selected():
+    preview = YawPreview(True, continuous=True)
+    preview.observe(fly_observation(), now=1.)
+    preview.select(7, revision=0, now=1.)
+    return preview
+
+
+def test_continuous_recovery_remembers_three_seconds_without_refreshing_absence():
+    preview = fly_selected()
+    epoch = preview.selection_epoch
+    for seq, at in enumerate((1.1, 1.7, 2.4, 3.6), start=2):
+        frame = observation(sequence=seq, at=at)
+        frame["detections"] = []
+        preview.observe(frame, now=at)
+        state = preview.state(at)
+        assert state["phase"] == "paused" and state["target_id"] == 7
+        assert state["recovery_deadline_at"] == 4.
+        assert state["selection_epoch"] == epoch
+        assert state["yaw"] == 0
+    preview.observe(fly_observation(sequence=6, at=3.7), now=3.7)
+    state = preview.state(3.7)
+    assert state["phase"] == "tracking" and state["selection_epoch"] == epoch
+
+
+def test_unique_appearance_recovery_survives_tracker_id_change_and_requires_new_images():
+    preview = fly_selected()
+    epoch = preview.selection_epoch
+    frame = observation(sequence=2, at=1.1)
+    frame["detections"] = []
+    preview.observe(frame, now=1.1)
+    frame = fly_observation(sequence=3, at=2., track_id=81, center=.72)
+    preview.observe(frame, now=2.)
+    assert preview.state(2.)["phase"] == "paused"
+    assert preview.state(2.01)["phase"] == "paused"
+    preview.observe(frame, now=2.02)
+    assert preview.state(2.02)["phase"] == "paused"
+    preview.observe(fly_observation(sequence=4, at=2.1, track_id=81, center=.73), now=2.1)
+    state = preview.state(2.1)
+    assert state["phase"] == "tracking" and state["target_id"] == 81
+    assert state["selection_id"] == 7 and state["selection_epoch"] == epoch
+
+
+@pytest.mark.parametrize("reason", ["missing_appearance", "different_appearance", "far_geometry", "changing_id"])
+def test_single_visible_person_alone_cannot_prove_identity(reason):
+    preview = fly_selected()
+    for seq, at in enumerate((2., 2.1, 2.2), start=2):
+        frame = fly_observation(sequence=seq, at=at, track_id=81 + (seq if reason == "changing_id" else 0),
+                                center=.9 if reason == "far_geometry" else .72,
+                                appearance=reason != "missing_appearance")
+        if reason == "different_appearance":
+            frame["appearances"] = [[0., 1.] + [0.] * 206]
+        preview.observe(frame, now=at)
+        assert preview.state(at)["phase"] == "paused"
+        assert preview.state(at)["target_id"] == 7
+
+
+def test_ambiguity_latches_manual_even_when_original_person_returns_later():
+    preview = fly_selected()
+    frame = observation(sequence=2, at=1.1, track_id=81)
+    frame["detections"].append({"track_id": 82, "box": [.4, .2, .1, .5], "confidence": .9})
+    preview.observe(frame, now=1.1)
+    assert "ambiguous" in assert_stopped(preview, 1.1)["detail"]
+    preview.observe(fly_observation(sequence=3, at=1.2), now=1.2)
+    assert_stopped(preview, 1.2)
+    assert preview.select_center(now=1.2)["target_id"] == 7
+
+
+def test_continuous_long_loss_never_resumes_even_if_no_state_was_polled():
+    preview = fly_selected()
+    preview.observe(fly_observation(sequence=2, at=4.), now=4.)
+    assert_stopped(preview, 4.)
+    assert preview.select_center(now=4.)["phase"] == "tracking"
+
+
+def test_radio_selection_keeps_valid_target_and_chooses_nearest_center_after_loss():
+    preview = fly_selected()
+    initial = preview.state(1.)
+    frame = observation(sequence=2, at=1.1)
+    frame["detections"].append({"track_id": 9, "box": [.45, .25, .1, .5], "confidence": .9})
+    preview.observe(frame, now=1.1)
+    retained = preview.select_center(now=1.1)
+    assert retained["target_id"] == 7
+    assert retained["selection_epoch"] == initial["selection_epoch"]
+    preview.clear()
+    chosen = preview.select_center(now=1.1)
+    assert chosen["target_id"] == chosen["selection_id"] == 9
+    assert chosen["selection_epoch"] == initial["selection_epoch"] + 2
+
+
+def test_radio_selection_rejects_near_ties_and_does_not_wait_for_future_candidates():
+    preview = YawPreview(True, continuous=True)
+    frame = observation()
+    frame["detections"].append({"track_id": 9, "box": [.28, .2, .05, .5], "confidence": .9})
+    preview.observe(frame, now=1.)
+    with pytest.raises(RuntimeError, match="ambiguous"):
+        preview.select_center(now=1.)
+    frame = observation(sequence=2, at=1.1)
+    frame["detections"] = []
+    preview.observe(frame, now=1.1)
+    with pytest.raises(RuntimeError, match="No confident"):
+        preview.select_center(now=1.1)
+    preview.observe(observation(sequence=3, at=1.2), now=1.2)
+    assert preview.state(1.2)["target_id"] is None
+    with pytest.raises(RuntimeError, match="No recent"):
+        preview.select_center(now=1.7)

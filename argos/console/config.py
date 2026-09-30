@@ -47,11 +47,17 @@ class ConsoleConfig:
     vision_variant: str = "tiny"
     vision_threads: int = 2
     vision_hz: int = 5
+    yaw_assist: bool = False
 
     def __post_init__(self):
         get_model_spec(self.vision_variant)
         validate_inference_threads(self.vision_threads)
         validate_vision_hz(self.vision_hz)
+        if not isinstance(self.yaw_assist, bool):
+            raise ValueError("yaw_assist must be a boolean")
+        if self.yaw_assist and (self.environment != "real" or self.video_source != "device"
+                                or self.vision_model is None or self.sim_control):
+            raise ValueError("yaw assistance requires a physical camera and person detector")
         if not isinstance(self.sim_framing, bool):
             raise ValueError("sim_framing must be a boolean")
         if self.sim_framing and (not self.sim_control or self.vision_model is None

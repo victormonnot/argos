@@ -16,6 +16,7 @@ from queue import Empty, Full
 import time
 
 from argos.perception.image_tracks import ImageTracker
+from argos.perception.appearance import validate_appearances
 from argos.perception.yolox import get_model_spec, validate_inference_threads
 from .config import validate_vision_hz
 from .video import VideoSample
@@ -53,6 +54,8 @@ class AnalyzedFrame:
     context: tuple[str, str]
     result: dict
     timing: dict | None = None
+    # Private worker evidence for opt-in recovery; excluded from JSON results.
+    appearances: tuple | None = None
 
 
 class VisionService:
@@ -170,6 +173,7 @@ class VisionService:
                         result = self._validate_result(result)
                         if not isinstance(appearances, list) or len(appearances) != len(result["detections"]):
                             raise ValueError("appearance list must align with current detections")
+                        appearances = validate_appearances(appearances, len(result["detections"]))
                         dimensions = result["width"], result["height"]
                         if dimensions != self._tracker_dimensions:
                             self._tracker.reset()
@@ -185,7 +189,8 @@ class VisionService:
                         result_interval_ms=(None if self._completed_at is None else
                                             1000 * (wall_now - self._completed_at)))
                     self._completed_at = wall_now
-                    self._frame = AnalyzedFrame(candidate.sample, candidate.context, result, timing)
+                    self._frame = AnalyzedFrame(candidate.sample, candidate.context, result, timing,
+                                                tuple(appearances))
                     self._processed += 1
                     self._selection_history.append((candidate.context, candidate.sample.sequence,
                         candidate.sample.received_at, frozenset(d["track_id"] for d in result["detections"])))

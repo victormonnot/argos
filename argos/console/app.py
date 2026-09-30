@@ -35,7 +35,7 @@ FONT_FILES = frozenset({
 })
 
 
-def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None):
+def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None, yaw_service=None):
     session = session or ConsoleSession(config or ConsoleConfig())
     archive = RecordingArchive(session.recorder.directory)
     visual_archive = VisualArchive(session.recorder.directory)
@@ -51,12 +51,17 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
         session._observe_vision(refresh=True)
         result = session.state()
         result["vision"] = vision.state(session)
+        if session.config.yaw_assist:
+            result["yaw_assist"] = (yaw_service.snapshot() if yaw_service is not None else
+                                    {"enabled": True, "connected": False, "reason": "Stream not started"})
         return result
 
     @asynccontextmanager
     async def lifespan(app):
         session.start()
         vision.start()
+        if yaw_service is not None:
+            yaw_service.start()
         stop = asyncio.Event()
 
         async def receive():
@@ -72,6 +77,8 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
             yield
         finally:
             stop.set()
+            if yaw_service is not None:
+                await asyncio.to_thread(yaw_service.close)
             try:
                 await receiver
             finally:
@@ -155,6 +162,10 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
     @app.get("/api/state")
     async def state():
         return JSONResponse(snapshot())
+
+    @app.get("/api/vision/yaw-assist/state")
+    async def yaw_assist_state():
+        return JSONResponse(session.yaw_assist_state())
 
     @app.get("/api/mavlink/messages")
     async def live_messages():
@@ -240,6 +251,16 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
         values = await mutation_body(request)
         try:
             return JSONResponse(session.yaw_preview_request(values))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/vision/yaw-assist/select-center")
+    async def yaw_assist_select(request: Request):
+        values = await mutation_body(request)
+        try:
+            return JSONResponse(session.yaw_assist_select(values))
         except (TypeError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
         except RuntimeError as exc:

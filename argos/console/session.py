@@ -5,6 +5,7 @@ monotonic elapsed time; camera and autopilot clocks are not synchronized by it.
 """
 from collections import deque
 import asyncio
+import re
 import time
 from uuid import uuid4
 
@@ -58,7 +59,9 @@ class ConsoleSession:
         self.control = FlightControl(enabled=config.sim_control, framing_enabled=config.sim_framing, system=config.system,
                                      component=config.component)
         self.yaw_preview = YawPreview(enabled=(config.environment == "real"
-            and config.video_source == "device" and config.vision_model is not None))
+            and config.video_source == "device" and config.vision_model is not None),
+            continuous=config.yaw_assist)
+        self._yaw_requests = {}
 
     def _open_link(self):
         config = self.config
@@ -254,7 +257,10 @@ class ConsoleSession:
             # Unavailable observations trigger the normal manual-takeover path.
             observation = None
         self.control.framing.observe(observation)
-        self.yaw_preview.observe(observation, self.clock())
+        yaw_observation = observation
+        if observation is not None and self.config.yaw_assist:
+            yaw_observation = dict(observation, appearances=getattr(candidate, "appearances", None))
+        self.yaw_preview.observe(yaw_observation, self.clock())
 
     def tick(self):
         if self._closed:
@@ -384,6 +390,58 @@ class ConsoleSession:
             raise
         capture_action(self, operation, values, status="accepted")
         return result
+
+    def yaw_assist_state(self):
+        """Small source snapshot; exclude telemetry, events and recording inventory."""
+        self._observe_vision(refresh=True)
+        now, video = self.video.snapshot_current()
+        video["source_id"] = self.video_source_id
+        if self.reconnecting == "video":
+            video.update(state="reconnecting", detail="Camera reopening")
+        return {
+            "schema_version": 1, "run_id": self.run_id, "at": now,
+            "environment": self.config.environment,
+            "configuration": {key: self.config.public()[key] for key in
+                              ("environment", "video_source", "video_endpoint")},
+            "video": {key: video[key] for key in ("source", "endpoint", "state", "detail",
+                      "received_at", "rx_age_s", "age_limit_s", "source_id")},
+            "vision": self.vision.state(self) if self.vision is not None else
+                      {"configured": False, "state": "disabled", "detail": "No detector"},
+            "yaw_preview": self.yaw_preview.state(now), "reconnecting": self.reconnecting,
+        }
+
+    def yaw_assist_select(self, values):
+        """Idempotent local request resulting from a fresh physical SC enable."""
+        if not self.config.yaw_assist:
+            raise RuntimeError("Continuous yaw assistance is not enabled")
+        if not isinstance(values, dict) or set(values) != {"request_id", "run_id", "video_id"}:
+            raise ValueError("Invalid radio selection request")
+        token = values["request_id"]
+        if (not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{8}:(?:0|[1-9][0-9]{0,9})", token)
+                or int(token.split(":")[1]) > 2147483647):
+            raise ValueError("Invalid radio selection identity")
+        if (values["run_id"], values["video_id"]) != (self.run_id, self.video_source_id):
+            raise RuntimeError("The camera source changed; cycle SC again")
+        if self._closed or not self._started or self.replacing or self.reconnecting:
+            raise RuntimeError("The camera session is not available")
+        if token in self._yaw_requests:
+            error = self._yaw_requests[token]
+            if error:
+                raise RuntimeError(error)
+            return {"request_id": token, "state": self.yaw_assist_state()}
+        # Remember failed attempts too: a late duplicate cannot select a different
+        # person. A new physical SC enable supplies another token.
+        self._yaw_requests[token] = "Selection did not complete; cycle SC again"
+        if len(self._yaw_requests) > 128:
+            del self._yaw_requests[next(iter(self._yaw_requests))]
+        try:
+            self._observe_vision(refresh=True)
+            self.yaw_preview.select_center(now=self.clock())
+        except RuntimeError as exc:
+            self._yaw_requests[token] = str(exc)
+            raise
+        self._yaw_requests[token] = None
+        return {"request_id": token, "state": self.yaw_assist_state()}
 
     def yaw_preview_request(self, values):
         """Select image measurements without acquiring or using flight authority."""

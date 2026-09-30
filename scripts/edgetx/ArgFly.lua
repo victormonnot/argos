@@ -14,6 +14,7 @@ local ticket = 0
 local tickets = {}
 local sequence = 0
 local state = "M" -- Manual/rearm, enabled Target unavailable, Active, Fault.
+local cause = "S" -- V2 status: startup, manual, waiting, active, target, expiry...
 local value, fresh, heartbeat = 0, 0, 0
 local leaseIssued = nil
 local lastAccepted = nil
@@ -45,9 +46,11 @@ local function invalidate()
   lastStatus = nil
 end
 
-local function manual(nextState)
+local function manual(nextState, nextCause)
   if state ~= nextState or enabledAt ~= nil then invalidate() end
+  if cause ~= nextCause then lastStatus = nil end
   state = nextState
+  cause = nextCause
   enabledAt = nil
   lastAccepted = nil
   stickSince = nil
@@ -55,13 +58,13 @@ local function manual(nextState)
   withdraw()
 end
 
-local function fault()
-  manual("F")
+local function fault(reason)
+  manual("F", reason)
 end
 
 local function write(line)
   local ok = pcall(serialWrite, line)
-  if not ok then fault() end
+  if not ok then fault("I") end
   return ok
 end
 
@@ -86,15 +89,16 @@ end
 
 local function authority(now, sc, rud, native)
   if sc == 0 then
-    if state ~= "M" then manual("M") end
+    if state ~= "M" then manual("M", "M") end
     -- A middle observation must occur AFTER BEGIN/fault, never just startup-up.
     sawMiddle = session ~= nil
     stickSince = nil
   elseif sc ~= -1024 then
-    manual("M")
+    manual("M", "M")
   elseif state == "M" and sawMiddle and math.abs(rud) <= 102 and not native then
     invalidate()
     state = "T"
+    cause = "W"
     sawMiddle = false
     enabledAt = now
     lastAccepted = nil
@@ -102,18 +106,19 @@ local function authority(now, sc, rud, native)
   if state == "T" or state == "A" then
     local magnitude = math.abs(rud)
     if native or magnitude > 512 then
-      fault()
+      fault("P")
     elseif magnitude > 256 then
       if stickSince == nil then stickSince = now end
-      if elapsed(now, stickSince) >= 20 then fault() end
+      if elapsed(now, stickSince) >= 20 then fault("P") end
     else
       stickSince = nil
     end
     if enabledAt ~= nil and elapsed(now, lastAccepted or enabledAt) >= 100 then
-      fault()
+      fault("L")
     elseif leaseIssued ~= nil and elapsed(now, leaseIssued) >= 30 then
       withdraw()
       state = "T"
+      cause = "E"
       lastStatus = nil
     end
   end
@@ -134,7 +139,7 @@ local function accept(line, now)
     if begin == session then return end
     session = begin
     sequence = 0
-    manual("M")
+    manual("M", "S")
     invalidate()
     sawMiddle = false
     return
@@ -169,7 +174,7 @@ local function readBatch(now)
     if not ok or type(data) ~= "string" or #data > 64 then
       buffer = ""
       dropping = true
-      fault()
+      fault("I")
       return
     end
     for i = 1, #data do
@@ -182,7 +187,7 @@ local function readBatch(now)
         if #buffer >= 64 then
           buffer = ""
           dropping = true
-          fault()
+          fault("O")
         else
           buffer = buffer .. c
         end
@@ -194,7 +199,7 @@ local function readBatch(now)
     if chunk == 4 then
       buffer = ""
       dropping = true
-      fault()
+      fault("O")
     end
   end
 end
@@ -209,41 +214,43 @@ local function publish(now)
     heartbeat = heartbeat <= 0 and 1024 or -1024
     if state ~= "A" then lastStatus = nil end
     state = "A"
+    cause = "A"
   else
     withdraw()
-    if state ~= "T" then lastStatus = nil end
+    if state ~= "T" or cause ~= "T" then lastStatus = nil end
     state = "T"
+    cause = "T"
   end
   pending = nil
 end
 
 local function status(now)
   if lastHello == nil or elapsed(now, lastHello) >= 100 then
-    if not write("ARGOS_YAW_STREAM_V1\n") then return end
+    if not write("ARGOS_YAW_STREAM_V2\n") then return end
     lastHello = now
   end
   if lastStatus == nil or elapsed(now, lastStatus) >= 10 then
     ticket = ticket == MAX_SEQUENCE and 0 or ticket + 1
     tickets[#tickets + 1] = {number = ticket, clock = now, generation = generation}
     if #tickets > 4 then table.remove(tickets, 1) end
-    if write(string.format("AY1 %s %d %d %d %s\n", session or "00000000",
-        generation, ticket, sequence, state)) then lastStatus = now end
+    if write(string.format("AY1 %s %d %d %d %s %s\n", session or "00000000",
+        generation, ticket, sequence, state, cause)) then lastStatus = now end
   end
 end
 
 local function run()
   local allowed, sc, rud, native = permitted()
   if not allowed or type(serialRead) ~= "function" or type(serialWrite) ~= "function" then
-    fault()
+    fault("G")
     return 0, 0, 0, 0
   end
   local now = getTime()
   if type(now) ~= "number" or math.type(now) ~= "integer"
       or now < -2147483647 - 1 or now > MAX_SEQUENCE then
-    fault()
+    fault("C")
     return 0, 0, 0, 0
   end
-  if lastClock ~= nil and elapsed(now, lastClock) >= 1073741824 then fault() end
+  if lastClock ~= nil and elapsed(now, lastClock) >= 1073741824 then fault("C") end
   lastClock = now
   -- Expire and inspect native pilot authority BEFORE reading delayed USB bytes.
   authority(now, sc, rud, native)

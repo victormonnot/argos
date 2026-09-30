@@ -11,7 +11,7 @@ GPS-free Gazebo/ArduPilot SITL session.
 
 ![ARGOS console showing the Gazebo camera and ArduPilot SITL telemetry](docs/images/observation.png)
 
-The console remains passive by default. Manual flight requires the explicit
+The console remains passive by default. Web manual flight requires the explicit
 `--sim-control` option and the [isolated simulation profile](docs/web-control.md).
 It is not enabled for physical hardware. Neutral controls do not hold horizontal
 position: the simulated drone can drift without GPS.
@@ -21,6 +21,10 @@ throttle in Stabilize.
 For a physical camera, [Yaw preview](docs/vision.md#physical-camera-yaw-preview)
 shows a bounded horizontal correction for a selected person without sending
 commands to a drone or radio.
+The separate experimental [ARGOS FLY workflow](docs/argos-fly.md) prepares a
+continuous Pocket yaw-assist stream, a final radio profile and target selection
+from SC. It preserves manual pilot channels and still requires the grouped
+receiver and flight checks described in the guide.
 Other experimental perception, guidance and simulation modules are tested
 separately. Onboard autonomy and swarm coordination are research directions,
 not capabilities delivered by this interface.
@@ -194,7 +198,7 @@ Further reading: [architecture and data flow](docs/architecture.md), [console an
 ## Verify a change
 
 ```sh
-python -m pip install -e '.[dev,mavlink,plot,console,console-test]'
+python -m pip install -e '.[dev,mavlink,plot,console,console-test,radio-profile]'
 python -m pytest -q
 ```
 

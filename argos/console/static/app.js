@@ -229,8 +229,12 @@
         || !count(value.target_id) || value.target_id <= 0
         || !finite(value.recovery_deadline_at) || value.recovery_deadline_at < 0
         || !finite(value.recovery_max_gap_s) || value.recovery_max_gap_s <= 0
-        || value.recovery_max_gap_s > .7)) return null;
+        || value.recovery_max_gap_s > (value.continuous === true ? 3 : .7))) return null;
     return value;
+  }
+
+  function continuousYaw() {
+    return current?.yaw_assist?.enabled === true && current?.yaw_preview?.continuous === true;
   }
 
   function yawImageRecent(now = performance.now()) {
@@ -300,6 +304,24 @@
 
   function renderYawPreview(now) {
     const view = yawPreviewView();
+    const continuous = continuousYaw();
+    if (continuous && view && !yawPreviewPending && !yawPreviewClearing) {
+      // The server owns radio selection; a hidden/slower browser is only a view.
+      yawPreviewTarget = view.target_id;
+      yawPreviewRevision = view.revision;
+      yawPreviewMessage = "";
+    }
+    text("yaw-preview-label", continuous ? "Yaw assist" : "Yaw preview");
+    const runtime = current?.yaw_assist;
+    const radioRecent = continuous && serviceFresh(now) && runtime?.connected === true
+      && finite(runtime.status_age_s) && runtime.status_age_s + (stateTransitMs + Math.max(0, now - lastReceived)) / 1000 < 1.5;
+    text("yaw-preview-badge", !continuous ? "No commands sent" : radioRecent && runtime.radio_state === "A" ? "Radio active" : "Manual / waiting");
+    element("yaw-runtime-status").hidden = !continuous;
+    if (continuous) {
+      const reason = typeof runtime?.reason === "string" ? runtime.reason : "Waiting for radio status";
+      const count = Number.isSafeInteger(runtime?.radio_a_to_t_total) ? runtime.radio_a_to_t_total : 0;
+      text("yaw-runtime-status", `${radioRecent ? reason : "Radio status unavailable"} · Pauses A→T: ${count} · SC middle → SC↑ to enable or select the person nearest the center.`);
+    }
     element("yaw-preview").hidden = !view?.enabled || document.body.dataset.view !== "observation";
     const recentImage = yawImageRecent(now);
     // Age each receipt itself: new HTTP snapshots cannot renew a frozen result.
@@ -312,7 +334,7 @@
       && recentImage && matching && view.phase === "tracking" && view.target_id === yawPreviewTarget
       && finite(view.error_x) && finite(view.frame_received_at) && view.frame_received_at <= runTime(now) + .05
       && age <= view.frame_max_age_s);
-    if (yawPreviewTarget !== null && !yawPreviewClearing) {
+    if (!continuous && yawPreviewTarget !== null && !yawPreviewClearing) {
       if (!yawPreviewPending && confirmed && (!["tracking", "paused"].includes(view.phase) || view.target_id !== yawPreviewTarget)) {
         // Preserve the server's terminal reason. Posting Clear here would turn
         // e.g. a lost target or slow analysis into a generic idle snapshot.
@@ -350,9 +372,9 @@
     if (!visionEnabled) detail = "Enable person detection, then select a person in the image.";
     else if (!yawPreviewMessage) {
       if (!recentImage) detail = "Waiting for a recent analyzed image. Proposed yaw is zero.";
-      else if (!yawPreviewTarget) detail = "Select a person in the image to preview horizontal centering.";
-      else if (view?.phase === "paused") detail = "Person briefly lost. Proposed yaw is zero; waiting for the same person.";
-      else if (showing) detail = "Latest analysis · image left / right · proposed stick only. Physical turn direction is not verified.";
+      else if (!yawPreviewTarget) detail = continuous ? "Manual control. Center the person, then SC middle → SC↑ to select." : "Select a person in the image to preview horizontal centering.";
+      else if (view?.phase === "paused") detail = continuous ? "Manual control during target loss. Waiting for confident visual continuity, up to 3 seconds." : "Person briefly lost. Proposed yaw is zero; waiting for the same person.";
+      else if (showing) detail = continuous ? "Visual yaw demand. Radio status above indicates whether assistance is active." : "Latest analysis · image left / right · proposed stick only. Physical turn direction is not verified.";
       else detail = "Person selected. Waiting for a current analysis; proposed yaw is zero.";
     }
     text("yaw-preview-status", detail);
@@ -453,8 +475,9 @@
 
   function renderVision(fresh, now) {
     const view = visionView(), toggle = element("vision-toggle");
+    if (continuousYaw()) visionEnabled = true;
     toggle.checked = visionEnabled;
-    toggle.disabled = !visionEnabled && (!fresh || !view?.configured);
+    toggle.disabled = continuousYaw() || (!visionEnabled && (!fresh || !view?.configured));
     const visible = visionEnabled && visionRecent(now) && current.video.state === "recent"
       && frame?.vision && currentFrameAge(now) <= frameLimit();
     element("vision-layer").hidden = !visible;
@@ -1241,11 +1264,11 @@
   });
   element("yaw-preview-clear").addEventListener("click", () => { void clearYawPreview(); });
   document.addEventListener("argos:workspace-changed", event => {
-    if (event.detail.view !== "observation") void clearYawPreview();
+    if (event.detail.view !== "observation" && !continuousYaw()) void clearYawPreview();
     renderYawPreview(performance.now());
     renderVisionSelection();
   });
-  document.addEventListener("visibilitychange", () => { if (document.hidden) void clearYawPreview(); });
+  document.addEventListener("visibilitychange", () => { if (document.hidden && !continuousYaw()) void clearYawPreview(); });
   document.addEventListener("argos:framing-ui", event => {
     visionSelection = event.detail || { allowed: false, target_id: null, active: false, paused: false };
     renderVisionSelection();

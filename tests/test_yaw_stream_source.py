@@ -196,7 +196,7 @@ def test_http_errors_do_not_latch_source_and_no_radio_is_opened(monkeypatch):
             calls.append((host, port, timeout))
 
         def request(self, method, path, *, headers):
-            assert (method, path) == ("GET", "/api/state")
+            assert (method, path) == ("GET", "/api/vision/yaw-assist/state")
 
         def getresponse(self):
             response = responses.pop(0)
@@ -238,3 +238,77 @@ def test_http_rejects_duplicate_nonfinite_and_oversized_json(monkeypatch, body):
     monkeypatch.setattr(source.http.client, "HTTPConnection", Connection)
     with pytest.raises(source.PreviewError):
         source.YawSource(clock=lambda: 100.).read()
+
+
+def fly_snapshot(**kwargs):
+    state = snapshot(**kwargs)
+    state["yaw_preview"].update(continuous=True, selection_id=7, recovery_max_gap_s=3.)
+    return state
+
+
+def test_three_second_recovery_preserves_original_identity_after_verified_reassociation():
+    validator = source.YawValidator()
+    first = validator.validate(fly_snapshot(), 100., 100.01)
+    validator.validate(pause(fly_snapshot(at=11., received=10.9, sequence=43), deadline=12.9),
+                       101., 101.01)
+    returned = fly_snapshot(at=12., received=11.9, sequence=44)
+    returned["yaw_preview"].update(target_id=81, revision=2)
+    assert not validator.validate(returned, 102., 102.01).valid
+    confirmed = fly_snapshot(at=12.1, received=12., sequence=45)
+    confirmed["yaw_preview"].update(target_id=81, revision=2)
+    demand = validator.validate(confirmed, 102.1, 102.11)
+    assert demand.valid and demand.selection_key == first.selection_key
+
+
+def test_reassociation_without_recovery_or_excessive_recovery_window_is_rejected():
+    validator = source.YawValidator()
+    validator.validate(fly_snapshot(), 100., 100.01)
+    changed = fly_snapshot(at=10.1, received=10., sequence=43)
+    changed["yaw_preview"]["target_id"] = 81
+    with pytest.raises(source.PreviewError, match="reassociation"):
+        validator.validate(changed, 100.1, 100.11)
+    changed = pause(fly_snapshot(at=10.1, received=10., sequence=43), deadline=13.2)
+    with pytest.raises(source.PreviewError, match="window"):
+        validator.validate(changed, 100.1, 100.11)
+
+
+@pytest.mark.parametrize("wrong", [None, "token", "camera"])
+def test_radio_selection_http_is_bound_to_observed_context_and_echoed_transaction(monkeypatch, wrong):
+    target = snapshot(at=10.1, received=10., sequence=43)
+    target["yaw_preview"].update(selection_epoch=2, revision=2)
+    response = {"request_id": "1234abcd:3", "state": target}
+    if wrong == "token":
+        response["request_id"] = "ffffffff:3"
+    elif wrong == "camera":
+        target["run_id"] = target["yaw_preview"]["run_id"] = "other-run"
+    responses = [snapshot(), response]
+    requests = []
+
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, method, path, body=None, *, headers):
+            requests.append((method, path, None if body is None else json.loads(body)))
+
+        def getresponse(self):
+            return Reply(json.dumps(responses.pop(0)).encode())
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(source.http.client, "HTTPConnection", Connection)
+    times = iter([100., 100.01, 100.02, 100.1, 100.11, 100.12])
+    reader = source.YawSource(clock=lambda: next(times))
+    with pytest.raises(source.PreviewError, match="Read the current"):
+        reader.select_center("1234abcd:3")
+    reader.read()
+    if wrong:
+        with pytest.raises(source.PreviewError):
+            reader.select_center("1234abcd:3")
+    else:
+        selected = reader.select_center("1234abcd:3")
+        assert selected.valid and selected.selection_key[3] == 2
+    assert requests[-1] == ("POST", "/api/vision/yaw-assist/select-center", {
+        "request_id": "1234abcd:3", "run_id": "run-one", "video_id": "camera-one"})
+    assert not responses

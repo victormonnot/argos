@@ -208,3 +208,60 @@ for (const size of [{ width: 1366, height: 650 }, { width: 390, height: 844 }]) 
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
   });
 }
+
+test('continuous assistance adopts radio selection and survives a hidden or different workspace', async ({ page, model }) => {
+  const mock = await setup(page, model);
+  const previous = model.modifyState;
+  model.modifyState = state => {
+    previous(state);
+    state.yaw_preview.continuous = true;
+    state.yaw_assist = { enabled: true, connected: true, status_age_s: .01,
+      radio_state: 'A', reason: 'radio reports assistance active', radio_a_to_t_total: 2 };
+  };
+  Object.assign(mock.preview, { phase: 'tracking', target_id: 7, revision: 1,
+    run_id: model.run, video_id: mock.video, error_x: -.4, yaw: -.1 });
+  await expect(page.locator('#yaw-preview-label')).toHaveText('Yaw assist');
+  await expect(page.locator('#vision-toggle')).toBeChecked();
+  await expect(page.locator('#vision-toggle')).toBeDisabled();
+  await expect(page.locator('#yaw-preview-target')).toHaveText('Person #7');
+  await expect(page.locator('#yaw-preview-badge')).toHaveText('Radio active');
+  await expect(page.locator('#yaw-runtime-status')).toContainText('Pauses A→T: 2');
+  await page.locator('#view-control').click();
+  await page.waitForTimeout(600);
+  await page.locator('#view-observation').click();
+  await expect(page.locator('#yaw-preview-target')).toHaveText('Person #7');
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.waitForTimeout(600);
+  expect(mock.calls).toEqual([]);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect(page.locator('#yaw-preview-target')).toHaveText('Person #7');
+});
+
+test('continuous three-second recovery remains server-owned and stale radio status is never active', async ({ page, model }) => {
+  const mock = await setup(page, model);
+  const previous = model.modifyState;
+  model.modifyState = state => {
+    previous(state);
+    Object.assign(state.yaw_preview, { continuous: true, phase: 'paused', target_id: 7,
+      revision: 2, run_id: model.run, video_id: mock.video, yaw: 0, error_x: null,
+      frame_received_at: state.at - .02, frame_age_s: .02,
+      recovery_max_gap_s: 3, recovery_deadline_at: state.at + 2 });
+    state.yaw_assist = { enabled: true, connected: true, status_age_s: 5,
+      radio_state: 'A', reason: 'old active report', radio_a_to_t_total: 1 };
+  };
+  await expect(page.locator('#yaw-preview-status')).toContainText('up to 3 seconds');
+  await page.waitForTimeout(1000);
+  await expect(page.locator('#yaw-preview-target')).toHaveText('Person #7');
+  await expect(page.locator('#yaw-preview-badge')).toHaveText('Manual / waiting');
+  await expect(page.locator('#yaw-preview-value')).toHaveText('0%');
+  expect(mock.calls).toEqual([]);
+  await page.locator('#yaw-preview-clear').click();
+  await expect.poll(() => mock.calls.length).toBe(1);
+  expect(mock.calls[0].action).toBe('clear');
+});

@@ -1,10 +1,11 @@
 # Continuous Pocket yaw assistance: software foundation
 
-This is the software foundation for one eventual `ARGOS FLY` profile. It is
-separate from the existing finite `ArgVis` / CH32 diagnostic. It does not install
-a radio model, change an aircraft, or establish flight readiness. Profile
-installation, local console integration and the combined receiver check follow
-this software change.
+This is the transport and authority contract for `ARGOS FLY`. The
+[one-command workflow](argos-fly.md) joins the console and stream; the
+[profile guide](edgetx-fly-profile.md) prepares the radio model. Existing finite
+`ArgVis` / CH32 diagnostics keep their own contract. Software tests and a prepared
+profile do not establish flight readiness; the combined receiver check remains
+necessary.
 
 The scope is horizontal framing with a selected person, using a portable host.
 Throttle, arming, roll and pitch remain manual. No MAVLink or aircraft USB link
@@ -18,6 +19,11 @@ acknowledgement of each command. A separate source reader supplies a single
 replaceable latest value. Slow HTTP, inference or a blocked source reader must
 not block the transmission scheduler or renew an old observation. Missed send
 slots are skipped, not replayed as a burst.
+
+The source reader polls the compact `/api/vision/yaw-assist/state` at up to20Hz.
+Logging uses a separate bounded mailbox/thread, so a slow filesystem cannot
+block serial scheduling. Source wall/thread-CPU metrics are available alongside
+radio status; they do not measure total inference CPU.
 
 The return channel remains necessary: advancing radio status and command
 acceptance establish connection health. Losing that health removes assistance;
@@ -41,7 +47,20 @@ The console exposes a stable `selection_epoch` in addition to its existing
 preview revision. Brief pauses change the revision but preserve the selection
 epoch; explicit selection, clearing and terminal loss invalidate the epoch.
 Existing finite diagnostics keep their original fail-stop behavior. A track ID
-is an image association, not a guarantee of human identity.
+is an image association, not a guarantee of human identity. Continuous mode
+retains a reference for3seconds of uncertain detections in otherwise fresh
+images. Reassociation to a new track additionally requires a single strong
+candidate, conservative appearance/geometry support and two distinct images.
+`selection_id` retains the original association key across such a recovery.
+Multiple candidates during loss, expired memory and stale/missing imagery remove
+authority; a single visible stranger is not automatically accepted.
+
+A fresh radio enable generation requests center selection asynchronously. The
+server keeps a current valid target, or chooses the closest confident person
+unless two candidates are nearly tied. The request is bound to the camera/run
+and radio session/generation; only its matching completed response may adopt a
+new selection without a second SC cycle. Delayed results cannot authorize a
+different generation. A failed selection requires another deliberate cycle.
 
 ## Mode 2 takeover policy
 
@@ -62,21 +81,27 @@ The following is the **profile contract**, not an instruction to modify a
 currently connected radio. The final profile installer/guide must verify these
 unused rows, sources and mappings before any RF test:
 
-| Row | Function | V1 | V2 | AND switch | Delay |
-| --- | --- | --- | --- | --- | --- |
-| L01 | a>x | Lua1 Hbt | 0 | None | 0 |
-| L02 | AND | L01 | L01 | None | 0.3 s |
-| L03 | AND | !L01 | !L01 | None | 0.3 s |
-| L04 | OR | L02 | L03 | None | 0 |
-| L05 | a>x | Lua1 Fsh | 0 | !L04 | 0 |
-| L06 | AND | L05 | !L11 | None | 0 |
-| L07 | AND | L06 | SC up | !L10 | 0 |
-| L08 | \|a\|>x | Raw Rud | 25 | None | 0.2 s |
-| L09 | OR | L08 | L11 | None | 0 |
-| L10 | Sticky | L09 | SC middle | None | 0 |
-| L11 | \|a\|>x | Raw Rud | 50 | None | 0 |
+| Row | Function | V1 | V2 | AND switch | Delay | Duration |
+| --- | --- | --- | --- | --- | --- | --- |
+| L01 | a>x | Lua1 Hbt | 0 | None | 0 | 0 |
+| L02 | AND | L01 | L01 | None | 0.3 s | 0 |
+| L03 | AND | !L01 | !L01 | None | 0.3 s | 0 |
+| L04 | OR | L02 | L03 | None | 0 | 0 |
+| L05 | a>x | Lua1 Fsh | 0 | !L04 | 0 | 0 |
+| L06 | AND | L05 | !L11 | None | 0 | 0 |
+| L07 | AND | L06 | SC up | !L10 | 0 | 0 |
+| L08 | \|a\|>x | Raw Rud | 25 | None | 0.2 s | **0.2 s** |
+| L09 | OR | L08 | L11 | None | 0 | 0 |
+| L10 | Sticky | L09 | SC middle | None | 0 | 0 |
+| L11 | \|a\|>x | Raw Rud | 50 | None | 0 | **0.2 s** |
 
-Durations are zero; L10 persistence is off. L10 is read with zero-based logical
+L08 and L11 stretch a completed takeover event long enough for the native
+Sticky input, which is sampled on the 100 ms timer, to observe it. Without this,
+a short large movement between Lua callbacks can return to center before L10
+sees it. Heartbeat detector durations remain zero; adding a duration there would
+wrongly expire the stale-output condition. Pause briefly at SC middle (about
+0.2 s) before SC up so the native latch also observes its reset.
+L10 persistence is off. L10 is read with zero-based logical
 switch index 9. The normal manual yaw mix remains unconditional; the last Lua
 replacement is selected by L07. Model-specific direction, limits, curves and
 trim require review on CH4. The final model keeps crash flip disabled on CH7,
@@ -89,13 +114,13 @@ remain alive; it is not the aircraft's RF-loss failsafe.
 
 ## Compact stream protocol
 
-The script announces `ARGOS_YAW_STREAM_V1`. The host writes nothing before
+The script announces `ARGOS_YAW_STREAM_V2`. The host writes nothing before
 recognizing that greeting. Lines are ASCII, LF-terminated and bounded to 64
 bytes of content. The version is distinct from every existing bench protocol.
 
 ```text
 AB1 <host-session>
-AY1 <host-session> <generation> <ticket> <accepted-sequence> <state>
+AY1 <host-session> <generation> <ticket> <accepted-sequence> <state> <cause>
 AS1 <host-session> <generation> <ticket> <sequence> <valid> <value>
 ```
 
@@ -110,6 +135,13 @@ Lua 5.3 integer operations, including on EdgeTX's 32-bit Lua build.
 Values remain in -128..128 (up to 12.5% normalized stick travel), and invalid
 assistance has value zero. States are M (manual / enable required), T (enabled
 without valid assistance), A (active) and F (fault / enable required).
+
+The single-character cause is S (start/session), M (manual switch), W (new enable
+waiting), A (active), T (invalid target), E (ticket expiry), P (pilot takeover),
+L (silence), I (serial I/O), G (model guard), C (clock), or O (parser overflow).
+V1 peers are rejected. The host counts **observed** A→T transitions by reported
+cause, including T versus E, for the combined hardware check; missed status
+reports may hide transitions. The300ms ticket lease has not been widened.
 
 The radio remembers only four issued tickets. Each ticket expires 300 ms after
 **radio issuance**, even if its command arrives later. Output expiry is tied to
@@ -149,8 +181,8 @@ The last file drives the actual script through a small process adapter and runs
 the Lua policy harness. Without Lua it is explicitly skipped; CI installs Lua.
 The standalone entry point is `python -m argos.backends.edgetx_yaw_stream --help`.
 Its optional `--duration` bounds a bench run; ordinary runtime has no duration
-limit. The final profile, launch workflow and live status are a subsequent brick,
-so this document is not a radio installation or first-flight guide.
+limit. Use the linked final-profile and launcher guides for setup; this document
+is not a first-flight validation.
 
 ## Remaining combined hardware acceptance
 
