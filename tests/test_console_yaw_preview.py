@@ -577,6 +577,125 @@ def recovery_reference(callback=None, *, continuous=True):
     return preview
 
 
+def test_missing_same_track_appearance_keeps_recent_descriptor_and_its_original_box():
+    records = []
+    preview = recovery_reference(records.append)
+    # Tracking still uses the latest crop, whose bounds differ from the last
+    # usable appearance crop. Recovery must retain the descriptor's own bounds.
+    preview.observe(fly_observation(sequence=2, at=1.1, center=.55, appearance=False), now=1.1)
+    state = preview.state(1.1)
+    assert state["phase"] == "tracking" and state["yaw"] == pytest.approx(.025)
+    for seq, at in ((3, 1.2), (4, 1.3)):
+        preview.observe(recovery_candidate(seq, at, dx=.1, dy=.05), now=at)
+    assert preview.state(1.3)["target_id"] == 81
+    assert [record["reason"] for record in records] == ["pending_second_image", "accepted_appearance"]
+    assert records[-1]["width_ratio"] == records[-1]["height_ratio"] == 1.
+    assert records[-1]["dx"] == pytest.approx(.1)
+    assert records[-1]["dy"] == pytest.approx(.05)
+    assert records[-1]["reference_appearance_available"] is True
+    assert records[-1]["candidate_appearance_available"] is True
+    assert records[-1]["reference_appearance_age_s"] == pytest.approx(.3)
+
+
+@pytest.mark.parametrize("second_at", [4., 4.01])
+def test_missing_appearance_frames_and_polls_cannot_renew_recovery_reference(second_at):
+    records = []
+    preview = recovery_reference(records.append)
+    preview.state(1.2)  # Polling the valid crop cannot refresh its receipt time.
+    for seq, at in enumerate((1.5, 2., 2.5, 3., 3.5, 3.8), start=2):
+        preview.observe(fly_observation(sequence=seq, at=at, appearance=False), now=at)
+        assert preview.state(at)["phase"] == "tracking"
+    preview.observe(recovery_candidate(8, 3.9), now=3.9)
+    assert records[-1]["reason"] == "pending_second_image"
+    preview.state(3.95)
+    preview.observe(recovery_candidate(9, second_at), now=second_at)
+    state = preview.state(second_at)
+    assert state["phase"] == "paused" and state["target_id"] == 7 and state["yaw"] == 0.
+    assert state["recovery_deadline_at"] == pytest.approx(6.8)
+    assert records[-1]["reason"] == "reference_appearance_expired"
+    assert records[-1]["reference_appearance_available"] is True
+    assert records[-1]["candidate_appearance_available"] is True
+    assert records[-1]["reference_appearance_age_s"] == pytest.approx(second_at - 1.)
+
+
+def test_new_usable_same_track_crop_renews_reference_from_its_own_receipt():
+    records = []
+    preview = recovery_reference(records.append)
+    for seq, at in enumerate((1.5, 2., 2.5, 3., 3.5), start=2):
+        preview.observe(fly_observation(sequence=seq, at=at, appearance=False), now=at)
+    renewed = recovery_candidate(7, 3.8, dx=0., dy=0., score=1.)
+    renewed["detections"][0]["track_id"] = 7
+    preview.observe(renewed, now=3.9)
+    for seq, at in ((8, 4.), (9, 4.1)):
+        preview.observe(recovery_candidate(seq, at), now=at)
+    assert preview.state(4.1)["target_id"] == 81
+    assert records[-1]["reason"] == "accepted_appearance"
+    assert records[-1]["reference_appearance_age_s"] == pytest.approx(.3)
+
+
+def test_expired_appearance_does_not_block_existing_same_track_recovery():
+    records = []
+    preview = recovery_reference(records.append)
+    for seq, at in enumerate((1.5, 2., 2.5, 3., 3.5, 3.8), start=2):
+        preview.observe(fly_observation(sequence=seq, at=at, appearance=False), now=at)
+    missing = observation(sequence=8, at=3.9)
+    missing["detections"] = []
+    preview.observe(missing, now=3.9)
+    assert preview.state(3.9)["phase"] == "paused"
+    preview.observe(fly_observation(sequence=9, at=4., appearance=False), now=4.)
+    assert preview.state(4.)["phase"] == "tracking"
+    assert preview.state(4.)["target_id"] == 7
+    assert records[-1]["reason"] == "accepted_same_track"
+    assert records[-1]["reference_appearance_age_s"] == 3.
+
+
+@pytest.mark.parametrize("reset", ["reselect", "other_target", "clear", "run", "video", "dimensions"])
+def test_cached_appearance_never_crosses_explicit_selection_or_image_context(reset):
+    records = []
+    preview = recovery_reference(records.append)
+    kwargs = {"sequence": 2, "at": 1.1, "appearance": False}
+    if reset == "other_target":
+        kwargs["track_id"] = 9
+    elif reset == "run":
+        kwargs["run_id"] = "other-run"
+    elif reset == "video":
+        kwargs["video_id"] = "other-camera"
+    elif reset == "dimensions":
+        kwargs["width"] = 320
+    elif reset == "clear":
+        preview.clear()
+    frame = fly_observation(**kwargs)
+    preview.observe(frame, now=1.1)
+    preview.select(kwargs.get("track_id", 7), revision=preview.revision, now=1.1)
+    records.clear()
+    for seq, at in ((3, 1.2), (4, 1.3)):
+        candidate = recovery_candidate(seq, at)
+        for field in ("run_id", "video_id", "width"):
+            candidate[field] = frame[field]
+        preview.observe(candidate, now=at)
+    assert preview.state(1.3)["phase"] == "paused"
+    assert len(records) == 2
+    assert all(record["reason"] == "appearance_unavailable" for record in records)
+    assert all(record["reference_appearance_available"] is False for record in records)
+    assert all(record["candidate_appearance_available"] is True for record in records)
+    assert all(record["reference_appearance_age_s"] is None for record in records)
+
+
+def test_cached_reference_cannot_replace_missing_candidate_appearance():
+    records = []
+    preview = recovery_reference(records.append)
+    preview.observe(fly_observation(sequence=2, at=1.1, appearance=False), now=1.1)
+    for seq, at in ((3, 1.2), (4, 1.3)):
+        candidate = recovery_candidate(seq, at)
+        candidate["appearances"] = [None]
+        preview.observe(candidate, now=at)
+    assert preview.state(1.3)["phase"] == "paused"
+    assert all(record["reason"] == "appearance_unavailable" for record in records)
+    assert all(record["reference_appearance_available"] is True for record in records)
+    assert all(record["candidate_appearance_available"] is False for record in records)
+    assert records[-1]["reference_appearance_age_s"] == pytest.approx(.3)
+
+
 @pytest.mark.parametrize("score,accepted", [(.86, False), (.88, True), (.90, True)])
 def test_continuous_similarity_threshold_is_separate_and_keeps_two_image_gate(score, accepted):
     from argos.perception.appearance import MIN_SIMILARITY

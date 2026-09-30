@@ -122,6 +122,7 @@ class YawPreview:
         self._selection_id = None
         self._last_seen_at = None
         self._reference = None
+        self._reference_received_at = None
         self._recovery_candidate = None
         self._error_x = None
         self._yaw = 0.
@@ -136,6 +137,7 @@ class YawPreview:
         self._selection_id = None
         self._last_seen_at = None
         self._reference = self._recovery_candidate = None
+        self._reference_received_at = None
         self._error_x = None
         self._yaw = 0.
 
@@ -215,22 +217,37 @@ class YawPreview:
         self.phase = "tracking"
         self._detail = "Horizontal yaw preview only; no commands sent"
         self._last_seen_at = self._frame["received_at"]
-        self._reference = target
+        # A strong detection may lack a usable appearance crop. Keep the last
+        # descriptor with its own box and receipt, never the newer crop's bounds
+        # or polling time. Current tracking still uses the current target below.
+        if (target.get("appearance") is not None or self._reference is None
+                or self._reference["track_id"] != target["track_id"]
+                or self._reference.get("appearance") is None):
+            self._reference = target
+            self._reference_received_at = (self._frame["received_at"]
+                                           if target.get("appearance") is not None else None)
         self._recovery_candidate = None
         x, _, width, _ = target["box"]
         self._error_x = max(-1., min(1., 2 * (x + width / 2 - .5)))
         self._yaw = (0. if abs(self._error_x) <= DEADBAND else
                      max(-YAW_LIMIT, min(YAW_LIMIT, GAIN * self._error_x)))
 
-    def _recovery_metrics(self, target):
-        metrics = dict(similarity=None, dx=None, dy=None, width_ratio=None, height_ratio=None)
+    def _recovery_metrics(self, target, now):
+        metrics = dict(similarity=None, dx=None, dy=None, width_ratio=None, height_ratio=None,
+                       reference_appearance_available=(self._reference is not None
+                                                       and self._reference.get("appearance") is not None),
+                       candidate_appearance_available=(target is not None
+                                                       and target.get("appearance") is not None),
+                       reference_appearance_age_s=(None if self._reference_received_at is None else
+                                                   now - self._reference_received_at))
         if target is None or self._reference is None:
             return metrics
         a, b = self._reference["box"], target["box"]
-        return dict(similarity=similarity(self._reference.get("appearance"), target.get("appearance")),
-                    dx=abs(b[0] + b[2] / 2 - a[0] - a[2] / 2),
-                    dy=abs(b[1] + b[3] / 2 - a[1] - a[3] / 2),
-                    width_ratio=b[2] / a[2], height_ratio=b[3] / a[3])
+        metrics.update(similarity=similarity(self._reference.get("appearance"), target.get("appearance")),
+                       dx=abs(b[0] + b[2] / 2 - a[0] - a[2] / 2),
+                       dy=abs(b[1] + b[3] / 2 - a[1] - a[3] / 2),
+                       width_ratio=b[2] / a[2], height_ratio=b[3] / a[3])
+        return metrics
 
     def _emit_recovery(self, target, now, accepted, reason, metrics=None):
         """Scalar diagnostic callback only; repeated HTTP polls add no events."""
@@ -255,7 +272,7 @@ class YawPreview:
             "selection_id": self._selection_id, "selection_epoch": self.selection_epoch,
             "previous_track_id": self._target_id, "track_id": identity,
             "confidence": None if target is None else target["confidence"],
-            **(self._recovery_metrics(target) if metrics is None else metrics),
+            **(self._recovery_metrics(target, now) if metrics is None else metrics),
             "accepted": bool(accepted), "reason": reason,
         }
         try:
@@ -282,10 +299,12 @@ class YawPreview:
             self._recovery_candidate = None
             return None
         target = strong[0]
-        metrics = self._recovery_metrics(target)
+        metrics = self._recovery_metrics(target, now)
         reason = None
         if metrics["similarity"] is None:
             reason = "appearance_unavailable"
+        elif not 0 <= metrics["reference_appearance_age_s"] < self.recovery_max_gap:
+            reason = "reference_appearance_expired"
         elif metrics["similarity"] < CONTINUOUS_RECOVERY_MIN_SIMILARITY:
             reason = "appearance_similarity"
         elif not .5 <= metrics["width_ratio"] <= 2:
@@ -366,6 +385,10 @@ class YawPreview:
         if not _identity(track_id):
             raise ValueError("A positive safe-integer target identity is required")
         self._target(now, track_id)
+        # An explicit selection starts its own appearance evidence, even when
+        # selecting the same numeric track again after a crop became unusable.
+        self._reference = self._recovery_candidate = None
+        self._reference_received_at = None
         self._target_id = track_id
         self._selection_id = track_id
         self._last_seen_at = self._frame["received_at"]
@@ -412,6 +435,7 @@ class YawPreview:
         self._selection_id = None
         self._last_seen_at = None
         self._reference = self._recovery_candidate = None
+        self._reference_received_at = None
         self._error_x = None
         self._yaw = 0.
         self.revision += 1

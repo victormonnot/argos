@@ -55,6 +55,14 @@ candidate, conservative appearance/geometry support and two distinct images.
 Multiple candidates during loss, expired memory and stale/missing imagery remove
 authority; a single visible stranger is not automatically accepted.
 
+A strong detection can still lack usable appearance evidence, for example when
+its crop touches the image edge. Such an image does not erase the last usable
+appearance reference. That reference retains its original box and image receipt
+time and expires after three seconds; later detections without appearance do not
+renew it. Recovery logs distinguish missing reference and candidate descriptors
+and record the reference age. Recovery still requires a usable current candidate
+and all similarity, geometry and two-image checks.
+
 A fresh radio enable generation requests center selection asynchronously. The
 server keeps a current valid target, or chooses the closest confident person
 unless two candidates are nearly tied. The request is bound to the camera/run
