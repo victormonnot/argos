@@ -45,7 +45,13 @@ model faults retain their withdrawal/re-enable rules. Stick priority is not a
 bypass of these rules.
 
 Distance uses a filtered log-height error with measurement damping, a 6% log
-size deadband, no integral term, and limited command slew. It withdraws pitch
+size deadband and no integral term. Command buildup from zero, or farther in the
+same direction, is limited to 10 percentage points of stick per second (at most
+150 ms credited per new image). Reducing the magnitude, returning to zero or
+reversing direction follows the filtered request on that analysis, without an
+extra slew delay. The gain and ±5% cap are unchanged. This removes command delay;
+it does not measure or guarantee physical braking, and the image filters remain.
+It withdraws pitch
 for a clipped/off-centre box, low confidence, abrupt size change or markedly
 changed aspect ratio. A short interruption needs two new suitable images;
 repeated reads do not count. Target identity and image deadlines retain the

@@ -18,7 +18,7 @@ def test_reference_zero_then_forward_and_back_with_limits():
         for i in range(1, 35):
             value = law.update(box(height), i * .1)
             assert abs(value) <= PITCH_LIMIT + 1e-10
-            if law.valid:
+            if law.valid and value * previous >= 0 and abs(value) > abs(previous):
                 assert abs(value - previous) <= .010001
             previous = value
         assert law.valid and value * sign > .02
@@ -69,6 +69,61 @@ def test_damping_brakes_approach_before_reaching_reference():
     static.update(box(.38), 2.)
     approaching.update(box(.42), 2.)
     assert approaching.value < static.value
+
+
+def settled_law(height):
+    law = ApparentDistanceLaw()
+    law.start(box(), 0.)
+    for i in range(1, 51):
+        law.update(box(height), i * .1)
+    assert law.valid
+    return law
+
+
+@pytest.mark.parametrize("height,closer_to_reference", [(.35, .385), (.65, .59)])
+def test_approach_reduces_existing_correction_without_old_slew_delay(height, closer_to_reference):
+    law = settled_law(height)
+    previous = law.value
+    value = law.update(box(closer_to_reference), 5.1)
+    assert law.valid
+    assert value * previous > 0  # Still asks to approach the reference.
+    assert abs(value) < abs(previous) - .02  # Old limiter allowed only .01.
+    assert abs(value) <= PITCH_LIMIT
+
+
+@pytest.mark.parametrize("height,next_height", [(.38, .456), (.65, .542)])
+def test_braking_reverses_on_next_analysis_before_reference_crossing(height, next_height):
+    law = settled_law(height)
+    previous = law.value
+    value = law.update(box(next_height), 5.1)
+    assert law.valid
+    assert (height - .5) * (next_height - .5) > 0
+    assert value * previous < 0  # Brake now, not after ramping the old sign down.
+    assert abs(value) <= PITCH_LIMIT
+    assert law.update(box(next_height), 5.1) == value  # Same image adds no action.
+
+
+@pytest.mark.parametrize("previous", [-PITCH_LIMIT, PITCH_LIMIT])
+def test_neutral_filtered_request_releases_previous_command_immediately(previous):
+    law = ApparentDistanceLaw()
+    law.start(box(), 0.)
+    # Isolate the neutral-request boundary with a previous output still applied.
+    law.value = previous
+    assert law.update(box(), .1) == 0
+    assert law.valid
+
+
+@pytest.mark.parametrize("height", [.4, .6])
+def test_buildup_from_zero_stays_gentle_and_caps_time_credit(height):
+    law = ApparentDistanceLaw()
+    law.start(box(), 0.)
+    first = law.update(box(height), .3)
+    assert law.valid
+    assert 0 < abs(first) <= .01500001
+    second = law.update(box(height), .4)
+    assert second * first > 0
+    assert abs(second) > abs(first)
+    assert abs(second - first) <= .01000001
 
 
 @pytest.mark.parametrize("at", [True, math.nan, math.inf, -1.])

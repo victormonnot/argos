@@ -79,7 +79,14 @@ class ApparentDistanceLaw:
         error = math.log(self.reference) - self.height
         error = math.copysign(max(0., abs(error) - .06), error)
         requested = max(-PITCH_LIMIT, min(PITCH_LIMIT, GAIN * error - DAMPING * self.rate))
-        step = .10 * min(dt, .15)
-        self.value += max(-step, min(step, requested - self.value))
+        if requested * self.value < 0 or abs(requested) <= abs(self.value):
+            # Do not prolong the previous correction when damping asks to
+            # release or reverse it. The filtered request is still capped.
+            self.value = requested
+        else:
+            # From rest, or when increasing the current correction, build up
+            # gently; a perception pause also restarts from rest.
+            step = .10 * min(dt, .15)
+            self.value += max(-step, min(step, requested - self.value))
         self.reason = "tracking_size"
         return self.value
