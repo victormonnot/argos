@@ -17,6 +17,10 @@ SCRIPT_NAME = "ArgDst"
 # Heartbeat rows preserve the existing V3 native stale-output detector. L10 is
 # the same nonpersistent latch, now fed by both axes in distance mode. Native
 # Ele gates are mandatory even if Lua freezes while publishing nonzero pitch.
+# L20-L23 add temporary pitch-only release. L22 resets on raw Psh rising,
+# after first observing Psh low; an unchanged frozen-high Psh cannot reset it.
+# EdgeTX Sticky shares one edge-history bit between set/reset inputs. Inverting
+# that reset would miss a low Psh observed concurrently with the set event.
 _GATE_ROWS = (
     ("FUNC_VPOS", "lua(0,3),0", "NONE", 0, 0),
     ("FUNC_AND", "L1,L1", "NONE", 3, 0),
@@ -35,8 +39,14 @@ _GATE_ROWS = (
     ("FUNC_OR", "L13,L14", "SC2", 0, 0),
     ("FUNC_OR", "L9,L15", "NONE", 0, 0),
     ("FUNC_VPOS", "lua(0,5),0", "L7", 0, 0),
-    ("FUNC_AND", "L17,SC2", "SB0", 0, 0),
+    ("FUNC_AND", "L23,SC2", "SB0", 0, 0),
     ("FUNC_OR", "L11,L14", "NONE", 0, 0),
+    # Duration stretches an observed short gesture through the native Sticky's
+    # 100 ms sampling. It is not a delay before manual control takes priority.
+    ("FUNC_APOS", "Ele,10", "SC2", 0, 2),
+    ("FUNC_VPOS", "lua(0,5),0", "NONE", 0, 0),
+    ("FUNC_STICKY", "L20,L21", "NONE", 0, 0),
+    ("FUNC_AND", "L17,!L22", "!L20", 0, 0),
 )
 _PITCH_MIX = {**yaw._NEW_MIX, "destCh": "1", "srcRaw": "lua(0,4)",
               "swtch": "L18", "name": "ArgPit"}
@@ -106,11 +116,14 @@ def validate_profile(raw: bytes, *, source: bytes | None = None):
             yaw._manual_row(row, channel, yaw._MANUAL_SOURCES[channel])
     gate = model.get("logicalSw")
     expected = _gate()
-    if isinstance(gate, dict) and isinstance(gate.get("9"), dict):
-        state = gate["9"].get("lsState")
-        yaw._require(state in ("0", "1"), "L10 state must be binary")
-        expected["9"]["lsState"] = state
-    yaw._require(gate == expected, "Native L01-L19 distance gate differs")
+    # EdgeTX serializes transient Sticky states even with persistence disabled.
+    # Both states may be read back; their reset/set policy remains exact.
+    for index, label in (("9", "L10"), ("21", "L22")):
+        if isinstance(gate, dict) and isinstance(gate.get(index), dict):
+            state = gate[index].get("lsState")
+            yaw._require(state in ("0", "1"), f"{label} state must be binary")
+            expected[index]["lsState"] = state
+    yaw._require(gate == expected, "Native L01-L23 distance gate differs")
     yaw._require(model.get("scriptsData") == {"0": {"file": SCRIPT_NAME, "name": ""}},
                  "Only ArgDst in LUA1 is allowed")
     # Check ANGLE assumptions on readback even when no ordinary source provided.
@@ -131,13 +144,14 @@ def validate_profile(raw: bytes, *, source: bytes | None = None):
         for index, row in enumerate(manual):
             if index != 6:
                 yaw._require(row == original["mixData"][index], f"Original CH{index+1} changed")
-    return {"schema": "argos-edgetx-distance-profile-v1", "model_name": MODEL_NAME,
+    return {"schema": "argos-edgetx-distance-profile-v2", "model_name": MODEL_NAME,
             "model_sha256": yaw._hash(raw), "source_sha256": yaw._hash(source) if source else None,
             "script": SCRIPT_NAME, "yaw_channel": 4, "pitch_channel": 2,
             "crash_flip_channel": 7, "crash_flip": "disabled",
             "internal_rf": "CRSF CH1–16", "external_rf": "OFF",
             "yaw_switch": "SC↑", "distance_switch": "SC↓", "angle_switch": "SB↑",
-            "manual_switch": "SC middle", "native_gate": "L01–L19",
+            "manual_switch": "SC middle", "native_gate": "L01–L23",
+            "pitch_manual_release_percent": 10, "pitch_soft_return_ms": 200,
             "yaw_limit": 205, "pitch_limit": 51, "preservation_checked": source is not None,
             "hardware_validated": False}
 
@@ -145,7 +159,7 @@ def validate_profile(raw: bytes, *, source: bytes | None = None):
 def build_artifact(source_path: Path, output_dir: Path, script_path: Path):
     source = source_path.read_bytes()
     model, script = prepare_profile(source), script_path.read_bytes()
-    yaw._require(b"ARGOS_DISTANCE_STREAM_V1" in script and b'"ARGOS DST"' in script,
+    yaw._require(b"ARGOS_DISTANCE_STREAM_V2" in script and b'"ARGOS DST"' in script,
                  "Expected ArgDst experimental script")
     manifest = {**validate_profile(model, source=source), "script_sha256": yaw._hash(script),
                 "model_file": "model.yml", "script_file": "SCRIPTS/MIXES/ArgDst.lua"}

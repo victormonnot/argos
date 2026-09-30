@@ -141,14 +141,34 @@ def test_real_radio_yaw_mode_never_accepts_pitch_and_direct_mode_change_returns_
         assert port.output[4:] == (40, 1024)
 
 
+def test_real_gentle_pitch_releases_only_pitch_then_resumes_without_reselection():
+    with actual_radio() as port:
+        pair = Pair(port)
+        pair.arm()
+        original = pair.host.session, pair.host.status.generation, pair.host.selection_key
+        for tick in range(70, 130, 5):
+            pair.step(tick, ele=180)
+            assert port.output[:2] == (75, 1024)
+            assert port.output[4:] == (0, 0)
+        assert pair.host.snapshot()["radio_pitch_phase"] == "M"
+        for tick in range(130, 150, 5):
+            pair.step(tick)
+            assert port.output[4:] == (0, 0)
+        for tick in range(150, 185, 5):
+            pair.step(tick)
+        assert port.output[:2] == (75, 1024) and port.output[4:] == (40, 1024)
+        assert pair.host.snapshot()["radio_pitch_phase"] == "A"
+        assert (pair.host.session, pair.host.status.generation, pair.host.selection_key) == original
+
+
 def test_real_delayed_ticket_does_not_refresh_distance_output():
     with actual_radio() as port:
         pair = Pair(port)
         pair.arm()
         for tick in range(70, 90, 5):
             pair.step(tick)
-        delayed = next(packet for packet in reversed(port.writes) if packet.startswith(b"DS1 "))
+        delayed = next(packet for packet in reversed(port.writes) if packet.startswith(b"DS2 "))
         port.pending.clear()
         output = port.callback(130, packet=delayed)
         assert output[:2] == (0, 0) and output[4:] == (0, 0)
-        assert b" T E D\n" in port.received
+        assert b" T E D A\n" in port.received

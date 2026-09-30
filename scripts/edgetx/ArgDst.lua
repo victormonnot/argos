@@ -16,6 +16,10 @@ local state = "M" -- Manual/rearm, enabled Target unavailable, Active, Fault.
 local cause = "S" -- V2 status: startup, manual, waiting, active, target, expiry...
 local value, fresh, heartbeat = 0, 0, 0
 local pitch, pitchFresh = 0, 0
+local pitchPhase = "N" -- N: not distance; A: automatic; M: stick; R: fresh ticket wait.
+local pitchCenteredAt = nil
+local pitchResumeAt = nil
+local pitchResumeTicket = nil
 local leaseIssued = nil
 local lastAccepted = nil
 local enabledAt = nil
@@ -50,17 +54,48 @@ local function invalidate()
   lastStatus = nil
 end
 
+local function pitchPhaseTo(nextPhase)
+  if pitchPhase ~= nextPhase then lastStatus = nil end
+  pitchPhase = nextPhase
+end
+
 local function manual(nextState, nextCause)
   if state ~= nextState or enabledAt ~= nil then invalidate() end
   if cause ~= nextCause then lastStatus = nil end
   state = nextState
   mode = "N"
+  pitchPhaseTo("N")
+  pitchCenteredAt, pitchResumeAt, pitchResumeTicket = nil, nil, nil
   cause = nextCause
   enabledAt = nil
   lastAccepted = nil
   stickSince = nil
   sawMiddle = false
   withdraw()
+end
+
+local function pitchAuthority(now, ele)
+  local magnitude = math.abs(ele)
+  if magnitude > 102 or (pitchPhase == "R" and magnitude > 51) then
+    -- Native CH2 gating handles the same movement even if Lua stops running.
+    -- Do not change the radio generation or the console's distance reference.
+    pitchPhaseTo("M")
+    pitchCenteredAt, pitchResumeAt, pitchResumeTicket = nil, nil, nil
+  elseif pitchPhase == "M" then
+    if magnitude <= 51 then
+      if pitchCenteredAt == nil then pitchCenteredAt = now end
+      if elapsed(now, pitchCenteredAt) >= 20 then
+        pitchPhaseTo("R")
+        pitchResumeAt, pitchResumeTicket = now, ticket
+        pitchCenteredAt = nil
+      end
+    else
+      pitchCenteredAt = nil
+    end
+  end
+  if pitchPhase == "M" or pitchPhase == "R" then
+    pitch, pitchFresh = 0, 0
+  end
 end
 
 local function fault(reason)
@@ -168,6 +203,8 @@ local function authority(now, sc, rud, ele, sb, native)
       and (requested ~= "D" or math.abs(ele) <= 102) and not native then
     invalidate()
     state, mode, cause = "T", requested, "W"
+    pitchPhaseTo(requested == "D" and "A" or "N")
+    pitchCenteredAt, pitchResumeAt, pitchResumeTicket = nil, nil, nil
     sawMiddle = false
     enabledAt = now
     lastAccepted = nil
@@ -182,6 +219,9 @@ local function authority(now, sc, rud, ele, sb, native)
       if elapsed(now, stickSince) >= 20 then fault("P") end
     else
       stickSince = nil
+    end
+    if (state == "T" or state == "A") and mode == "D" then
+      pitchAuthority(now, ele)
     end
     if enabledAt ~= nil and elapsed(now, lastAccepted or enabledAt) >= 100 then
       fault("L")
@@ -203,7 +243,7 @@ local function number(text, maximum)
 end
 
 local function accept(line, now)
-  local begin = string.match(line, "^DB1 ([0-9a-f]+)$")
+  local begin = string.match(line, "^DB2 ([0-9a-f]+)$")
   if begin and #begin == 8 and begin ~= "00000000" then
     if begin == session then return end
     session = begin
@@ -215,7 +255,7 @@ local function accept(line, now)
   end
 
   local token, genText, ticketText, seqText, validText, valueText, pitchValidText, pitchText = string.match(
-    line, "^DS1 ([0-9a-f]+) (%d+) (%d+) (%d+) ([01]) ([%-]?%d+) ([01]) ([%-]?%d+)$")
+    line, "^DS2 ([0-9a-f]+) (%d+) (%d+) (%d+) ([01]) ([%-]?%d+) ([01]) ([%-]?%d+)$")
   local gen, issuedTicket = number(genText, MAX_SEQUENCE), number(ticketText, MAX_SEQUENCE)
   local nextSequence, nextValue = number(seqText, MAX_SEQUENCE), tonumber(valueText)
   local nextPitch = tonumber(pitchText)
@@ -236,7 +276,7 @@ local function accept(line, now)
       -- batch has been consumed. A queue cannot create multiple heartbeats.
       pending = {sequence = nextSequence, value = nextValue,
         valid = validText == "1", pitch = nextPitch, pitchValid = pitchValidText == "1",
-        clock = issued.clock}
+        clock = issued.clock, ticket = issued.number}
       return
     end
   end
@@ -285,8 +325,17 @@ local function publish(now)
   lastAccepted = now
   if pending.valid then
     value, fresh = pending.value, 1024
-    pitch = pending.pitchValid and pending.pitch or 0
-    pitchFresh = pending.pitchValid and 1024 or 0
+    local resume = pitchPhase == "R" and pitchResumeAt ~= nil and pitchResumeTicket ~= nil
+      and elapsed(pending.clock, pitchResumeAt) < 1073741824
+      and elapsed(pending.ticket, pitchResumeTicket) > 0
+      and elapsed(pending.ticket, pitchResumeTicket) < 1073741824
+    local allowPitch = pending.pitchValid and (pitchPhase == "A" or resume)
+    if allowPitch and resume then
+      pitchPhaseTo("A")
+      pitchCenteredAt, pitchResumeAt, pitchResumeTicket = nil, nil, nil
+    end
+    pitch = allowPitch and pending.pitch or 0
+    pitchFresh = allowPitch and 1024 or 0
     leaseIssued = pending.clock
     heartbeat = heartbeat <= 0 and 1024 or -1024
     if state ~= "A" then lastStatus = nil end
@@ -303,7 +352,7 @@ end
 
 local function status(now)
   if lastHello == nil or elapsed(now, lastHello) >= 100 then
-    if not write("ARGOS_DISTANCE_STREAM_V1\n") then return end
+    if not write("ARGOS_DISTANCE_STREAM_V2\n") then return end
     lastHello = now
   end
   if lastStatus == nil or elapsed(now, lastStatus) >= 10 then
@@ -315,8 +364,8 @@ local function status(now)
       for i = 1, 4 do tickets[i] = tickets[i + 1] end
       tickets[5] = nil
     end
-    if write(string.format("DY1 %s %d %d %d %s %s %s\n", session or "00000000",
-        generation, ticket, sequence, state, cause, mode)) then lastStatus = now end
+    if write(string.format("DY2 %s %d %d %d %s %s %s %s\n", session or "00000000",
+        generation, ticket, sequence, state, cause, mode, pitchPhase)) then lastStatus = now end
   end
 end
 

@@ -20,10 +20,22 @@ mapping alone is not a live flight-mode measurement.
 
 Pitch is limited to ±51 Lua units, approximately 5% stick **before output
 curves**; this is not a measured tilt angle or velocity. Throttle, roll and arming
-remain manual. CH7 remains fixed low, independently of SC. Raw Rud takeover
+remain manual. Roll input does not directly cancel either assistance. CH7 remains
+fixed low, independently of SC. In distance mode, pitch stick input beyond 10%
+temporarily gives the pilot pitch control while yaw assistance continues. Keep
+this correction gentle: raw Rud takeover
 applies in both assisted modes; raw Ele takeover also applies in distance mode:
-25% for 200 ms, or 50% immediately, followed by a latched manual state.
-Native L01–L19 logic independently guards stale script outputs and stick priority.
+more than 25% for 200 ms, or more than 50% immediately, followed by a latched
+manual state requiring SC middle before re-enabling.
+
+For a temporary pitch correction, recenter within 5% for 200 ms. Automatic pitch
+then resumes toward the **original** size reference, using a fresh radio ticket
+issued after recentering. This does not capture a new distance or reselect a
+target. Old queued commands cannot restore pitch across this handoff. Native
+logic independently releases pitch at the stick and holds that release until
+the script has withdrawn pitch validity and provided it again. If Lua stalls
+and entirely misses a brief stick gesture, that native hold can require a new
+SC cycle; recentering alone must not revive frozen outputs.
 
 Distance uses a filtered log-height error with measurement damping, a 6% log
 size deadband, no integral term, and limited command slew. It withdraws pitch
@@ -61,8 +73,11 @@ directory and refuses an occupied HTTP port before starting hardware workers.
 .venv/bin/python -m argos.distance --config /path/to/distance.json
 ```
 
-The distinct `ARGOS_DISTANCE_STREAM_V1` handshake prevents the yaw-only host
-from issuing distance commands. Commands carry separate yaw/pitch validity,
+The distinct `ARGOS_DISTANCE_STREAM_V2` handshake prevents the yaw-only or old
+distance host from issuing commands. Status includes the pitch phase: `N` outside
+distance mode, `A` automatic, `M` temporary manual, `R` waiting for a fresh command
+after recentering. Automatic phase alone does not prove valid pitch output.
+Commands carry separate yaw/pitch validity,
 radio mode, session/generation and an expiring radio-issued ticket. Lines have
 a 96-byte bound so maximum 31-bit counters plus both values fit. Invalid pitch
 releases its native replacement even while valid yaw continues. Transport loss,
@@ -77,6 +92,12 @@ same direction as manual forward pitch, and a height increase the opposite.
 Check Ele takeover latches manual, SC middle releases both axes, and unplugging
 Pocket USB restores manual pitch. This is a new pitch path; earlier yaw checks
 do not validate its sign or mixer mapping.
+
+After updating the temporary-pitch behavior, also check that a gentle pitch
+correction reaches the receiver while yaw stays enabled, and recentering resumes
+automatic pitch toward the unchanged reference. A strong gesture must still
+latch manual. For a flight trial, establish a stable manual hover before enabling
+SC↓: a ground-level size reference changes with camera framing during takeoff.
 
 Software tests exercise the controller, local source, protocol, native profile
 contract and actual Lua interpreter. They do not establish flight stability.
