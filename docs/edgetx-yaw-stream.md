@@ -11,10 +11,12 @@ The scope is horizontal framing with a selected person, using a portable host.
 Throttle, arming, roll and pitch remain manual. No MAVLink or aircraft USB link
 is needed by the runtime; an MSP observer is useful during the later bench.
 
-Continuous mode uses `yaw = 0.5 * error_x`, limited to ±20% normalized stick,
+Continuous mode uses `yaw = 0.6 * error_x`, limited to ±20% normalized stick,
 with the existing ±0.035 image-error deadband. This is a stick command, not a
 fixed angular speed: the aircraft's rate profile and flight mode determine the
-requested rotation. The finite ArgVis diagnostic remains at gain 0.25/±12.5%.
+requested rotation. The gain strengthens small and medium corrections without
+raising the V3 transport or radio limit. The finite ArgVis diagnostic remains
+at gain 0.25/±12.5%.
 The increased continuous limit requires the matching V3 script and host. Read
 back the installed SD script before using it, then confirm direction, manual
 takeover and withdrawal at the new bound with the aircraft disarmed and props

@@ -461,7 +461,10 @@ def fly_selected():
     return preview
 
 
-@pytest.mark.parametrize("center,expected", [(.5, 0.), (.51, 0.), (.6, .1), (.75, .2), (.25, -.2)])
+@pytest.mark.parametrize("center,expected", [
+    (.5, 0.), (.51, 0.), (.6, .12), (.4, -.12),
+    (.65, .18), (.35, -.18), (.75, .2), (.25, -.2),
+])
 def test_continuous_gain_and_twenty_percent_limit_do_not_change_diagnostic_preview(center, expected):
     fly = YawPreview(True, continuous=True)
     fly.observe(fly_observation(center=center), now=1.)
@@ -600,7 +603,7 @@ def test_missing_same_track_appearance_keeps_recent_descriptor_and_its_original_
     # usable appearance crop. Recovery must retain the descriptor's own bounds.
     preview.observe(fly_observation(sequence=2, at=1.1, center=.55, appearance=False), now=1.1)
     state = preview.state(1.1)
-    assert state["phase"] == "tracking" and state["yaw"] == pytest.approx(.05)
+    assert state["phase"] == "tracking" and state["yaw"] == pytest.approx(.06)
     for seq, at in ((3, 1.2), (4, 1.3)):
         preview.observe(recovery_candidate(seq, at, dx=.1, dy=.05), now=at)
     assert preview.state(1.3)["target_id"] == 81
