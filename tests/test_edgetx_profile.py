@@ -142,6 +142,16 @@ def test_validator_rejects_unsafe_gate_or_mix_edit(manual, before, after, reason
         validate_profile(result.replace(before, after, 1))
 
 
+def test_validator_rejects_takeover_latch_set_during_manual_control(manual):
+    result = prepare_profile(manual)
+    prefix, takeover = result.split(b'def: "L8,L11"', 1)
+    assert takeover.startswith(b'\n      andsw: "SC0"')
+    previous_gate = prefix + b'def: "L8,L11"' + takeover.replace(
+        b'andsw: "SC0"', b'andsw: "NONE"', 1)
+    with pytest.raises(ProfileError, match="gate"):
+        validate_profile(previous_gate)
+
+
 def test_source_comparison_rejects_pilot_tuning_or_identity_change(manual):
     result = prepare_profile(manual)
     for before, after, reason in [(b'value: 7', b'value: 8', 'flightModeData'),

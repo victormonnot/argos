@@ -38,6 +38,9 @@ L02/L03 heartbeat detector **Duration stays zero**, and L10 persistence stays
 off. Yaw greater than 25% for the configured dwell requests latched manual;
 greater than 50% also bypasses assistance through native logic. These initial
 values still need the Mode 2 throttle-handling check on the actual Pocket.
+L09 permits setting the takeover latch only while SC↑ is selected. Ordinary
+manual yaw with SC middle must not set L10: its native Sticky reset is
+edge-triggered, so an already-held SC middle would not clear that new latch.
 
 ## Reproduce and inspect locally
 

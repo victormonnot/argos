@@ -91,7 +91,7 @@ unused rows, sources and mappings before any RF test:
 | L06 | AND | L05 | !L11 | None | 0 | 0 |
 | L07 | AND | L06 | SC up | !L10 | 0 | 0 |
 | L08 | \|a\|>x | Raw Rud | 25 | None | 0.2 s | **0.2 s** |
-| L09 | OR | L08 | L11 | None | 0 | 0 |
+| L09 | OR | L08 | L11 | SC up | 0 | 0 |
 | L10 | Sticky | L09 | SC middle | None | 0 | 0 |
 | L11 | \|a\|>x | Raw Rud | 50 | None | 0 | **0.2 s** |
 
@@ -101,6 +101,9 @@ a short large movement between Lua callbacks can return to center before L10
 sees it. Heartbeat detector durations remain zero; adding a duration there would
 wrongly expire the stale-output condition. Pause briefly at SC middle (about
 0.2 s) before SC up so the native latch also observes its reset.
+L09's SC-up condition prevents manual yaw from setting L10 while SC middle is
+already held. Sticky resets on an input edge, not continuously while its reset
+input is true; allowing that manual set would block the next enable cycle.
 L10 persistence is off. L10 is read with zero-based logical
 switch index 9. The normal manual yaw mix remains unconditional; the last Lua
 replacement is selected by L07. Model-specific direction, limits, curves and

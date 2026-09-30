@@ -30,7 +30,7 @@ _GATE_ROWS = (
     ("FUNC_AND", "L5,!L11", "NONE", 0, 0),
     ("FUNC_AND", "L6,SC0", "!L10", 0, 0),
     ("FUNC_APOS", "Rud,25", "NONE", 2, 2),
-    ("FUNC_OR", "L8,L11", "NONE", 0, 0),
+    ("FUNC_OR", "L8,L11", "SC0", 0, 0),
     ("FUNC_STICKY", "L9,SC1", "NONE", 0, 0),
     ("FUNC_APOS", "Rud,50", "NONE", 0, 2),
 )
