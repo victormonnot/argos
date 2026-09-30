@@ -1,0 +1,176 @@
+# Continuous Pocket yaw assistance: software foundation
+
+This is the software foundation for one eventual `ARGOS FLY` profile. It is
+separate from the existing finite `ArgVis` / CH32 diagnostic. It does not install
+a radio model, change an aircraft, or establish flight readiness. Profile
+installation, local console integration and the combined receiver check follow
+this software change.
+
+The scope is horizontal framing with a selected person, using a portable host.
+Throttle, arming, roll and pitch remain manual. No MAVLink or aircraft USB link
+is needed by the runtime; an MSP observer is useful during the later bench.
+
+## Runtime contract
+
+The host remains alive while the operator is in manual or the target is briefly
+unavailable. It sends at most 10 commands per second, without waiting for an
+acknowledgement of each command. A separate source reader supplies a single
+replaceable latest value. Slow HTTP, inference or a blocked source reader must
+not block the transmission scheduler or renew an old observation. Missed send
+slots are skipped, not replayed as a burst.
+
+The return channel remains necessary: advancing radio status and command
+acceptance establish connection health. Losing that health removes assistance;
+it does not leave the writer blindly refreshing a nonzero value.
+
+| Situation | Assistance | Recovery |
+| --- | --- | --- |
+| Fresh selected target, operator enabled | Bounded yaw value | Continue while fresh |
+| Selected target centered | Valid assistance with zero yaw | Continue |
+| Brief uncertain or missing detection | Invalid assistance; original manual mix | Same selection may recover from new strong images within its short recovery window |
+| Selection cleared, changed or expired; source replaced | No assistance | Explicit selection and SC enable cycle |
+| Intentional stick takeover | Original manual mix, latched | SC middle, then SC up with stick centered |
+| Transport fault, process restart or prolonged loss | No assistance, re-enable required | Healthy connection plus a new SC enable cycle |
+
+`Val=0` and `Fsh=0` means assistance is unavailable. It does **not** force the
+final yaw channel to zero: the normal manual mix supplies that channel. A valid
+centered target can instead have `Val=0` with `Fsh=1024`. Link heartbeat and
+assistance validity are separate facts.
+
+The console exposes a stable `selection_epoch` in addition to its existing
+preview revision. Brief pauses change the revision but preserve the selection
+epoch; explicit selection, clearing and terminal loss invalidate the epoch.
+Existing finite diagnostics keep their original fail-stop behavior. A track ID
+is an image association, not a guarantee of human identity.
+
+## Mode 2 takeover policy
+
+The initial software policy treats yaw deflection **greater than 25% for at
+least 200 ms** as deliberate takeover. Deflection **greater than 50%** requests
+immediate native manual priority. Both latch manual control until an explicit
+SC middle-to-up cycle. Smaller movements or a shorter excursion past 25% do
+not latch a takeover. These are starting values for the combined hardware
+check, not measured ergonomics for a particular operator.
+
+The old `|Rud| < 10` gate must not remain on the final assisted mix. Otherwise
+it can still interrupt assistance while the Mode 2 pilot adjusts throttle,
+regardless of the new Lua policy. Read the raw Rud source, not a processed
+channel with a curve or trim. Lua also reads the native takeover latch so a
+large movement between Lua callbacks cannot silently re-enable on recentering.
+
+The following is the **profile contract**, not an instruction to modify a
+currently connected radio. The final profile installer/guide must verify these
+unused rows, sources and mappings before any RF test:
+
+| Row | Function | V1 | V2 | AND switch | Delay |
+| --- | --- | --- | --- | --- | --- |
+| L01 | a>x | Lua1 Hbt | 0 | None | 0 |
+| L02 | AND | L01 | L01 | None | 0.3 s |
+| L03 | AND | !L01 | !L01 | None | 0.3 s |
+| L04 | OR | L02 | L03 | None | 0 |
+| L05 | a>x | Lua1 Fsh | 0 | !L04 | 0 |
+| L06 | AND | L05 | !L11 | None | 0 |
+| L07 | AND | L06 | SC up | !L10 | 0 |
+| L08 | \|a\|>x | Raw Rud | 25 | None | 0.2 s |
+| L09 | OR | L08 | L11 | None | 0 |
+| L10 | Sticky | L09 | SC middle | None | 0 |
+| L11 | \|a\|>x | Raw Rud | 50 | None | 0 |
+
+Durations are zero; L10 persistence is off. L10 is read with zero-based logical
+switch index 9. The normal manual yaw mix remains unconditional; the last Lua
+replacement is selected by L07. Model-specific direction, limits, curves and
+trim require review on CH4. The final model keeps crash flip disabled on CH7,
+separate from SC. The software reads but does not write model configuration,
+throttle or arming channels.
+
+Native timer granularity is 100 ms. These nominal delays are not a measured
+physical response-time bound. The native guard requires the radio mixer to
+remain alive; it is not the aircraft's RF-loss failsafe.
+
+## Compact stream protocol
+
+The script announces `ARGOS_YAW_STREAM_V1`. The host writes nothing before
+recognizing that greeting. Lines are ASCII, LF-terminated and bounded to 64
+bytes of content. The version is distinct from every existing bench protocol.
+
+```text
+AB1 <host-session>
+AY1 <host-session> <generation> <ticket> <accepted-sequence> <state>
+AS1 <host-session> <generation> <ticket> <sequence> <valid> <value>
+```
+
+`AB1` starts a fresh host session and removes command authority. `AY1` is radio
+status; it includes a radio-issued ticket, not a host timestamp. `AS1` is a
+newest-state command. Sessions use eight lowercase hexadecimal characters;
+`00000000` denotes an unbound radio. Sequence numbers increase within a session.
+Tickets and generations are cyclic 31-bit unsigned counters (0..2147483647);
+sequences use 1..2147483647 and require a new session before exhaustion. Integer
+clock arithmetic also handles EdgeTX's signed clock rollover. The script uses
+Lua 5.3 integer operations, including on EdgeTX's 32-bit Lua build.
+Values remain in -128..128 (up to 12.5% normalized stick travel), and invalid
+assistance has value zero. States are M (manual / enable required), T (enabled
+without valid assistance), A (active) and F (fault / enable required).
+
+The radio remembers only four issued tickets. Each ticket expires 300 ms after
+**radio issuance**, even if its command arrives later. Output expiry is tied to
+that same deadline: receipt of an old command cannot give it another 300 ms.
+Tickets belong to the current enable generation; SC re-enable and new host
+sessions invalidate old generations. This avoids synchronized PC/radio clocks
+and per-command stop-and-wait while rejecting delayed queued commands.
+
+The parser has bounded line storage and callback work. It publishes only the
+newest accepted command from a batch. Heartbeat changes once for that published
+batch, so two commands cannot cancel each other's heartbeat transition.
+Duplicates, expired tickets and old generations cannot sustain freshness.
+
+The host still limits the source image age to 450 ms at emission. The ticket
+window is a **separate residual lifetime**, not a guarantee of output stopping
+at the image's original 450 ms deadline. Lua expiry is evaluated on callbacks;
+the native heartbeat guard covers a producer that stops updating while the
+native mixer continues. Neither mechanism measures camera sensor latency or
+proves a hard real-time physical cutoff.
+
+## Targeted software verification
+
+Tests cover brief occlusion/recovery, expired or changed selection, a blocked
+source, delayed or missing reports, stale USB queues, disconnect/reconnect,
+session and enable-generation changes, bounded framing, heartbeat batches, and
+Mode 2 takeover thresholds/duration. They use the actual Python and Lua logic
+with small deterministic fixtures; no recorded-flight replay campaign or broad
+scheduler search is required.
+
+Run the targeted contract tests with Lua 5.3 or newer on `PATH`:
+
+```sh
+python -m pytest -q tests/test_console_yaw_preview.py tests/test_yaw_stream_source.py tests/test_edgetx_yaw_stream.py tests/test_yaw_stream_lua.py
+```
+
+The last file drives the actual script through a small process adapter and runs
+the Lua policy harness. Without Lua it is explicitly skipped; CI installs Lua.
+The standalone entry point is `python -m argos.backends.edgetx_yaw_stream --help`.
+Its optional `--duration` bounds a bench run; ordinary runtime has no duration
+limit. The final profile, launch workflow and live status are a subsequent brick,
+so this document is not a radio installation or first-flight guide.
+
+## Remaining combined hardware acceptance
+
+Use the final profile and runtime for one grouped preparation session, with
+propellers removed and the battery connected for camera power. Check current
+receiver mapping/rates/failsafe and observe the received yaw with MSP. In
+particular:
+
+- With SC up and the target tracked, dose throttle as in flight without
+  intentional yaw. Assistance must remain enabled.
+- Compare the vision command with the known manual left-yaw stick direction
+  in Betaflight: a target left of the image must request that same left-yaw
+  direction; a target right must request right yaw. Check for image mirroring
+  and radio output reversals before flight.
+- Check short target loss/recovery, deliberate stick takeover and SC re-enable,
+  camera loss, USB loss/reconnection, and radio-link loss.
+- A disarmed MSP/RXLOSS observation does not prove armed motor cutoff. Include
+  the appropriate props-off RF failsafe verification separately within the
+  same preparation session.
+
+Receiver sign verification precedes flight. The first short manual hover and
+low-authority assisted activation still need to establish physical response,
+gain and closed-loop stability. Normalized yaw percent is not degrees/second.

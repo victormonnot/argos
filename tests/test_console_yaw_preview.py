@@ -65,6 +65,31 @@ def test_selection_is_explicit_and_does_not_require_any_transport():
     assert "no commands sent" in state["detail"]
 
 
+def test_selection_epoch_survives_short_pause_but_not_reselect_clear_or_terminal_loss():
+    preview = selected()
+    epoch = preview.state(1.)["selection_epoch"]
+    preview.observe(observation(sequence=2, at=1.1, confidence=.49), now=1.1)
+    assert preview.state(1.1)["selection_epoch"] == epoch
+    preview.observe(observation(sequence=3, at=1.2), now=1.2)
+    assert preview.state(1.2)["selection_epoch"] == epoch
+    preview.select(7, revision=preview.revision, now=1.2)
+    assert preview.state(1.2)["selection_epoch"] == epoch + 1
+    preview.clear()
+    assert preview.state(1.2)["selection_epoch"] == epoch + 2
+    preview.select(7, revision=preview.revision, now=1.2)
+    assert preview.state(1.2)["selection_epoch"] == epoch + 3
+    assert assert_stopped(preview, 1.7)["selection_epoch"] == epoch + 4
+    assert assert_stopped(preview, 1.8)["selection_epoch"] == epoch + 4
+
+
+def test_source_change_invalidates_selection_epoch_even_while_idle():
+    preview = YawPreview(True)
+    preview.observe(observation(), now=1.)
+    epoch = preview.state(1.)["selection_epoch"]
+    preview.observe(observation(sequence=2, at=1.1, video_id="new"), now=1.1)
+    assert preview.state(1.1)["selection_epoch"] == epoch + 1
+
+
 def test_disabled_never_uses_observations():
     preview = YawPreview(False)
     preview.observe(observation(), now=1.)

@@ -80,12 +80,15 @@ class YawPreview:
     Invalid or stale imagery and expired recovery still latch a cleared target.
     Entering a gap changes revision, fencing command sessions even if they miss
     the paused snapshot. Clear, expiry and source reset also change revision.
+    Selection epoch is separate: a recoverable gap retains it, while an explicit
+    selection or terminal loss changes it for continuous consumers.
     """
 
     def __init__(self, enabled: bool):
         self.enabled = bool(enabled)
         self.phase = "idle" if self.enabled else "disabled"
         self.revision = 0
+        self.selection_epoch = 0
         self._detail = ("Select a person in a recent analyzed image" if self.enabled
                         else "Yaw preview requires a real camera and person detection")
         self._frame = None
@@ -100,6 +103,7 @@ class YawPreview:
         if self.phase in ("tracking", "paused"):
             self.phase = "stopped"
             self.revision += 1
+            self.selection_epoch += 1
             self._detail = detail
         self._target_id = None
         self._last_seen_at = None
@@ -195,6 +199,7 @@ class YawPreview:
                 if self.revision == revision:
                     # Also invalidate a pending selection made while idle.
                     self.revision += 1
+                    self.selection_epoch += 1
             elif (candidate["sequence"] < previous["sequence"]
                   or candidate["received_at"] < previous["received_at"]
                   or (candidate["sequence"] == previous["sequence"]
@@ -225,6 +230,7 @@ class YawPreview:
         self.phase = "tracking"
         self._detail = "Horizontal yaw preview only; no commands sent"
         self.revision += 1
+        self.selection_epoch += 1
         self._update(now)
         return self._snapshot(now)
 
@@ -235,6 +241,7 @@ class YawPreview:
         self._error_x = None
         self._yaw = 0.
         self.revision += 1
+        self.selection_epoch += 1
         self.phase = "idle" if self.enabled else "disabled"
         self._detail = str(reason)
 
@@ -244,6 +251,7 @@ class YawPreview:
         return {
             "enabled": self.enabled, "phase": self.phase, "detail": self._detail,
             "revision": self.revision, "target_id": self._target_id,
+            "selection_epoch": self.selection_epoch,
             "run_id": None if context is None else context[0],
             "video_id": None if context is None else context[1],
             "frame_sequence": None if frame is None else frame["sequence"],

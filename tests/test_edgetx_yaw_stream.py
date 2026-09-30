@@ -1,0 +1,481 @@
+"""Targeted continuous transport tests, with bounded queues and virtual time."""
+from collections import deque
+from dataclasses import replace
+import threading
+import time
+
+import pytest
+
+from argos.backends import edgetx_yaw_stream as stream
+from argos.backends.yaw_stream_source import YawDemand
+
+
+class Clock:
+    def __init__(self):
+        self.now = 100.
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, delta):
+        self.now += delta
+
+
+class Radio:
+    def __init__(self, clock):
+        self.clock = clock
+        self.incoming = deque([stream.HELLO + b"\n"])
+        self.writes = []
+        self.session = None
+        self.gen = 1
+        self.ticket = 0
+        self.ack = 0
+        self.state = "M"
+        self.out_waiting = 0
+        self.partial = False
+        self.write_delay = 0
+        self.accept = True
+
+    @property
+    def in_waiting(self):
+        return sum(map(len, self.incoming))
+
+    def read(self, maximum):
+        if not self.incoming:
+            return b""
+        value = self.incoming.popleft()
+        if len(value) > maximum:
+            self.incoming.appendleft(value[maximum:])
+        return value[:maximum]
+
+    def write(self, packet):
+        self.writes.append((self.clock(), packet))
+        self.clock.advance(self.write_delay)
+        if self.partial:
+            return len(packet) - 1
+        for line in packet.decode().splitlines():
+            fields = line.split()
+            if fields[0] == "AB1":
+                self.session = fields[1]
+                self.ack = 0
+                self.state = "M"
+                self.gen += 1
+            elif fields[0] == "AS1" and self.accept:
+                self.ack = int(fields[4])
+        return len(packet)
+
+    def report(self, *, ticket=None, state=None, ack=None):
+        self.ticket = self.ticket + 1 if ticket is None else ticket
+        if state is not None:
+            self.state = state
+        self.incoming.append((f"AY1 {self.session} {self.gen} {self.ticket} "
+                              f"{self.ack if ack is None else ack} {self.state}\n").encode())
+
+    def commands(self):
+        return [(at, packet.decode().split()) for at, packet in self.writes if packet.startswith(b"AS1 ")]
+
+    def begins(self):
+        return [packet for _, packet in self.writes if b"AB1 " in packet]
+
+
+def sample(clock, *, valid=True, value=64, key=("run", "camera", 8, 1), lifetime=.4):
+    return stream.SourceSample(YawDemand(value, valid, key, clock() + lifetime, "tracking"), clock())
+
+
+def setup():
+    clock = Clock()
+    radio = Radio(clock)
+    nonces = iter(f"{value:08x}" for value in range(1, 10000))
+    host = stream.YawStream(radio, clock=clock, nonce=lambda: next(nonces))
+    host.step(sample(clock))
+    radio.report(state="M")
+    host.step(sample(clock))
+    assert radio.begins() and not radio.commands()
+    return host, radio, clock
+
+
+def arm(host, radio, clock):
+    radio.gen += 1  # an explicit operator SC middle -> up cycle
+    radio.report(state="T")
+    host.step(sample(clock))
+    return radio.commands()[-1]
+
+
+def tick(host, radio, clock, *, advance=.1, value=None, report=True):
+    clock.advance(advance)
+    if report:
+        radio.report()
+    host.step(sample(clock) if value is None else value)
+
+
+def test_manual_greeting_and_explicit_radio_arm_precede_any_commands():
+    host, radio, clock = setup()
+    for _ in range(15):
+        tick(host, radio, clock)
+    assert not radio.commands()  # zero acknowledgements in manual are healthy
+    at, fields = arm(host, radio, clock)
+    assert fields[-2:] == ["1", "64"]
+    assert fields[2] == str(radio.gen)
+    assert fields[3] == str(radio.ticket)
+    assert radio.timeout == 0 and radio.write_timeout == .02
+
+
+def test_continues_for_minutes_without_session_or_command_count_limit():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    session = host.session
+    for _ in range(2400):
+        tick(host, radio, clock, advance=.101)
+    commands = radio.commands()
+    assert len(commands) == 2401
+    assert host.session == session and not host.failed
+    assert all(later[0] - earlier[0] >= .1 - 1e-9 for earlier, later in zip(commands, commands[1:]))
+
+
+def test_paused_target_sends_invalid_not_a_valid_zero_and_recovers_same_session():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    session = host.session
+    for _ in range(4):
+        clock.advance(.101)
+        radio.report()
+        host.step(sample(clock, valid=False, value=0))
+        assert radio.commands()[-1][1][-2:] == ["0", "0"]
+    tick(host, radio, clock, advance=.101)
+    assert radio.commands()[-1][1][-2:] == ["1", "64"]
+    assert host.session == session
+    clock.advance(.101)
+    radio.report()
+    host.step(sample(clock, value=0))
+    assert radio.commands()[-1][1][-2:] == ["1", "0"]  # centered is distinct
+
+
+def test_expired_mailbox_image_is_never_renewed_even_if_source_worker_is_blocked():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    old = sample(clock, lifetime=.05)
+    tick(host, radio, clock, advance=.101, value=old)
+    assert radio.commands()[-1][1][-2:] == ["0", "0"]
+    session = host.session
+    for _ in range(10):
+        tick(host, radio, clock, advance=.101, value=old)
+    assert host.session != session and host.source_fault
+    assert not host.failed
+    # Recovery cannot send against the previous T status or old nonce.
+    count = len(radio.commands())
+    tick(host, radio, clock, advance=.101)
+    assert len(radio.commands()) == count
+    assert host.status.state == "M"
+
+
+def test_target_reselection_rotates_session_and_requires_new_operator_cycle():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    old_session = host.session
+    clock.advance(.101)
+    radio.report()
+    new = sample(clock, key=("run", "camera", 9, 2))
+    host.step(new)
+    assert host.session != old_session and len(radio.commands()) == 1
+    radio.report(state="M")
+    host.step(new)
+    assert len(radio.commands()) == 1
+
+
+def test_missing_short_return_reports_does_not_create_stop_and_wait():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    session = host.session
+    for _ in range(4):
+        tick(host, radio, clock, advance=.101, report=False)
+    assert len(radio.commands()) == 5  # no intervening ACKs
+    tick(host, radio, clock, advance=.101)
+    assert host.session == session and host.status.ack == 5
+
+
+def test_advancing_status_with_stuck_ack_requires_rearm():
+    host, radio, clock = setup()
+    radio.accept = False
+    arm(host, radio, clock)
+    session = host.session
+    for _ in range(11):
+        tick(host, radio, clock, advance=.101)
+    assert host.session != session
+    assert "AB1" in radio.writes[-1][1].decode()
+    assert not host.failed
+
+
+def test_duplicate_tickets_do_not_keep_return_path_healthy():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    session, ticket = host.session, radio.ticket
+    for _ in range(11):
+        clock.advance(.101)
+        radio.report(ticket=ticket)
+        host.step(sample(clock))
+    assert host.session != session
+
+
+def test_generation_change_discards_old_ticket_and_does_not_reuse_output_after_manual():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    oldgen, oldticket = radio.gen, radio.ticket
+    clock.advance(.101)
+    radio.gen += 1
+    radio.report(state="M")
+    host.step(sample(clock))
+    count = len(radio.commands())
+    radio.incoming.append(f"AY1 {host.session} {oldgen} {oldticket + 100} 1 A\n".encode())
+    clock.advance(.101)
+    host.step(sample(clock))
+    assert len(radio.commands()) == count and host.status.state == "M"
+
+
+def test_no_catchup_burst_after_scheduler_gap():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    clock.advance(.45)
+    radio.report()
+    host.step(sample(clock))
+    count = len(radio.commands())
+    for _ in range(20):
+        host.step(sample(clock))
+    assert len(radio.commands()) == count
+
+
+def test_output_backpressure_retains_only_latest_demand_and_never_queues_commands():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    radio.out_waiting = 12
+    for _ in range(5):
+        tick(host, radio, clock, advance=.101)
+    assert len(radio.commands()) == 1
+    radio.out_waiting = 0
+    clock.advance(.101)
+    radio.report()
+    host.step(sample(clock, value=-31))
+    assert radio.commands()[-1][1][-1] == "-31"
+    assert len(radio.commands()) == 2
+
+
+def test_stalled_output_and_partial_write_end_this_connection():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    radio.partial = True
+    with pytest.raises(stream.ProbeError, match="partial"):
+        tick(host, radio, clock, advance=.101)
+    assert host.failed
+    count = len(radio.writes)
+    with pytest.raises(stream.ProbeError, match="closed"):
+        host.step(sample(clock))
+    assert len(radio.writes) == count
+
+
+@pytest.mark.parametrize("line", [b"AY1 ab 1 2 3 A", b"AY1 00000001 2147483648 1 0 M",
+                                   b"AY1 00000001 1 2147483648 0 M",
+                                   b"AY1 00000001 1 2 2147483648 M", b"x" * 65,
+                                   b"AY1 00000001 1 2 0 X", b"CLI prompt"])
+def test_invalid_radio_framing_fails_connection(line):
+    host, radio, clock = setup()
+    radio.incoming.append(line + b"\n")
+    with pytest.raises(stream.ProbeError):
+        host.step(sample(clock))
+    assert host.failed
+
+
+def test_wrong_peer_gets_no_bytes_and_timeout_is_bounded():
+    clock = Clock()
+    radio = Radio(clock)
+    radio.incoming = deque([b"CLI\n"])
+    host = stream.YawStream(radio, clock=clock)
+    host.step(sample(clock))
+    clock.advance(5)
+    with pytest.raises(stream.ProbeError, match="greeting|ARGOS"):
+        host.step(sample(clock))
+    assert not radio.writes
+
+
+def test_long_source_error_rotates_once_during_outage_not_each_tick():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    before = len(radio.begins())
+    for _ in range(30):
+        clock.advance(.101)
+        radio.report()
+        host.step(stream.SourceSample(None, clock(), True))
+    assert len(radio.begins()) == before + 1
+    assert host.source_fault and host.status.state == "M"
+
+
+def test_reader_backlog_is_bounded_and_no_transmission_uses_intermediate_ticket():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    for _ in range(80):
+        radio.report()
+    clock.advance(.101)
+    before = len(radio.commands())
+    host.step(sample(clock))
+    assert radio.in_waiting > 0 and len(radio.commands()) == before
+    while radio.in_waiting:
+        host.step(sample(clock))
+    assert radio.commands()[-1][1][3] == str(radio.ticket)
+
+
+def test_source_worker_blocked_read_does_not_block_mailbox_or_serial_shutdown():
+    entered, release = threading.Event(), threading.Event()
+
+    class BlockedSource:
+        closed = False
+
+        def read(self):
+            entered.set()
+            release.wait(2)
+            return YawDemand(40, True, ("person",), time.monotonic() + .4, "tracking")
+
+        def close(self):
+            self.closed = True
+
+    source = BlockedSource()
+    worker = stream.SourceWorker(source)
+    worker.start()
+    try:
+        assert entered.wait(1)
+        started = time.monotonic()
+        assert worker.snapshot().error
+        worker.close()
+        assert time.monotonic() - started < .5
+    finally:
+        release.set()
+        worker._thread.join(timeout=1)
+    assert source.closed
+
+
+def test_status_ticket_counter_wrap_preserves_progress():
+    host, radio, clock = setup()
+    host.status = replace(host.status, ticket=2**31 - 1)
+    radio.report(ticket=0)
+    host.step(sample(clock))
+    assert host.status.ticket == 0
+
+
+def test_cli_loop_reconnects_to_fresh_nonce_and_stays_manual(monkeypatch):
+    clock = Clock()
+    origin = clock()
+    instances = []
+
+    class Worker:
+        def __init__(self, source, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def snapshot(self):
+            return sample(clock)
+
+        def close(self):
+            pass
+
+    class DisconnectingRadio(Radio):
+        def __init__(self, first):
+            super().__init__(clock)
+            self.first = first
+            self.last_report = clock()
+            self.closed = False
+
+        def reset_input_buffer(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+        def read(self, maximum):
+            if self.first and clock() - origin > .8:
+                raise OSError("unplugged")
+            if self.session is not None and clock() - self.last_report >= .05:
+                self.last_report = clock()
+                # Only first connection has an explicit operator arm event.
+                self.report(state="T" if self.first and clock() - origin > .2 else "M")
+            return super().read(maximum)
+
+    def open_again(device):
+        radio = DisconnectingRadio(not instances)
+        instances.append(radio)
+        return radio
+
+    monkeypatch.setattr(stream, "SourceWorker", Worker)
+    messages = []
+    stream.run_stream("fake-pocket", object(), duration=2.4, opener=open_again,
+                      clock=clock, sleep=clock.advance, report=messages.append)
+    assert len(instances) == 2 and all(radio.closed for radio in instances)
+    assert len(instances[0].commands()) > 1 and not instances[1].commands()
+    assert instances[0].session != instances[1].session
+    assert any("waiting to reconnect" in message for message in messages)
+
+
+@pytest.mark.parametrize("bad_ack", [0, 20])
+def test_ack_regression_or_unsent_sequence_is_rejected(bad_ack):
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    tick(host, radio, clock, advance=.101)
+    assert host.status.ack == 1
+    clock.advance(.101)
+    radio.report(ack=bad_ack)
+    with pytest.raises(stream.ProbeError, match="acknowledge"):
+        host.step(sample(clock))
+    assert host.failed
+
+
+def test_radio_reset_requires_new_nonce_even_with_old_healthy_source():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    old = host.session
+    clock.advance(.101)
+    radio.incoming.append(b"AY1 00000000 1 8 0 M\n")
+    host.step(sample(clock))
+    assert host.session != old and len(radio.commands()) == 1
+    assert b"AB1 " in radio.writes[-1][1]
+
+
+def test_explicit_selection_clear_ends_authority_until_reselected_and_rearmed():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    old = host.session
+    clock.advance(.101)
+    radio.report()
+    host.step(sample(clock, valid=False, key=None))
+    assert host.session != old and host.selection_key is None
+    assert len(radio.commands()) == 1
+
+
+def test_unsent_request_is_not_reported_as_radio_acceptance():
+    host, radio, clock = setup()
+    arm(host, radio, clock)
+    assert host.reason == "correction requested: waiting for radio acceptance"
+    clock.advance(.101)
+    radio.report(state="A")
+    host.step(sample(clock))
+    assert host.reason == "radio reports assistance active"
+
+
+def test_status_generation_wrap_accepts_zero_and_rejects_old_generation():
+    host, radio, clock = setup()
+    host.status = replace(host.status, generation=2**31 - 1, ticket=80)
+    radio.gen = 0
+    radio.report(ticket=1, state="M")
+    host.step(sample(clock))
+    assert host.status.generation == 0 and host.status.ticket == 1
+    radio.gen = 2**31 - 1
+    radio.report(ticket=90, state="A")
+    host.step(sample(clock))
+    assert host.status.generation == 0 and host.status.state == "M"
+
+
+def test_wrapped_ticket_rejects_delayed_pre_wrap_status():
+    host, radio, clock = setup()
+    host.status = replace(host.status, ticket=2**31 - 1)
+    radio.report(ticket=0)
+    host.step(sample(clock))
+    radio.report(ticket=2**31 - 2)
+    host.step(sample(clock))
+    assert host.status.ticket == 0
