@@ -301,18 +301,44 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
     @app.post("/api/recordings/start")
     async def start_recording(request: Request):
         values = await mutation_body(request)
-        if (not isinstance(values, dict) or set(values) - {"include_visual"}
-                or type(values.get("include_visual", False)) is not bool):
-            raise HTTPException(422, "Use an optional include_visual boolean")
+        if (not isinstance(values, dict) or set(values) - {"include_visual", "include_filming", "label"}
+                or type(values.get("include_visual", False)) is not bool
+                or type(values.get("include_filming", False)) is not bool):
+            raise HTTPException(422, "Use optional include_visual/include_filming booleans and a take label")
+        from .filming import FilmingCapture, label_value
+        try:
+            label = label_value(values.get("label", ""))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         include_visual = values.get("include_visual", False)
+        include_filming = values.get("include_filming", bool(
+            include_visual and session.config.yaw_assist and yaw_service is not None))
+        if include_filming and (not include_visual or session.config.video_source != "device"):
+            raise HTTPException(422, "Filming requires include_visual and a physical camera")
         telemetry_ready = session.config.has_telemetry and session.link is not None and not session._error
         video_ready = include_visual and session.video.read_current()[1] is not None
+        previous_filming = session.recorder.filming.status() if session.recorder.filming is not None else {}
         if (not (telemetry_ready or video_ready) or session._closed
                 or session.recorder.active or session.replacing or session.reconnecting == "mavlink"
+                or (previous_filming and not previous_filming["writer_stopped"])
                 or session.recorder.visual.snapshot()["state"] == "finalizing"):
             raise HTTPException(409, "A recent video or open telemetry link without an active recording is required")
         context = capture_context(session.config, session.run_id, session._endpoint)
         result = session.recorder.start(session.clock(), context=context, include_visual=include_visual)
+        if result["state"] != "error" and include_filming:
+            try:
+                capture = FilmingCapture(session.recorder.directory / (result["id"] + ".flight"),
+                    identifier=result["id"], run_id=session.run_id, started_at=result["started_at"],
+                    clock=session.clock, label=label,
+                    manifest={"capture_context": context,
+                              "radio": yaw_service.manifest if yaw_service is not None else None})
+                session.recorder.filming = capture
+                capture.attach_video(session.video, session.video_source_id)
+                if yaw_service is not None:
+                    capture.attach_radio(yaw_service)
+            except (OSError, ValueError, RuntimeError) as exc:
+                session.recorder.stop(session.clock(), reason="filming_error", detail=str(exc))
+                raise HTTPException(500, f"Could not start filming capture: {exc}") from exc
         if result["state"] != "error":
             capture_visual(session, session.clock())
             result = session.recorder.snapshot()

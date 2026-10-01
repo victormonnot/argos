@@ -38,6 +38,7 @@ class ConsoleRecorder:
         self.max_events, self.max_bytes = max_events, max_bytes
         self._writer = self._stream = None
         self.visual = VisualRecorder(self.directory)
+        self.filming = None
         self._visual_enabled = False
         self._visual_error = ""
         self._now = 0.
@@ -59,6 +60,8 @@ class ConsoleRecorder:
             if self._visual_error:
                 result["visual"] = {**result["visual"], "state": "error",
                     "id": self._status["id"], "detail": self._visual_error}
+        if self.filming is not None:
+            result["filming"] = self.filming.status()
         return result
 
     def start(self, now, *, context=None, include_visual=False):
@@ -68,6 +71,11 @@ class ConsoleRecorder:
             raise ValueError("include_visual must be a boolean")
         if self.visual.snapshot()["state"] in ("recording", "finalizing"):
             raise ValueError("Wait for the previous visual recording to finish")
+        if self.filming is not None:
+            status = self.filming.status()
+            if not status["writer_stopped"]:
+                raise ValueError("Wait for the previous filming recording to finish")
+            self.filming = None
         if include_visual and (not isinstance(context, dict) or not context.get("run_id")):
             raise ValueError("Visual recording requires the capture session context")
         self._now = now
@@ -110,6 +118,8 @@ class ConsoleRecorder:
                 self.fail(f"Recording write interrupted: {exc}")
 
     def _stop_visual(self, now, *, reason, detail):
+        if self.filming is not None:
+            self.filming.stop(now, reason=reason, timeout=0)
         if self._visual_enabled and not self._visual_error:
             try:
                 self.visual.stop(now, reason=reason, detail=detail)

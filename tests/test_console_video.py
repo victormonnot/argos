@@ -130,6 +130,67 @@ def test_query_before_receipt_does_not_claim_freshness():
     assert target.latest(10.) is not None
 
 
+def test_frame_sink_receives_each_new_jpeg_with_immutable_source_provenance():
+    target = store()
+    received = []
+    assert accept(target)
+    target.add_frame_sink(received.append)
+    target.add_frame_sink(received.append)  # Reattaching is idempotent.
+    stamp = {"sec": 1000, "nsec": 7}
+    assert accept(target, at=10.01, source_stamp=stamp)
+    assert accept(target, at=10.02)
+    assert not accept(target, at=10.03, data=b"invalid")
+    assert [item.sample.sequence for item in received] == [2, 3]
+    assert received[-1].sample is target.latest(10.02)
+    assert received[0].source_stamp == (1000, 7)
+    assert received[0].source_id == target.source_id
+    assert received[0].source_id != store().source_id
+    stamp["sec"] = 5
+    assert received[0].source_stamp == (1000, 7)
+    with pytest.raises(FrozenInstanceError):
+        received[0].width = 99
+    target.remove_frame_sink(received.append)
+    target.remove_frame_sink(received.append)
+    assert accept(target, at=10.04)
+    assert len(received) == 2
+
+
+def test_frame_sink_failure_is_observable_without_failing_camera_or_other_sinks():
+    target = store()
+    received = []
+
+    def fail(frame):
+        raise OSError("recording failure")
+
+    target.add_frame_sink(fail)
+    target.add_frame_sink(received.append)
+    assert accept(target)
+    assert len(received) == 1
+    status = target.snapshot(10.)
+    assert status["state"] == "recent" and status["frame_sink_errors"] == 1
+    assert status["last_frame_sink_error"] == "recording failure"
+
+
+def test_frame_sink_runs_after_publication_without_holding_camera_reader_lock():
+    target = store()
+    entered, release = Event(), Event()
+
+    def sink(frame):
+        entered.set()
+        assert release.wait(2.)
+
+    target.add_frame_sink(sink)
+    worker = Thread(target=lambda: accept(target))
+    worker.start()
+    try:
+        assert entered.wait(1.)
+        assert target.read_current()[1].sequence == 1
+    finally:
+        release.set()
+        worker.join(2.)
+    assert not worker.is_alive()
+
+
 @pytest.mark.parametrize("method", ["read_current", "snapshot_current"])
 def test_live_reader_samples_time_after_a_competing_capture_publication(method):
     now, clock_calls, result = [10.], [], []

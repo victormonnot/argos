@@ -148,6 +148,7 @@ def main(argv=None):
                                       manifest={"git_revision": manifest["software"]["git_revision"],
                                                 "git_dirty": manifest["software"]["git_dirty"],
                                                 "runtime_sha256": manifest["software"]["runtime_sha256"],
+                                                "detector": manifest["detector"],
                                                 "radio_protocol": manifest["radio_protocol"],
                                                 "radio_script_sha256": manifest["radio_script_sha256"]},
                                       directory=run_directory)

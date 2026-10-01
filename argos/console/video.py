@@ -16,6 +16,7 @@ import sys
 from threading import Event, RLock, Thread
 import time
 from typing import Callable
+from uuid import uuid4
 
 
 MAX_DIMENSION = 4096
@@ -44,6 +45,19 @@ class VideoSample:
     jpeg: bytes
     sequence: int
     received_at: float
+
+
+@dataclass(frozen=True)
+class CameraFrame:
+    """An accepted camera JPEG with immutable acquisition provenance."""
+
+    sample: VideoSample
+    width: int
+    height: int
+    source: str
+    endpoint: str | None
+    source_stamp: tuple[int, int] | None = None
+    source_id: str = ""
 
 
 class VideoStore:
@@ -76,6 +90,7 @@ class VideoStore:
         self.endpoint = endpoint
         self.clock = clock
         self.age_limit = age_limit
+        self.source_id = uuid4().hex
         self._lock = RLock()
         self._producer_lock = RLock()
         self._sample: VideoSample | None = None
@@ -86,6 +101,27 @@ class VideoStore:
         self._last_rejection = ""
         self._error: str | None = None
         self._stopped = False
+        self._frame_sinks: tuple[Callable[[CameraFrame], object], ...] = ()
+        self._frame_sink_errors = 0
+        self._last_frame_sink_error = ""
+
+    def add_frame_sink(self, sink: Callable[[CameraFrame], object]) -> None:
+        """Subscribe an enqueue-only callback to every accepted JPEG.
+
+        Callbacks run on the producer, outside the reader lock. They must never
+        perform disk IO, encoding, or wait for a consumer; recording uses its
+        own bounded queue. No old image is replayed when a sink is attached.
+        """
+        if not callable(sink):
+            raise ValueError("frame sink must be callable")
+        with self._lock:
+            if sink not in self._frame_sinks:
+                self._frame_sinks += (sink,)
+
+    def remove_frame_sink(self, sink: Callable[[CameraFrame], object]) -> None:
+        """Detach a sink; one already admitted callback may still complete."""
+        with self._lock:
+            self._frame_sinks = tuple(item for item in self._frame_sinks if item != sink)
 
     def reject(self, detail: str) -> None:
         with self._lock:
@@ -161,7 +197,20 @@ class VideoStore:
                 sequence = 1 if self._sample is None else self._sample.sequence + 1
                 self._sample = VideoSample(jpeg=jpeg, sequence=sequence, received_at=received_at)
                 self._width, self._height, self._stamp = width, height, stamp
-                return True
+                sinks = self._frame_sinks
+                frame = CameraFrame(self._sample, width, height, self.source,
+                    self.endpoint, None if stamp is None else (stamp["sec"], stamp["nsec"]),
+                    self.source_id)
+            for sink in sinks:
+                try:
+                    sink(frame)
+                except Exception as exc:
+                    # Recorder failure must not invalidate perception or the
+                    # live camera. It remains visible in observation status.
+                    with self._lock:
+                        self._frame_sink_errors += 1
+                        self._last_frame_sink_error = str(exc)[:400]
+            return True
 
     def _status(self, now: float) -> tuple[str, str, float | None]:
         age = None if self._sample is None else now - self._sample.received_at
@@ -192,6 +241,8 @@ class VideoStore:
                     "rx_age_s": age, "age_limit_s": self.age_limit,
                     "width": self._width, "height": self._height,
                     "rejected": self._rejected, "last_rejection": self._last_rejection,
+                    "frame_sink_errors": self._frame_sink_errors,
+                    "last_frame_sink_error": self._last_frame_sink_error,
                     "source_stamp": None if self._stamp is None else self._stamp.copy()}
 
     def latest(self, now: float) -> VideoSample | None:

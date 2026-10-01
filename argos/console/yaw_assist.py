@@ -42,6 +42,21 @@ class YawAssistService:
         self._recovery_failed = 0
         self._recovery_dirty = False
         self._local_source = None
+        self._status_sinks = []
+        self._status_sink_errors = 0
+
+    def add_status_sink(self, sink):
+        """Attach a bounded nonblocking diagnostic consumer; never another USB reader."""
+        if not callable(sink):
+            raise TypeError("Status sink must be callable")
+        with self._lock:
+            if sink not in self._status_sinks:
+                self._status_sinks.append(sink)
+
+    def remove_status_sink(self, sink):
+        with self._lock:
+            if sink in self._status_sinks:
+                self._status_sinks.remove(sink)
 
     def bind_console(self, session, loop):
         """Use owner-published demands in the integrated app; CLI keeps HTTP."""
@@ -112,6 +127,18 @@ class YawAssistService:
         now = self.clock()
         with self._lock:
             self._status, self._at = deepcopy(value), now
+            sinks = tuple(self._status_sinks)
+        if sinks:
+            from .filming import assistance_view
+            observation = {"host_monotonic_at": now, **deepcopy(value)}
+            observation.update(assistance_view(observation, now))
+            for sink in sinks:
+                try:
+                    sink(observation)
+                except Exception:
+                    # Recording failures do not change flight commands/leases.
+                    with self._lock:
+                        self._status_sink_errors += 1
         if self.directory is None:
             return
         transition = (value.get("connected"), value.get("radio_state"),
@@ -212,12 +239,16 @@ class YawAssistService:
             value, at = deepcopy(self._status), self._at
             recovery_log = self._recovery_status_locked()
             log_error = self._log_error
+            sink_errors = self._status_sink_errors
         age = None if at is None else max(0., self.clock() - at)
         value.update(enabled=True, status_age_s=age, manifest=self.manifest,
-                     log_error=log_error, recovery_log=recovery_log)
+                     log_error=log_error, recovery_log=recovery_log,
+                     recording_sink_errors=sink_errors)
         if at is None or age >= 1.5 or self._stop.is_set():
             value.update(connected=False, radio_state=None,
                          reason="Stream stopped" if self._stop.is_set() else "Waiting for stream status")
+        from .filming import assistance_view
+        value.update(assistance_view(value, self.clock()))
         return value
 
     def close(self):

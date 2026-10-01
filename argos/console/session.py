@@ -149,6 +149,8 @@ class ConsoleSession:
             self.video = VideoStore(source=self.config.video_source,
                                     endpoint=self.config.video_endpoint,
                                     age_limit=self.config.video_age, clock=self.clock)
+            if self.recorder.filming is not None and self.recorder.active:
+                self.recorder.filming.attach_video(self.video, self.video_source_id)
         else:
             previous, self.link = self.link, None
             self.connection_id = uuid4().hex
@@ -311,6 +313,10 @@ class ConsoleSession:
             self._last_rejected = rejected
             self._event(now, "warning", f"Telemetry rejected ({rejected} in total) : {telemetry['last_rejection']}")
         capture_visual(self, self.clock())
+        filming = self.recorder.filming
+        if filming is not None and self.recorder.active and self.vision is not None:
+            filming.record_vision(self.vision.frame(self), source_id=self.video_source_id,
+                                  preview=self.yaw_preview.state(self.clock()))
 
     def state(self, now=None):
         if now is None:
@@ -546,6 +552,8 @@ class ConsoleSession:
         self.close()
         if self.recorder._visual_enabled:
             await asyncio.to_thread(self.recorder.visual.wait, 3.)
+        if self.recorder.filming is not None:
+            await asyncio.to_thread(self.recorder.filming.stop, self.clock(), timeout=3.)
         task = self._reconnect_task
         if task is not None:
             await asyncio.shield(task)
