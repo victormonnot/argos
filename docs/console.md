@@ -125,6 +125,9 @@ reception age is independent of heartbeat reception age.
 
 ## Reading the interface
 
+- **Demo view**: a read-only camera presentation with the selected target,
+  Pocket mode and independent axis states. See [Demo view](demo-view.md) for
+  report meanings, unavailable states and freshness limits.
 - **Onboard camera**: the complete image, its source, and its
   reception age. It is hidden when reception expires, stops, or can no longer be
   verified.

@@ -33,6 +33,7 @@
   let yawPreviewClearing = false;
   let yawPreviewRevision = 0;
   let yawPreviewMessage = "";
+  let demoReportReceipt = null;
   let stopped = false;
   let mutation = null;
   let stateEpoch = 0;
@@ -50,11 +51,21 @@
   let pollResumeAt = null;
   const pollingAllowed = () => !mutation || mutation.startsWith("reconnect-");
   const expectedPause = (now = performance.now()) => !pollingAllowed() || (pollResumeAt !== null && now - pollResumeAt <= REQUEST_TIMEOUT_MS);
+  const demoActive = () => document.body.classList.contains("demo-mode");
+
+  function demoView(enabled) {
+    document.body.classList.toggle("demo-mode", enabled);
+    element("demo-summary").hidden = !enabled;
+    element("demo-button").setAttribute("aria-pressed", String(enabled));
+    text("demo-button", enabled ? "Exit demo" : "Demo view");
+    render();
+  }
 
   function showWorkspace(view, { opener = null, restore = false } = {}) {
     if (!["observation", "control", "messages", "sessions"].includes(view)) return;
     const previous = document.body.dataset.view;
     if (previous === view) return;
+    if (demoActive()) demoView(false);
     if (view === "messages") workspaceOpener = opener || document.activeElement;
     document.body.dataset.view = view;
     for (const [name, id] of [["observation", "workspace"], ["control", "workspace"], ["messages", "messages-workspace"], ["sessions", "sessions-workspace"]]) {
@@ -110,6 +121,7 @@
   }
 
   function openInspector(panel, section, opener) {
+    if (demoActive()) demoView(false);
     document.dispatchEvent(new Event("argos:show-observation"));
     const familyChanged = inspectorPanel !== panel || document.body.classList.contains("focus-mode");
     inspectorPanel = panel;
@@ -280,6 +292,7 @@
   }
 
   async function selectYawPreview(identity) {
+    if (demoActive()) return;
     const view = yawPreviewView();
     if (!yawImageRecent() || yawPreviewPending || yawPreviewClearing || view.revision < yawPreviewRevision
         || identity?.run_id !== current.run_id || identity.video_id !== current.video.source_id) return;
@@ -384,6 +397,80 @@
     text("yaw-preview-status", detail);
   }
 
+  function renderDemo(now) {
+    if (!demoActive()) return;
+    const elapsed = (stateTransitMs + Math.max(0, now - lastReceived)) / 1000;
+    const fresh = serviceFresh(now) && !requestFailure;
+    const runtime = current?.yaw_assist;
+    const sample = runtime?.pilot_sample;
+    // AP1 uses host monotonic time, whereas current.at uses console-run time.
+    // Use the server's age and locally age the first sighting of each receipt;
+    // never subtract timestamps from those two different clock origins.
+    // Match filming.assistance_view's 350 ms receipt limit between polls.
+    // This is a display limit, never a control input.
+    let reportAge = finite(sample?.received_at) && sample.received_at >= 0 && finite(runtime?.pilot_sample_age_s)
+      && runtime.pilot_sample_age_s >= 0 ? runtime.pilot_sample_age_s + elapsed : Infinity;
+    if (finite(reportAge)) {
+      if (demoReportReceipt?.runId !== current.run_id || demoReportReceipt.receivedAt !== sample.received_at) {
+        demoReportReceipt = { runId: current.run_id, receivedAt: sample.received_at, observedAt: now, initialAge: reportAge };
+      }
+      reportAge = Math.max(reportAge, demoReportReceipt.initialAge + (now - demoReportReceipt.observedAt) / 1000);
+    }
+    const reportFresh = fresh && runtime?.enabled === true && runtime.connected === true
+      && finite(runtime.status_age_s) && runtime.status_age_s >= 0 && runtime.status_age_s + elapsed < 1.5
+      && runtime.pilot_sample_fresh === true && runtime.pilot_sample_age_s >= 0
+      && sample?.schema_version === 1
+      && reportAge <= .35;
+    const assistance = reportFresh && runtime.assistance?.source === "pocket_lua_report"
+      && runtime.assistance.fresh === true ? runtime.assistance : null;
+    const modes = { M: "Manual", Y: "Yaw assist", D: "Yaw + apparent distance" };
+    const mode = assistance?.selected_mode;
+    const modeKnown = typeof mode === "string" && Object.hasOwn(modes, mode);
+    text("demo-mode", modeKnown ? modes[mode] : "Unavailable");
+
+    const preview = yawPreviewView();
+    const targetKnown = fresh && preview?.enabled && (preview.target_id === null
+      || (preview.run_id === current?.run_id && preview.video_id === current?.video.source_id));
+    const selected = targetKnown && preview.target_id !== null;
+    const analysisAge = selected && finite(preview.frame_received_at) && finite(preview.frame_age_s)
+      ? Math.max(runTime(now) - preview.frame_received_at, preview.frame_age_s + elapsed) : Infinity;
+    const imageRecent = selected && yawImageRecent(now) && analysisAge <= preview.frame_max_age_s
+      && preview.frame_received_at <= current.at;
+    const visible = imageRecent && preview.phase === "tracking"
+      && frame.vision.detections.some(item => item.track_id === preview.target_id && item.confidence >= .5);
+    const targetLost = selected && (preview.phase === "paused" || (imageRecent && !visible));
+    text("demo-target", selected ? `Person #${preview.target_id}` : targetKnown ? "No target selected" : "Unavailable");
+    text("demo-target-state", targetLost ? "Assistance paused" : visible ? "Visible in camera"
+      : selected ? "Visibility unavailable" : targetKnown ? "Select a target with Pocket" : "Target status unavailable");
+
+    const labels = { manual: "Manual", assisted: "Assisted", paused: "Paused", waiting: "Waiting", unknown: "Unavailable" };
+    for (const axis of ["yaw", "pitch", "roll", "throttle"]) {
+      const stick = reportFresh ? sample.sticks?.[axis] : null;
+      const stickValid = Number.isInteger(stick) && Math.abs(stick) <= 1024;
+      const pilotOnly = axis === "roll" || axis === "throttle";
+      let state = pilotOnly ? assistance && stickValid && modeKnown ? "manual" : "unknown"
+        : assistance?.[axis]?.state;
+      if (!modeKnown || typeof state !== "string" || !Object.hasOwn(labels, state)) state = "unknown";
+      // Target visibility and Lua reports arrive independently. Do not show a
+      // remembered/lost target as actively assisted while waiting for the next report.
+      if (state === "assisted") {
+        if (!["yaw", "pitch"].includes(axis) || !["Y", "D"].includes(mode)
+            || (axis === "pitch" && mode !== "D") || sample.lua_outputs?.[axis]?.valid !== true
+            || assistance[axis].valid !== true || !Number.isInteger(assistance[axis].value)
+            || Math.abs(assistance[axis].value) > (axis === "yaw" ? 205 : 51)
+            || assistance[axis].value !== sample.lua_outputs[axis].value) state = "unknown";
+        else if (targetLost) state = "paused";
+        else if (!visible) state = "unknown";
+      }
+      text(`demo-${axis}-state`, labels[state]);
+      element(`demo-${axis}-state`).dataset.state = state;
+      text(`demo-${axis}-stick`, stickValid
+        ? `${stick > 0 ? "+" : ""}${number.format(stick / 1024 * 100)}%` : "Unavailable");
+    }
+    text("demo-report-status", reportFresh ? `Pocket report · ${ageText(reportAge)} ago`
+      : sample ? "Pocket report unavailable · stale or invalid" : "Pocket report unavailable");
+  }
+
   function visionResult(header) {
     if (typeof header !== "string" || header.length > 32768) throw new Error("Missing or oversized vision metadata");
     const result = JSON.parse(header);
@@ -445,7 +532,7 @@
         box.addEventListener("pointerdown", () => { pressedIdentity = visionIdentities.get(box); });
         box.addEventListener("pointercancel", () => { pressedIdentity = null; });
         box.addEventListener("click", event => {
-          if (box.dataset.selectable !== "true" || layer.hidden) return;
+          if (demoActive() || box.dataset.selectable !== "true" || layer.hidden) return;
           event.preventDefault();
           const identity = event.detail === 0 ? visionIdentities.get(box) : pressedIdentity || visionIdentities.get(box);
           pressedIdentity = null;
@@ -465,7 +552,7 @@
   function renderVisionSelection() {
     const visible = !element("vision-layer").hidden;
     const preview = document.body.dataset.view === "observation";
-    const allowed = visible && (preview ? yawImageRecent() && !yawPreviewPending && !yawPreviewClearing
+    const allowed = !demoActive() && visible && (preview ? yawImageRecent() && !yawPreviewPending && !yawPreviewClearing
       : visionSelection.allowed && document.body.dataset.view === "control");
     for (const box of element("vision-layer").children) {
       const selected = Number(box.dataset.trackId) === (preview ? yawPreviewTarget : visionSelection.target_id);
@@ -1045,6 +1132,7 @@
       clearFrame();
     }
     renderVision(fresh, now);
+    renderDemo(now);
     document.dispatchEvent(new CustomEvent("argos:control-state", { detail: {
       control: current?.control ?? null, fresh, run_id: current?.run_id ?? null,
       environment: current?.environment ?? null,
@@ -1258,6 +1346,7 @@
     }
   });
   element("focus-button").addEventListener("click", () => focusView(!document.body.classList.contains("focus-mode")));
+  element("demo-button").addEventListener("click", () => demoView(!demoActive()));
   element("vision-toggle").addEventListener("change", () => {
     visionEnabled = element("vision-toggle").checked;
     if (!visionEnabled) void clearYawPreview();

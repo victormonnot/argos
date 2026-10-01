@@ -539,10 +539,55 @@ body.focus-mode .inspector { display:none; }
 /* Keep target selection usable on a laptop with the extra preview readout.
    Telemetry may scroll below it; consoles without preview keep their layout. */
 @media(min-width:761px) and (max-height:780px) {
-  body[data-view=observation]:has(#yaw-preview:not([hidden])) { height:auto; min-height:100dvh; overflow:auto; }
-  body[data-view=observation]:has(#yaw-preview:not([hidden])) .workspace { flex:none; }
-  body[data-view=observation]:has(#yaw-preview:not([hidden])) .camera-panel { align-self:start; }
-  body[data-view=observation]:has(#yaw-preview:not([hidden])) .camera-stage { min-height:230px; }
+  body[data-view=observation]:not(.demo-mode):has(#yaw-preview:not([hidden])) { height:auto; min-height:100dvh; overflow:auto; }
+  body[data-view=observation]:not(.demo-mode):has(#yaw-preview:not([hidden])) .workspace { flex:none; }
+  body[data-view=observation]:not(.demo-mode):has(#yaw-preview:not([hidden])) .camera-panel { align-self:start; }
+  body[data-view=observation]:not(.demo-mode):has(#yaw-preview:not([hidden])) .camera-stage { min-height:230px; }
+}
+
+/* Demo is a read-only presentation of the same camera and reported state. */
+body.demo-mode .workspace { grid-template-columns:minmax(0,1fr); }
+body.demo-mode .camera-panel { display:flex; flex-direction:column; }
+body.demo-mode .camera-stage { flex:1; min-height:230px; }
+body.demo-mode .inspector,
+body.demo-mode .reception-bar,
+body.demo-mode .measurements,
+body.demo-mode .yaw-preview,
+body.demo-mode .vision-toggle,
+body.demo-mode #focus-button,
+body.demo-mode #vision-status,
+body.demo-mode .app-footer { display:none; }
+body.demo-mode .vision-box:not([data-selected=true]) { display:none; }
+body.demo-mode .camera-header,
+body.demo-mode .camera-footer { flex-shrink:0; }
+.demo-summary { flex-shrink:0; padding:12px 20px; border-top:1px solid var(--line); background:var(--surface); }
+.demo-context { display:grid; grid-template-columns:1fr 1fr; gap:8px 24px; margin-bottom:10px; }
+.demo-context>div { display:flex; align-items:baseline; flex-wrap:wrap; gap:3px 12px; min-width:0; }
+.demo-context strong { font-size:16px; font-weight:500; }
+.demo-context>div>span:last-child { color:var(--muted); font-size:11px; }
+.demo-axes { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border:1px solid var(--line); }
+.demo-axes>div { min-width:0; padding:8px 12px; border-right:1px solid var(--line); }
+.demo-axes>div:last-child { border-right:0; }
+.demo-axes dt { display:inline; color:var(--muted); font-size:12px; }
+.demo-axes dd:not(.demo-stick) { display:inline; margin-left:10px; font-size:16px; }
+.demo-axes [data-state=assisted] { color:#c4ddba; }
+.demo-axes [data-state=paused],.demo-axes [data-state=waiting] { color:var(--warning); }
+.demo-axes [data-state=unknown] { color:var(--muted); }
+.demo-stick { margin-top:4px; color:var(--muted); font-size:11px; }
+.demo-stick span { margin-left:8px; color:var(--ink); font-family:var(--mono); }
+.demo-note { margin-top:7px; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
+#demo-report-status { display:inline-block; margin-right:14px; }
+#demo-report-status+.demo-note { display:inline; }
+body[data-view=control] #demo-button { display:none; }
+@media(max-width:760px) {
+  body.demo-mode .camera-stage { flex:none; height:clamp(300px,55dvh,650px); }
+  .demo-summary { padding:12px; }
+  .demo-context { grid-template-columns:1fr; }
+  .demo-axes { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .demo-axes>div:nth-child(2) { border-right:0; }
+  .demo-axes>div:nth-child(n+3) { border-top:1px solid var(--line); }
+  .demo-axes dd:not(.demo-stick) { display:block; margin-left:0; }
+  .demo-stick span { display:block; margin-left:0; }
 }
 
 @media(prefers-reduced-motion:reduce) {

@@ -113,6 +113,9 @@
               <input aria-describedby="vision-status" disabled id="vision-toggle" type="checkbox"/>
               <span>Person detection</span>
             </label>
+            <button aria-controls="demo-summary" aria-pressed="false" class="button button-quiet" id="demo-button" type="button">
+              Demo view
+            </button>
             <button aria-pressed="false" class="button button-quiet" id="focus-button" type="button">
               Expanded view
             </button>
@@ -156,6 +159,20 @@
             <span id="camera-size"></span>
           </span>
         </div>
+        <section aria-label="Demo overview" class="demo-summary" hidden id="demo-summary">
+          <div class="demo-context">
+            <div><span class="control-label">Selected target</span><strong id="demo-target">Unavailable</strong><span id="demo-target-state">Target status unavailable</span></div>
+            <div><span class="control-label">Selected mode</span><strong id="demo-mode">Unavailable</strong><span>Pocket selection · read only</span></div>
+          </div>
+          <dl aria-label="Axis states and pilot sticks" class="demo-axes">
+            <div><dt>Yaw</dt><dd id="demo-yaw-state" data-state="unknown">Unavailable</dd><dd class="demo-stick">Pilot stick <span id="demo-yaw-stick">Unavailable</span></dd></div>
+            <div><dt>Pitch</dt><dd id="demo-pitch-state" data-state="unknown">Unavailable</dd><dd class="demo-stick">Pilot stick <span id="demo-pitch-stick">Unavailable</span></dd></div>
+            <div><dt>Roll</dt><dd id="demo-roll-state" data-state="unknown">Unavailable</dd><dd class="demo-stick">Pilot stick <span id="demo-roll-stick">Unavailable</span></dd></div>
+            <div><dt>Throttle</dt><dd id="demo-throttle-state" data-state="unknown">Unavailable</dd><dd class="demo-stick">Pilot stick <span id="demo-throttle-stick">Unavailable</span></dd></div>
+          </dl>
+          <p class="demo-note" id="demo-report-status">Pocket report unavailable</p>
+          <p class="demo-note">Axis states reported by Pocket · pilot sticks before mixing · aircraft response is not measured here.</p>
+        </section>
         <section aria-labelledby="yaw-preview-title" class="yaw-preview" hidden id="yaw-preview">
           <div class="yaw-preview-heading">
             <h3 id="yaw-preview-title"><span id="yaw-preview-label">Yaw preview</span> <span id="yaw-preview-badge">No commands sent</span></h3>
