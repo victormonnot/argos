@@ -23,6 +23,7 @@ local leaseIssued = nil
 local lastAccepted = nil
 local enabledAt = nil
 local lastStatus = nil
+local lastPilot = nil
 local lastHello = nil
 local lastClock = nil
 local sawMiddle = false
@@ -336,7 +337,26 @@ local function publish(now)
   pending = nil
 end
 
-local function status(now)
+local function pilotSample(now, rud, ele)
+  if lastPilot ~= nil and elapsed(now, lastPilot) < 10 then return end
+  lastPilot = now
+  -- Optional pre-mix/script-output observation; never native mixer/FC proof.
+  -- Bounded to 96 bytes and 10 Hz, including failed optional reads/writes.
+  pcall(function()
+    local ail, thr = getValue("ail"), getValue("thr")
+    for _, source in ipairs({ail, ele, thr, rud}) do
+      if type(source) ~= "number" or math.type(source) ~= "integer"
+          or source < -1024 or source > 1024 then return end
+    end
+    if ail == nil or ele == nil or thr == nil or rud == nil then return end
+    serialWrite(string.format("AP1 %s %d %d %d %s%s%s%s%s%d%d %d %d %d %d %d %d\n",
+      session or "00000000", generation, ticket, sequence, state, cause,
+      mode, yawAxis.phase, pitchAxis.phase, fresh > 0 and 1 or 0, pitchFresh > 0 and 1 or 0,
+      ail, ele, thr, rud, value, pitch))
+  end)
+end
+
+local function status(now, rud, ele)
   if lastHello == nil or elapsed(now, lastHello) >= 100 then
     if not write("ARGOS_DISTANCE_STREAM_V3\n") then return end
     lastHello = now
@@ -351,7 +371,10 @@ local function status(now)
       tickets[5] = nil
     end
     if write(string.format("DY3 %s %d %d %d %s %s %s %s %s\n", session or "00000000",
-        generation, ticket, sequence, state, cause, mode, yawAxis.phase, pitchAxis.phase)) then lastStatus = now end
+        generation, ticket, sequence, state, cause, mode, yawAxis.phase, pitchAxis.phase)) then
+      lastStatus = now
+      pilotSample(now, rud, ele)
+    end
   end
 end
 
@@ -385,7 +408,7 @@ local function run()
   authority(now, sc, rud, ele, sb)
   readBatch(now)
   publish(now)
-  status(now)
+  status(now, rud, ele)
   -- Seq is a bounded native-gate marker; the full ACK sequence is on the wire.
   return value, fresh, sequence > 0 and 1024 or 0, heartbeat, pitch, pitchFresh
 end

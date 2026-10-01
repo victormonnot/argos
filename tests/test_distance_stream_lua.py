@@ -42,11 +42,11 @@ class Port:
         self.writes.append(packet)
         return len(packet)
 
-    def callback(self, tick, *, sc=1024, ele=0, rud=0, sb=-1024, packet=None):
+    def callback(self, tick, *, sc=1024, ele=0, rud=0, ail=0, thr=-1024, sb=-1024, packet=None):
         if packet is None:
             packet = bytes(self.pending)
             self.pending.clear()
-        request = f"{tick} {sc} {rud} {ele} {sb} 0 {packet.hex() or '-'}\n"
+        request = f"{tick} {sc} {rud} {ele} {ail} {thr} {sb} 0 {packet.hex() or '-'}\n"
         self.process.stdin.write(request)
         self.process.stdin.flush()
         assert select.select([self.process.stdout], [], [], 5.)[0], "Lua driver did not respond"
@@ -85,9 +85,10 @@ class Pair:
                                    nonce=lambda: f"{next(serial):08x}")
         self.key = ("run", "camera", 7, 1, "/dev/video2")
 
-    def step(self, tick, *, sc=1024, ele=0, rud=0, sb=-1024, valid=True, pitch_valid=True, mode="D"):
+    def step(self, tick, *, sc=1024, ele=0, rud=0, ail=0, thr=-1024, sb=-1024,
+             valid=True, pitch_valid=True, mode="D"):
         self.now = tick / 100
-        output = self.port.callback(tick, sc=sc, ele=ele, rud=rud, sb=sb)
+        output = self.port.callback(tick, sc=sc, ele=ele, rud=rud, ail=ail, thr=thr, sb=sb)
         demand = DistanceDemand(75, valid, self.key, self.now + .4, "tracking",
                                 pitch=40, pitch_valid=pitch_valid, mode=mode)
         self.host.step(SourceSample(demand, self.now))
@@ -100,6 +101,34 @@ class Pair:
             self.step(tick, sc=1024 if mode == "D" else -1024, mode=mode)
         assert self.port.output[:2] == (75, 1024)
         assert self.port.output[4:] == ((40, 1024) if mode == "D" else (0, 0))
+
+
+def test_real_pilot_sample_distinguishes_axis_takeover_invalid_pitch_and_lease_expiry():
+    with actual_radio() as port:
+        pair = Pair(port)
+        pair.arm()
+        for tick in range(70, 120, 5):
+            pair.step(tick, rud=-1024, ele=20, ail=-587, thr=813)
+        pilot = pair.host.snapshot()["pilot_sample"]
+        assert pilot["sticks"] == dict(roll=-587, pitch=20, throttle=813, yaw=-1024)
+        assert pilot["state"] == "A" and pilot["mode"] == "D" and pilot["yaw_phase"] == "M"
+        assert pilot["lua_outputs"] == {"yaw": dict(valid=False, value=0),
+                                         "pitch": dict(valid=True, value=40)}
+        for tick in range(120, 175, 5):
+            pair.step(tick, pitch_valid=False)
+        pilot = pair.host.snapshot()["pilot_sample"]
+        assert pilot["state"] == "A" and pilot["pitch_phase"] == "A"
+        assert pilot["lua_outputs"] == {"yaw": dict(valid=True, value=75),
+                                         "pitch": dict(valid=False, value=0)}
+        # No fresh host packet: callback expiry is observed, never converted
+        # into valid output just because the last accepted sequence is nonzero.
+        port.callback(220, packet=b"")
+        pair.now = 2.2
+        pair.host._receive(pair.now)
+        pilot = pair.host.snapshot()["pilot_sample"]
+        assert pilot["cause"] == "E" and pilot["ack"] > 0
+        assert not pilot["lua_outputs"]["yaw"]["valid"]
+        assert not pilot["lua_outputs"]["pitch"]["valid"]
 
 
 def test_real_python_and_lua_distance_validity_and_full_pitch_resume():

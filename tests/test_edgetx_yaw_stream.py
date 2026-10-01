@@ -121,6 +121,35 @@ def test_manual_greeting_and_explicit_radio_arm_precede_any_commands():
     assert radio.timeout == 0 and radio.write_timeout == .02
 
 
+def test_command_evidence_records_only_completed_writes_and_invalid_means_zero():
+    host, radio, clock = setup()
+    assert host.snapshot()["last_sent_command"] is None
+    arm(host, radio, clock)
+    first = host.snapshot()["last_sent_command"]
+    assert first == dict(session=host.session, generation=radio.gen, sequence=1, mode="Y",
+                         yaw=dict(valid=True, value=64), pitch=dict(valid=False, value=0),
+                         frame_sequence=None, write_finished_at=clock())
+    radio.out_waiting = 20
+    tick(host, radio, clock, value=sample(clock, value=-120))
+    assert host.snapshot()["last_sent_command"] == first
+    radio.out_waiting = 0
+    tick(host, radio, clock, value=sample(clock, value=-120, valid=False))
+    sent = host.snapshot()["last_sent_command"]
+    assert sent["yaw"] == dict(valid=False, value=0) and sent["sequence"] == 2
+    sent["yaw"]["value"] = 999
+    assert host.last_sent_command["yaw"]["value"] == 0
+    host._rotate(clock(), "test reconnect")
+    assert host.snapshot()["last_sent_command"] is None
+
+
+def test_partial_command_write_is_not_published_as_a_sent_command():
+    host, radio, clock = setup()
+    radio.partial = True
+    with pytest.raises(stream.ProbeError, match="partial"):
+        arm(host, radio, clock)
+    assert host.failed and host.snapshot()["last_sent_command"] is None
+
+
 def test_continues_for_minutes_without_session_or_command_count_limit():
     host, radio, clock = setup()
     arm(host, radio, clock)

@@ -7,6 +7,7 @@ mixer gates are required separately. Run with ``python -m ... --port DEVICE``.
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from dataclasses import dataclass
 import math
 import re
@@ -15,7 +16,8 @@ import sys
 import threading
 import time
 
-from .edgetx_probe import Lines, ProbeError, open_port
+from .edgetx_probe import ProbeError, open_port
+from .edgetx_pilot_sample import PilotLines, PilotObserver
 from .yaw_stream_source import MAX_VALUE, YawDemand, YawSource
 
 
@@ -187,7 +189,8 @@ class YawStream:
         self.clock = clock
         self.nonce = nonce
         self.request_selection = request_selection
-        self.lines = Lines()
+        self.lines = PilotLines()
+        self.pilot = PilotObserver()
         self.port.timeout = 0
         self.port.write_timeout = WRITE_TIMEOUT
         self.started_at = self.last_time = clock()
@@ -215,6 +218,7 @@ class YawStream:
         self.selection_pending = False
         self.selection_failed = False
         self.last_sent_valid = None
+        self.last_sent_command = None
         self.a_to_t_total = 0
         self.a_to_t_causes = {}
         self._timing_pending = {}
@@ -224,13 +228,14 @@ class YawStream:
     def snapshot(self):
         """Bounded status for the local UI/logger; accepted state is radio-reported."""
         status = self.status
-        return dict(connected=not self.failed and self.greeted, reason=self.reason,
+        return dict(**self.pilot.snapshot(), connected=not self.failed and self.greeted, reason=self.reason,
                     session=self.session, radio_state=status.state if status else None,
                     radio_cause=status.cause if status else None,
                     generation=status.generation if status else None,
                     ticket=status.ticket if status else None,
                     ack=status.ack if status else None, sent_sequence=self.sent_sequence,
                     last_sent_valid=self.last_sent_valid, selection_pending=self.selection_pending,
+                    last_sent_command=deepcopy(self.last_sent_command),
                     selection_request=self.selection_request, selection_failed=self.selection_failed,
                     radio_a_to_t_total=self.a_to_t_total,
                     radio_a_to_t_causes=dict(self.a_to_t_causes),
@@ -325,6 +330,7 @@ class YawStream:
                 or self.session in ("00000000", previous_session)):
             raise ProbeError("invalid session nonce")
         self.status = None
+        self.pilot.clear()
         self.last_status_at = None
         self.last_ack_at = None
         self.pending_since = None
@@ -335,6 +341,7 @@ class YawStream:
         self.pending_begin = True
         self._cancel_selection()
         self.last_sent_valid = None
+        self.last_sent_command = None
         self._clear_timing()
         self.reason = reason + "; SC middle then SC up required"
 
@@ -360,6 +367,10 @@ class YawStream:
                     continue
                 # An unrelated serial device gets no writes before our greeting.
                 if not self.greeted:
+                    continue
+                if line.startswith(b"AP1"):
+                    self.pilot.observe(line, status=self.status, session=self.session,
+                                       pending_begin=self.pending_begin, received_at=self.clock())
                     continue
                 status = parse_status(line)
                 if status.session == "00000000":
@@ -543,6 +554,9 @@ class YawStream:
                 self.sent_sequence = seq
                 self.last_sent_valid = valid
                 finished = self._now()
+                self.last_sent_command = dict(session=self.session, generation=self.status.generation,
+                    sequence=seq, mode="Y", yaw=dict(valid=valid, value=value),
+                    pitch=dict(valid=False, value=0), frame_sequence=frame, write_finished_at=finished)
                 self._last_command_at = finished
                 self.next_send_at = finished + INTERVAL  # no catch-up bursts
                 if new_frame:

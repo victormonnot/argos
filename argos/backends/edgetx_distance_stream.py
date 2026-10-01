@@ -6,6 +6,7 @@ and explicit radio mode. A separate model and native pitch gate are required.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import math
 import re
@@ -13,6 +14,7 @@ import secrets
 import time
 
 from .edgetx_probe import ProbeError, open_port
+from .edgetx_pilot_sample import PilotObserver
 from .edgetx_yaw_stream import SourceSample, SelectionResult
 from .yaw_stream_source import MAX_VALUE
 
@@ -111,6 +113,7 @@ class DistanceStream:
         self.nonce = nonce
         self.request_selection = request_selection
         self.lines = Lines()
+        self.pilot = PilotObserver()
         self.port.timeout = 0
         self.port.write_timeout = WRITE_TIMEOUT
         self.started_at = self.last_time = clock()
@@ -138,6 +141,7 @@ class DistanceStream:
         self.selection_pending = False
         self.selection_failed = False
         self.last_sent_valid = None
+        self.last_sent_command = None
         self.last_sent_pitch = 0
         self.last_sent_pitch_valid = False
         self.a_to_t_total = 0
@@ -149,7 +153,7 @@ class DistanceStream:
     def snapshot(self):
         """Bounded status for the local UI/logger; accepted state is radio-reported."""
         status = self.status
-        return dict(connected=not self.failed and self.greeted, reason=self.reason,
+        return dict(**self.pilot.snapshot(), connected=not self.failed and self.greeted, reason=self.reason,
                     session=self.session, radio_state=status.state if status else None,
                     radio_cause=status.cause if status else None,
                     radio_mode=status.mode if status else None,
@@ -161,6 +165,7 @@ class DistanceStream:
                     ticket=status.ticket if status else None,
                     ack=status.ack if status else None, sent_sequence=self.sent_sequence,
                     last_sent_valid=self.last_sent_valid, selection_pending=self.selection_pending,
+                    last_sent_command=deepcopy(self.last_sent_command),
                     selection_request=self.selection_request, selection_failed=self.selection_failed,
                     radio_a_to_t_total=self.a_to_t_total,
                     radio_a_to_t_causes=dict(self.a_to_t_causes),
@@ -255,6 +260,7 @@ class DistanceStream:
                 or self.session in ("00000000", previous_session)):
             raise ProbeError("invalid session nonce")
         self.status = None
+        self.pilot.clear()
         self.last_status_at = None
         self.last_ack_at = None
         self.pending_since = None
@@ -265,6 +271,7 @@ class DistanceStream:
         self.pending_begin = True
         self._cancel_selection()
         self.last_sent_valid = None
+        self.last_sent_command = None
         self.last_sent_pitch = 0
         self.last_sent_pitch_valid = False
         self._clear_timing()
@@ -292,6 +299,10 @@ class DistanceStream:
                     continue
                 # An unrelated serial device gets no writes before our greeting.
                 if not self.greeted:
+                    continue
+                if line.startswith(b"AP1"):
+                    self.pilot.observe(line, status=self.status, session=self.session,
+                                       pending_begin=self.pending_begin, received_at=self.clock())
                     continue
                 status = parse_status(line)
                 if status.session == "00000000":
@@ -493,6 +504,10 @@ class DistanceStream:
                 self.last_sent_pitch = pitch
                 self.last_sent_pitch_valid = pitch_valid
                 finished = self._now()
+                self.last_sent_command = dict(session=self.session, generation=self.status.generation,
+                    sequence=seq, mode=self.status.mode, yaw=dict(valid=valid, value=value),
+                    pitch=dict(valid=pitch_valid, value=pitch), frame_sequence=frame,
+                    write_finished_at=finished)
                 self._last_command_at = finished
                 self.next_send_at = finished + INTERVAL  # no catch-up bursts
                 if new_frame:

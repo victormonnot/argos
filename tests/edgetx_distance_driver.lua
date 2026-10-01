@@ -12,10 +12,11 @@ local function hex(text)
   return (text:gsub(".", function(c) return string.format("%02x", string.byte(c)) end))
 end
 for line in io.lines() do
-  local tick, sc, rud, ele, sb, takeover, packet = line:match(
-    "^(%d+) ([%-]?%d+) ([%-]?%d+) ([%-]?%d+) ([%-]?%d+) ([01]) ([0-9a-f%-]+)$")
+  local tick, sc, rud, ele, ail, thr, sb, takeover, packet = line:match(
+    "^(%d+) ([%-]?%d+) ([%-]?%d+) ([%-]?%d+) ([%-]?%d+) ([%-]?%d+) ([%-]?%d+) ([01]) ([0-9a-f%-]+)$")
   assert(tick, "bad test step")
   r.sc, r.rud, r.ele, r.sb, r.native = tonumber(sc), tonumber(rud), tonumber(ele), tonumber(sb), takeover == "1"
+  r.ail, r.thr = tonumber(ail), tonumber(thr)
   local value, fresh, sequence, heartbeat, pitch, pitchFresh = r:step(unhex(packet), tonumber(tick))
   local replies = {}
   for i = written + 1, #r.writes do replies[#replies + 1] = r.writes[i] end

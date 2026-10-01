@@ -16,9 +16,11 @@ local function hex(text)
 end
 
 for line in io.lines() do
-  local tick, sc, rud, takeover, packet = line:match("^(%d+) ([%-]?%d+) ([%-]?%d+) ([01]) ([0-9a-f%-]+)$")
+  local tick, sc, rud, ele, ail, thr, takeover, packet = line:match(
+    "^(%d+) ([%-]?%d+) ([%-]?%d+) ([%-]?%d+) ([%-]?%d+) ([%-]?%d+) ([01]) ([0-9a-f%-]+)$")
   assert(tick, "bad test step")
   r.sc, r.rud, r.native = tonumber(sc), tonumber(rud), takeover == "1"
+  r.ele, r.ail, r.thr = tonumber(ele), tonumber(ail), tonumber(thr)
   local value, fresh, sequence, heartbeat = r:step(unhex(packet), tonumber(tick))
   local replies = {}
   for i = written + 1, #r.writes do replies[#replies + 1] = r.writes[i] end

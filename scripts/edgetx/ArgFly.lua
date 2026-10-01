@@ -21,6 +21,7 @@ local leaseIssued = nil
 local lastAccepted = nil
 local enabledAt = nil
 local lastStatus = nil
+local lastPilot = nil
 local lastHello = nil
 local lastClock = nil
 local sawMiddle = false
@@ -282,7 +283,28 @@ local function publish(now)
   pending = nil
 end
 
-local function status(now)
+local function pilotSample(now, rud)
+  if lastPilot ~= nil and elapsed(now, lastPilot) < 10 then return end
+  lastPilot = now
+  -- Optional, <=10 Hz pre-mix observation. Failures never alter command state.
+  -- AP1 alone has a 96-byte output bound; commands/read budgets remain 64.
+  pcall(function()
+    local ail, ele, thr = getValue("ail"), getValue("ele"), getValue("thr")
+    for _, source in ipairs({ail, ele, thr, rud}) do
+      if type(source) ~= "number" or math.type(source) ~= "integer"
+          or source < -1024 or source > 1024 then return end
+    end
+    -- Check missing values explicitly: ipairs ends at the first nil.
+    if ail == nil or ele == nil or thr == nil or rud == nil then return end
+    local enabled = state == "T" or state == "A"
+    serialWrite(string.format("AP1 %s %d %d %d %s%s%s%sN%d0 %d %d %d %d %d 0\n",
+      session or "00000000", generation, ticket, sequence, state, cause,
+      enabled and "Y" or "N", enabled and "A" or "N", fresh > 0 and 1 or 0,
+      ail, ele, thr, rud, value))
+  end)
+end
+
+local function status(now, rud)
   if lastHello == nil or elapsed(now, lastHello) >= 100 then
     if not write("ARGOS_YAW_STREAM_V3\n") then return end
     lastHello = now
@@ -297,7 +319,10 @@ local function status(now)
       tickets[5] = nil
     end
     if write(string.format("AY1 %s %d %d %d %s %s\n", session or "00000000",
-        generation, ticket, sequence, state, cause)) then lastStatus = now end
+        generation, ticket, sequence, state, cause)) then
+      lastStatus = now
+      pilotSample(now, rud)
+    end
   end
 end
 
@@ -331,7 +356,7 @@ local function run()
   authority(now, sc, rud, native)
   readBatch(now)
   publish(now)
-  status(now)
+  status(now, rud)
   -- Seq is a bounded native-gate marker; the full ACK sequence is on the wire.
   return value, fresh, sequence > 0 and 1024 or 0, heartbeat
 end

@@ -272,6 +272,36 @@ def test_buffered_output_only_sends_latest_pitch_once_queue_drains():
     assert radio.commands()[-1][1][-2:] == ["1", "-12"]
 
 
+def test_command_evidence_distinguishes_sent_values_from_queued_and_invalid_pitch():
+    host, radio, clock = setup()
+    assert host.snapshot()["last_sent_command"] is None
+    enable(host, radio, clock, value=sample(clock, frame=10))
+    first = host.snapshot()["last_sent_command"]
+    assert first == dict(session=host.session, generation=radio.gen, sequence=1, mode="D",
+                         yaw=dict(valid=True, value=64), pitch=dict(valid=True, value=40),
+                         frame_sequence=10, write_finished_at=clock())
+    radio.out_waiting = 20
+    tick(host, radio, clock, sample(clock, pitch=-30))
+    assert host.snapshot()["last_sent_command"] == first
+    radio.out_waiting = 0
+    tick(host, radio, clock, sample(clock, pitch=-30, pitch_valid=False))
+    sent = host.snapshot()["last_sent_command"]
+    assert sent["yaw"] == dict(valid=True, value=64)
+    assert sent["pitch"] == dict(valid=False, value=0)
+    sent["pitch"]["value"] = 123
+    assert host.last_sent_command["pitch"]["value"] == 0
+    host._rotate(clock(), "test reconnect")
+    assert host.snapshot()["last_sent_command"] is None
+
+
+def test_partial_distance_write_is_not_published_as_a_sent_command():
+    host, radio, clock = setup()
+    radio.partial = True
+    with pytest.raises(stream.ProbeError, match="partial"):
+        enable(host, radio, clock)
+    assert host.failed and host.snapshot()["last_sent_command"] is None
+
+
 def test_new_frame_and_pitch_withdrawal_preserve_minimum_spacing():
     host, radio, clock = setup()
     enable(host, radio, clock, value=sample(clock, frame=1))

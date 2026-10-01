@@ -284,4 +284,30 @@ test("same-clock reads still distinguish old tickets from post-barrier tickets",
   r:set(7,80,true,30,new,30,true); eq(r.output[2],1024); eq(r.output[6],1024)
 end)
 
+test("optional pilot read and write failures preserve both outputs and stick priority",function()
+  for _,field in ipairs({"pilotReadError","pilotWriteError","badAxis","missingAxis"}) do
+    local r=active()
+    if field == "badAxis" then r.ail=1025
+    elseif field == "missingAxis" then r.thr=nil
+    else r[field]=true end
+    local before=#r.writes
+    r:set(2,-80,true,10,nil,-30,true)
+    eq(r.output[1],-80); eq(r.output[5],-30); eq(r:latestStatus().sequence,2)
+    for i=before+1,#r.writes do assert(r.writes[i]:sub(1,4)~="AP1 ") end
+    r.rud=1024; r:set(3,-80,true,20,nil,-30,true)
+    eq(r.output[2],0); eq(r.output[5],-30); eq(r.output[6],1024)
+    r:step(nil,50); eq(r.output[2],0); eq(r.output[6],0)
+    eq(r:latestStatus().cause,"E")
+  end
+end)
+test("pilot sampling stays bounded during independent axis transitions",function()
+  local r=active(); local before=#r.writes
+  for tick=1,20 do
+    r:set(tick+1,tick%2==0 and 40 or 0,tick%2==0,tick,nil,0,false)
+  end
+  local samples=0
+  for i=before+1,#r.writes do if r.writes[i]:sub(1,4)=="AP1 " then samples=samples+1 end end
+  eq(samples,2); eq(r.output[1],40); eq(r.output[6],0)
+end)
+
 print("passed "..count.." distance Lua tests")

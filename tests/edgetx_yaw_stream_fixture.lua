@@ -27,7 +27,7 @@ end
 local function radio(options)
   options = options or {}
   local r = {
-    now = options.now or 0, sc = options.sc or 0, rud = 0, native = false,
+    now = options.now or 0, sc = options.sc or 0, rud = 0, ele = 0, ail = 0, thr = -1024, native = false,
     name = options.name or "ARGOS FLY", flip = -1024,
     internal = {Type = 5, firstChannel = 0, channelsCount = 16}, external = {Type = 0},
     input = "", writes = {}, reads = 0, lastReads = 0, readError = false,
@@ -42,6 +42,12 @@ local function radio(options)
     end,
     getValue = function(source)
       if source == "sc" then return r.sc end
+      if source == "ail" then
+        if r.pilotReadError then error("optional pilot read failed") end
+        return r.ail
+      end
+      if source == "ele" then return r.ele end
+      if source == "thr" then return r.thr end
       equal(source, "rud", "only raw yaw/SC sources may be accessed")
       return r.rud
     end,
@@ -76,7 +82,8 @@ local function radio(options)
     end,
     serialWrite = function(line)
       if r.writeError then error("write failed") end
-      assert(type(line) == "string" and #line <= 64, "bounded wire output")
+      if r.pilotWriteError and line:sub(1, 4) == "AP1 " then error("optional pilot write failed") end
+      assert(type(line) == "string" and #line <= (line:sub(1, 4) == "AP1 " and 96 or 64), "bounded wire output")
       r.writes[#r.writes + 1] = line
     end,
   }

@@ -48,11 +48,11 @@ class LuaPort:
         self.writes.append(packet)
         return len(packet)
 
-    def callback(self, tick, *, sc=-1024, rud=0, takeover=False, packet=None):
+    def callback(self, tick, *, sc=-1024, rud=0, ele=0, ail=0, thr=-1024, takeover=False, packet=None):
         if packet is None:
             packet = bytes(self.pending)
             self.pending.clear()
-        request = f"{tick} {sc} {rud} {int(takeover)} {packet.hex() or '-'}\n"
+        request = f"{tick} {sc} {rud} {ele} {ail} {thr} {int(takeover)} {packet.hex() or '-'}\n"
         self.process.stdin.write(request)
         self.process.stdin.flush()
         assert select.select([self.process.stdout], [], [], 5.)[0], "Lua test driver did not respond"
@@ -100,9 +100,10 @@ class Pair:
                               request_selection=self.requests.append if radio_selection else None)
         self.key = ("run", "camera", 7, 1, "/dev/video2")
 
-    def step(self, tick, *, sc=-1024, rud=0, takeover=False, valid=True, value=75):
+    def step(self, tick, *, sc=-1024, rud=0, ele=0, ail=0, thr=-1024,
+             takeover=False, valid=True, value=75):
         self.now = tick / 100
-        output = self.port.callback(tick, sc=sc, rud=rud, takeover=takeover)
+        output = self.port.callback(tick, sc=sc, rud=rud, ele=ele, ail=ail, thr=thr, takeover=takeover)
         demand = YawDemand(value if valid else 0, valid, self.key,
                            self.now + .4 if valid else self.now,
                            "tracking" if valid else "target_paused")
@@ -115,6 +116,27 @@ class Pair:
         for tick in range(20, 60, 5):
             self.step(tick)
         assert self.port.output[:2] == (75, 1024)
+
+
+def test_real_lua_reports_four_pre_mix_sticks_current_outputs_and_manual_takeover():
+    with actual_radio() as port:
+        pair = Pair(port)
+        pair.arm()
+        for tick in range(60, 110, 5):
+            assert pair.step(tick, rud=40, ele=-731, ail=624, thr=913)[:2] == (75, 1024)
+        snapshot = pair.host.snapshot()
+        pilot = snapshot["pilot_sample"]
+        assert pilot["sticks"] == dict(roll=624, pitch=-731, throttle=913, yaw=40)
+        assert pilot["lua_outputs"] == {"yaw": dict(valid=True, value=75),
+                                         "pitch": dict(valid=False, value=0)}
+        assert pilot["ack"] <= snapshot["ack"] and pilot["mode"] == "Y"
+        assert pilot["session"] == pair.host.session and snapshot["pilot_sample_count"] > 0
+        for tick in range(110, 160, 5):
+            assert pair.step(tick, rud=-1024)[:2] == (0, 0)
+        pilot = pair.host.snapshot()["pilot_sample"]
+        assert pilot["sticks"]["yaw"] == -1024
+        assert pilot["state"] == "F" and pilot["cause"] == "P"
+        assert pilot["lua_outputs"]["yaw"] == dict(valid=False, value=0)
 
 
 def test_actual_lua_stream_exceeds_old_ceiling_and_recovers_pause_and_manual_takeover():
