@@ -880,14 +880,25 @@
     } else if (visible && yaw === "assisted" && pitch === "assisted") {
       const aligned = Math.abs(error) <= preview.deadband && heightRatio !== null && Math.round(heightRatio * 100) === 100
         && corrections.yaw === 0 && corrections.pitch === 0;
-      scene = aligned ? "zero" : "assist"; title = aligned ? "The framing lines up." : "Keep the subject centered.";
-      subtitle = aligned ? "Assistance active · zero correction" : heightRatio !== null ? "Keep the same size in the frame." : "Size reference unavailable.";
+      scene = aligned ? "zero" : "assist"; title = aligned ? "The framing lines up." : "Keeping the subject centered.";
+      subtitle = aligned ? "Assistance active · zero correction" : heightRatio !== null ? "Keeping the same size in the frame." : "Size reference unavailable.";
       status = aligned ? "ALIGNED" : "ASSISTED";
-    } else if (visible && mode === "Y" && yaw === "assisted") {
-      scene = "yaw"; title = "Keep the subject centered."; subtitle = "Forward / back stays with the pilot."; status = "ASSISTED";
-    } else if (visible && ((yaw === "manual" && pitch === "assisted") || (yaw === "assisted" && pitch === "manual"))) {
-      scene = "pilot"; title = "Pilot has priority.";
-      subtitle = yaw === "manual" ? "Turning: pilot · Size assistance: ARGOS" : "Turning: ARGOS · Forward / back: pilot"; status = "SHARED";
+    } else if (visible && yaw === "assisted") {
+      // Lead with the confirmed active axis. A wait on the other axis is not
+      // a global pause, and its cause cannot be inferred from that state alone.
+      scene = "yaw"; title = "Keeping the subject centered.";
+      subtitle = mode === "Y" ? "Distance assistance: not selected." : {
+        manual: "Forward / back: pilot control.", waiting: "Distance assistance: waiting.",
+        paused: "Distance assistance: paused.", unknown: "Distance assistance: unavailable.",
+      }[pitch];
+      status = mode === "D" && pitch === "manual" ? "SHARED" : "ASSISTED";
+    } else if (visible && pitch === "assisted") {
+      scene = "assist"; title = "Keeping the subject the same size.";
+      subtitle = {
+        manual: "Turning: pilot control.", waiting: "Centering assistance: waiting.",
+        paused: "Centering assistance: paused.", unknown: "Centering assistance: unavailable.",
+      }[yaw];
+      status = yaw === "manual" ? "SHARED" : "ASSISTED";
     } else if (visible && [yaw, pitch].includes("unknown")) {
       title = "Waiting for axis reports."; subtitle = "See each axis for available control data.";
     } else if (visible && [yaw, pitch].includes("waiting")) {

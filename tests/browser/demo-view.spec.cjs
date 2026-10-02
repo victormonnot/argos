@@ -1156,3 +1156,58 @@ test('dense interruption history keeps its oldest hatch even when the display po
   expect(await page.locator('.demo-interruption').count()).toBe(256);
   await expect(page.locator('#demo-history-detail')).toContainText(/Pitch (Paused|ARGOS)/);
 });
+
+
+for (const active of ['yaw', 'pitch']) {
+  for (const otherState of ['manual', 'waiting', 'paused', 'unknown']) {
+    test(`shot headline leads with assisted ${active} while the other axis is ${otherState}`, async ({ page, model }) => {
+      await setupDemoCamera(page, model);
+      const reports = attachPocketReports(model);
+      const other = active === 'yaw' ? 'pitch' : 'yaw';
+      reports.modify = runtime => setReportedAxis(runtime, other, otherState);
+      await enterDemo(page);
+      await expect(page.locator(`#demo-${active}-state`)).toHaveText('Assisted');
+      await expect(page.locator(`#demo-${other}-state`)).toHaveText({ manual: 'Manual', waiting: 'Waiting', paused: 'Paused', unknown: 'Unavailable' }[otherState]);
+      await expect(page.locator('#demo-shot-title')).toHaveText(active === 'yaw'
+        ? 'Keeping the subject centered.' : 'Keeping the subject the same size.');
+      await expect(page.locator('#demo-shot-subtitle')).toHaveText(otherState === 'manual'
+        ? active === 'yaw' ? 'Forward / back: pilot control.' : 'Turning: pilot control.'
+        : `${active === 'yaw' ? 'Distance' : 'Centering'} assistance: ${otherState === 'unknown' ? 'unavailable' : otherState}.`);
+      await expect(page.locator('#demo-shot-state')).toHaveText(otherState === 'manual' ? 'SHARED' : 'ASSISTED');
+      await expect(page.locator('#demo-target-state')).toHaveText('Locked');
+      expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+    });
+  }
+}
+
+test('shot reserves overall waiting for cases without an assisted axis', async ({ page, model }) => {
+  await setupDemoCamera(page, model);
+  const reports = attachPocketReports(model);
+  reports.modify = runtime => {
+    setReportedAxis(runtime, 'yaw', 'waiting');
+    setReportedAxis(runtime, 'pitch', 'paused');
+  };
+  await enterDemo(page);
+  await expect(page.locator('#demo-shot-title')).toHaveText('Waiting for assistance.');
+  await expect(page.locator('#demo-shot-state')).toHaveText('WAITING');
+  reports.modify = runtime => setReportedAxis(runtime, 'yaw', 'waiting');
+  await expect(page.locator('#demo-shot-title')).toHaveText('Keeping the subject the same size.');
+  reports.modify = runtime => setReportedAxis(runtime, 'pitch', 'waiting');
+  await expect(page.locator('#demo-shot-title')).toHaveText('Keeping the subject centered.');
+  await expect(page.locator('#demo-shot-subtitle')).toHaveText('Distance assistance: waiting.');
+});
+
+test('shot still describes valid zero yaw assistance and distinguishes yaw-only mode', async ({ page, model }) => {
+  await setupDemoCamera(page, model);
+  const reports = attachPocketReports(model);
+  reports.modify = runtime => {
+    runtime.radio_mode = runtime.pilot_sample.mode = runtime.assistance.selected_mode = 'Y';
+    runtime.pilot_sample.lua_outputs.yaw.value = runtime.assistance.yaw.value = 0;
+    setReportedAxis(runtime, 'pitch', 'manual');
+  };
+  await enterDemo(page);
+  await expect(page.locator('#demo-yaw-correction')).toHaveText('0%');
+  await expect(page.locator('#demo-shot-title')).toHaveText('Keeping the subject centered.');
+  await expect(page.locator('#demo-shot-subtitle')).toHaveText('Distance assistance: not selected.');
+  await expect(page.locator('#demo-shot-state')).toHaveText('ASSISTED');
+});

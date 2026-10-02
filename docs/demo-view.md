@@ -67,6 +67,13 @@ does not report metric range or aircraft motion.
 
 ## The shot
 
+The heading leads with confirmed assistance: **Keeping the subject centered.**
+when yaw is assisted, or **Keeping the subject the same size.** when only pitch
+is assisted. The subtitle describes the other axis separately. A waiting or
+paused distance report therefore does not hide active centering. Generic waiting
+appears only when neither axis is assisted; a wait is not attributed to a bad
+measurement without evidence. Retained reports keep their **Last report** label.
+
 The radar-shaped diagram is a view of framing in the camera image. Horizontal
 position moves the subject marker along a fixed arc. With a validated apparent
 size reference, the subject's height relative to that reference controls the
