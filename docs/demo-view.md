@@ -8,8 +8,11 @@ leaves the demo presentation.
 The view places the existing camera beside compact axis controls and an
 image-based framing diagram. The video keeps its source aspect ratio without
 cropping or stretching; a 640 × 480 source stays 4:3. A rolling 30-second history
-spans the width below the camera and instruments. All labels are in English.
-On narrow screens the instruments stack below the video and the page scrolls.
+spans the width below the camera and instruments. The desktop layout uses the
+whole window, including fullscreen, with the camera sized to the available
+height. A wide instrument area places axes and radar side by side. On narrow
+or very short screens the page scrolls; on narrow screens the instruments stack
+below the video. All labels are in English.
 
 This is a read-only presentation. Entering or leaving it does not select a
 target, change the radio mode or send a control request. Person-selection
@@ -19,11 +22,16 @@ accessible; opening its inspector restores the ordinary recording controls.
 
 ## Reading the overview
 
-- **Selected target** identifies the person selected in the current camera/run.
-  **Visible in camera** requires recent analysis and a matching detection in the
-  displayed image. Temporary target loss retains the identity and shows
-  **Assistance paused**. Missing or expired visual evidence shows **Visibility
-  unavailable**, without implying an active search.
+- **Selected target** retains the person's ID and detection confidence beside
+  the box. **Tracked** (blue) means recent visual tracking; **Locked** (sand)
+  additionally requires confirmed assistance on yaw or pitch. **Searching**
+  (amber) appears only during the backend's bounded visual recovery window,
+  with a recent image. **Lost** means recent evidence of loss without an active
+  recovery window. Missing or expired visual evidence shows **Unavailable**.
+- A line connects the image center to the selected person's box center. It
+  shows image offset, not a measured flight direction or commanded trajectory.
+  It is dashed for tracking and solid for confirmed assistance. Loss or stale
+  visual evidence removes it; no predicted line follows a missing target.
 - **Selected mode** shows **Manual**, **Yaw assist**, or **Yaw + apparent
   distance** from the Pocket report. This is independent of each axis's state.
 - **Axis control** has separate Pilot and ARGOS bars for each axis. The circle
@@ -74,7 +82,12 @@ measurement. Invalid or missing reference data cannot create a size goal.
 ## Recent history
 
 The bottom timeline shows locally observed yaw, pitch and target states from
-the last 30 seconds. Inspection describes those observations without replaying
+the last 30 seconds. **MANUAL** and **ARGOS** describe reported control ownership,
+not whether the pilot is moving a stick. A near-zero stick does not override a
+Pocket report of manual priority, and a small nonzero stick cannot turn a
+reported assisted interval into manual. Raw stick bars retain the reported
+values; the frontend adds no takeover threshold or filtering.
+Inspection describes those observations without replaying
 the camera or changing control. Unknown intervals remain visible as gaps or
 unavailable states; the browser does not fill missed time with invented data.
 The history uses bounded in-memory storage and resets when its observation

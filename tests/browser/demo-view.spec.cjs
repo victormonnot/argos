@@ -77,6 +77,10 @@ test('demo shares the live image and leaves missing Pocket reports unavailable',
   await expect(page.locator('#camera-stage img')).toHaveCount(1);
   await expect(page.locator('#camera-image')).toBeVisible();
   await expect(page.locator('#demo-target')).toHaveText('Person #7');
+  await expect(page.locator('#demo-target-state')).toHaveText('Tracked');
+  await expect(page.locator('#demo-target-card')).toHaveAttribute('data-state', 'tracked');
+  await expect(page.locator('.vision-box-label .demo-box-state')).toHaveText('TRACKED');
+  await expect(page.locator('.vision-box-label')).toContainText('Person #7 · 94%');
   await expect(page.locator('#demo-mode')).toHaveText('Unavailable');
   for (const axis of AXES) {
     await expect(page.locator(`#demo-${axis}-state`)).toHaveText('Unavailable');
@@ -94,6 +98,7 @@ test('demo entry, target interaction and exit are read-only', async ({ page, mod
   await expect(page.locator('.vision-hit')).toBeHidden();
   await expect(page.locator('#yaw-preview')).toBeHidden();
   await expect(page.locator('#vision-toggle')).toBeHidden();
+  await expect(page.locator('#demo-aim')).toBeVisible();
   // A hidden hit target or synthetic click must not bypass the read-only state.
   await page.locator('.vision-box').dispatchEvent('click');
   await page.locator('.vision-hit').dispatchEvent('click');
@@ -107,6 +112,10 @@ test('demo entry, target interaction and exit are read-only', async ({ page, mod
   await expect(page.locator('#vision-toggle')).toBeVisible();
   await expect(page.locator('.vision-box')).toHaveAttribute('data-selectable', 'true');
   await expect(page.locator('.vision-hit')).toBeVisible();
+  await expect(page.locator('#demo-aim')).toBeHidden();
+  await expect(page.locator('#demo-aim')).toHaveCSS('display', 'none');
+  await expect(page.locator('.vision-box-label .demo-box-state')).toBeEmpty();
+  await expect(page.locator('.vision-box-label')).toHaveText('Person #7 · 94%');
   expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
 });
 
@@ -138,16 +147,34 @@ test('a temporarily lost target keeps its selected identity with assistance paus
   camera.phase = 'paused'; camera.detections = [];
   await expect(page.locator('.vision-box')).toHaveCount(0);
   await expect(page.locator('#demo-target')).toHaveText('Person #7');
-  await expect(page.locator('#demo-target-state')).toHaveText('Assistance paused');
+  await expect(page.locator('#demo-target-state')).toHaveText('Searching');
+  await expect(page.locator('#demo-target-card')).toHaveAttribute('data-state', 'searching');
+  await expect(page.locator('#demo-aim')).toBeHidden();
   for (const axis of AXES) await expect(page.locator(`#demo-${axis}-state`)).toHaveText('Unavailable');
   expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
 });
 
-for (const size of [{ width: 1366, height: 650 }, { width: 1920, height: 1080 }, { width: 390, height: 844 }, { width: 320, height: 740 }]) {
+async function expectDemoFillsDesktop(page, size) {
+  // A centered 1200 px dashboard can preserve the camera ratio yet waste most
+  // of a large display. Check the actual screen edges and bottom timeline.
+  await expect.poll(async () => {
+    const panel = await page.locator('.camera-panel').boundingBox();
+    return Math.abs(panel.x) + Math.abs(panel.width - size.width);
+  }).toBeLessThan(3);
+  await expect.poll(async () => {
+    const history = await page.locator('#demo-history').boundingBox();
+    const provenance = await page.locator('.demo-provenance').boundingBox();
+    return Math.max(history.y + history.height, provenance.y + provenance.height);
+  }).toBeLessThanOrEqual(size.height + 1);
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(size.height + 1);
+}
+
+for (const size of [{ width: 1366, height: 650 }, { width: 1920, height: 1080 }, { width: 2560, height: 1440 }, { width: 390, height: 844 }, { width: 320, height: 740 }]) {
   test(`demo preserves native video ratio and full-width bottom history at ${size.width}x${size.height}`, async ({ page, model }) => {
     await page.setViewportSize(size);
     await setupDemoCamera(page, model);
     await enterDemo(page);
+    if (size.width >= 1000) await expectDemoFillsDesktop(page, size);
     const video = await page.locator('#camera-stage').boundingBox();
     const sidebar = await page.locator('#demo-summary').boundingBox();
     const history = await page.locator('#demo-history').boundingBox();
@@ -162,6 +189,7 @@ for (const size of [{ width: 1366, height: 650 }, { width: 1920, height: 1080 },
       expect(Math.abs(history.width - video.width)).toBeLessThan(2);
     }
     await expect(page.locator('#camera-image')).toHaveCSS('object-fit', 'contain');
+    await expect(page.locator('#demo-message-bar')).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
     await page.locator('#demo-summary').scrollIntoViewIfNeeded();
     await expect(page.locator('#demo-summary')).toBeInViewport();
@@ -174,14 +202,40 @@ for (const size of [{ width: 1366, height: 650 }, { width: 1920, height: 1080 },
   });
 }
 
-test('demo derives the native ratio from a widescreen camera instead of assuming 4:3', async ({ page, model }) => {
-  await setupDemoCamera(page, model, { width: 640, height: 360 });
+for (const size of [{ width: 1366, height: 650 }, { width: 1920, height: 1080 }, { width: 2560, height: 1440 }]) {
+  test(`demo derives the native widescreen ratio and fills the desktop at ${size.width}x${size.height}`, async ({ page, model }) => {
+    await page.setViewportSize(size);
+    await setupDemoCamera(page, model, { width: 640, height: 360 });
+    await enterDemo(page);
+    await expectDemoFillsDesktop(page, size);
+    await expect.poll(async () => {
+      const box = await page.locator('#camera-stage').boundingBox();
+      return box.width / box.height;
+    }).toBeCloseTo(16 / 9, 2);
+    const panel = await page.locator('.camera-panel').boundingBox();
+    const history = await page.locator('#demo-history').boundingBox();
+    expect(Math.abs(history.width - panel.width)).toBeLessThan(3);
+    await expect(page.locator('#camera-image')).toHaveCSS('object-fit', 'contain');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+  });
+}
+
+test('fullscreen demo fills the screen and keeps the complete native camera image', async ({ page, model }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await setupDemoCamera(page, model);
   await enterDemo(page);
-  await expect.poll(async () => {
-    const box = await page.locator('#camera-stage').boundingBox();
-    return box.width / box.height;
-  }).toBeCloseTo(16 / 9, 2);
+  test.skip(!await page.evaluate(() => document.fullscreenEnabled), 'Browser does not support the Fullscreen API');
+  await page.locator('#fullscreen-button').click();
+  await expect(page.locator('#fullscreen-button')).toHaveAttribute('aria-pressed', 'true');
+  expect(await page.evaluate(() => document.fullscreenElement === document.documentElement)).toBe(true);
+  const size = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  await expectDemoFillsDesktop(page, size);
+  const video = await page.locator('#camera-stage').boundingBox();
+  expect(video.width / video.height).toBeCloseTo(4 / 3, 2);
   await expect(page.locator('#camera-image')).toHaveCSS('object-fit', 'contain');
+  await page.evaluate(() => document.exitFullscreen());
+  await expect(page.locator('#fullscreen-button')).toHaveAttribute('aria-pressed', 'false');
   expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
 });
 
@@ -219,6 +273,66 @@ async function expectPocketReady(page) {
   await expect(page.locator('#demo-yaw-state')).toHaveText('Assisted');
   await expect(page.locator('#demo-pitch-state')).toHaveText('Assisted');
 }
+
+test('target status and centering guide follow the displayed detection and expire with its evidence', async ({ page, model }) => {
+  const camera = await setupDemoCamera(page, model);
+  const reports = attachPocketReports(model);
+  const cameraState = model.modifyState;
+  let analysisExpired = false;
+  model.modifyState = state => {
+    cameraState(state);
+    // The newer preview intentionally points right while the displayed JPEG
+    // initially puts the subject left. Only the paired box may place the guide.
+    state.yaw_preview.error_x = .8;
+    if (analysisExpired) {
+      state.yaw_preview.frame_received_at = state.at - 2;
+      state.yaw_preview.frame_age_s = 2;
+    }
+  };
+  await enterDemo(page);
+  await expectPocketReady(page);
+  const aim = page.locator('#demo-aim');
+  await expect(aim).toBeVisible();
+  await expect(aim).toHaveAttribute('data-state', 'locked');
+  await expect(aim).toHaveAttribute('aria-label', /40% left.*not measured aircraft motion/);
+  await expect(page.locator('#demo-target-state')).toHaveText('Locked');
+  await expect(page.locator('.vision-box-label .demo-box-state')).toHaveText('LOCKED');
+  await expect(page.locator('.vision-box-label')).toContainText('Person #7 · 94%');
+
+  const guideEndpointError = () => page.evaluate(() => {
+    const line = document.getElementById('demo-aim-link');
+    const end = new DOMPoint(Number(line.getAttribute('x2')), Number(line.getAttribute('y2'))).matrixTransform(line.getScreenCTM());
+    const box = document.querySelector('.vision-box[data-selected=true]').getBoundingClientRect();
+    return Math.hypot(end.x - box.x - box.width / 2, end.y - box.y - box.height / 2);
+  });
+  await expect.poll(guideEndpointError).toBeLessThan(1);
+  camera.detections[0].box = [.6, .15, .2, .3];
+  camera.detections[0].confidence = .86;
+  await expect(aim).toHaveAttribute('aria-label', /40% right/);
+  await expect(page.locator('.vision-box-label')).toContainText('Person #7 · 86%');
+  await expect.poll(guideEndpointError).toBeLessThan(1);
+
+  // Losing only the Pocket report must remove the claim of a control lock,
+  // while retaining the independently fresh visual tracking and its guide.
+  reports.age = 1;
+  await expect(page.locator('#demo-target-state')).toHaveText('Tracked');
+  await expect(aim).toHaveAttribute('data-state', 'tracked');
+  await expect(aim).toBeVisible();
+  await expect(page.locator('.vision-box-label .demo-box-state')).toHaveText('TRACKED');
+  reports.age = .02;
+  await expect(page.locator('#demo-target-state')).toHaveText('Locked');
+
+  analysisExpired = true;
+  await expect(aim).toBeHidden();
+  await expect(page.locator('#demo-target-state')).toHaveText('Unavailable');
+  analysisExpired = false;
+  await expect(aim).toBeVisible();
+  // Fresh state responses cannot keep the guide alive once JPEGs stop arriving.
+  await page.route(/\/api\/(?:vision\/)?frame\.jpg$/, route => route.abort());
+  await expect(aim).toBeHidden();
+  await expect(page.locator('#demo-target-state')).toHaveText('Unavailable');
+  expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+});
 
 async function expectUnavailable(page, ids) {
   for (const id of ids) {
@@ -275,6 +389,63 @@ test('Pocket modes remain separate from per-axis assistance and calibrated pilot
   };
   await expect(page.locator('#demo-mode')).toHaveText('Manual');
   for (const axis of AXES) await expect(page.locator(`#demo-${axis}-state`)).toHaveText('Manual');
+  expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+});
+
+test('small cross-axis stick inputs do not change fresh assisted ownership or its history', async ({ page, model }) => {
+  await setupDemoCamera(page, model);
+  const reports = attachPocketReports(model);
+  const sticks = { yaw: 20, pitch: -20 };
+  reports.modify = runtime => Object.assign(runtime.pilot_sample.sticks, sticks);
+  await enterDemo(page);
+  const manualSegments = page.locator('.demo-history-track:not([data-lane="target"]) .demo-segment[data-state="manual"]:not([hidden])');
+
+  // Simulate small unwanted movement on the other direction of each gimbal.
+  // Ownership comes from fresh axis reports, not the raw stick's sign or size.
+  for (const [yaw, pitch, yawText, pitchText] of [
+    [20, -20, '+2%', '-2%'], [-51, 51, '-5%', '+5%'], [102, -102, '+10%', '-10%'],
+  ]) {
+    Object.assign(sticks, { yaw, pitch });
+    await expect(page.locator('#demo-yaw-stick')).toHaveText(yawText);
+    await expect(page.locator('#demo-pitch-stick')).toHaveText(pitchText);
+    await expectPocketReady(page);
+    for (const axis of ['yaw', 'pitch']) {
+      await expect(rail(page, axis, 'argos')).toHaveAttribute('data-active', 'true');
+      await expect(rail(page, axis, 'pilot')).toHaveAttribute('data-active', 'false');
+      await expect(page.locator(`.demo-history-track[data-lane="${axis}"] .demo-segment[data-state="assisted"]:not([hidden])`)).not.toHaveCount(0);
+    }
+    await expect(page.locator('#demo-history-detail')).toContainText('Yaw ARGOS · Pitch ARGOS');
+    await expect(manualSegments).toHaveCount(0);
+  }
+  expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+});
+
+test('reported manual ownership remains visible after a stick recenters, independently for each axis', async ({ page, model }) => {
+  await setupDemoCamera(page, model);
+  const reports = attachPocketReports(model);
+  let manualAxis = 'yaw';
+  reports.modify = runtime => {
+    Object.assign(runtime.pilot_sample.sticks, { yaw: 1, pitch: -1, [manualAxis]: 0 });
+    runtime[`radio_${manualAxis}_phase`] = runtime.pilot_sample[`${manualAxis}_phase`] = 'M';
+    runtime.pilot_sample.lua_outputs[manualAxis] = { valid: false, value: 0 };
+    runtime.assistance[manualAxis] = { state: 'manual', valid: false, value: null };
+  };
+  await enterDemo(page);
+  for (const axis of ['yaw', 'pitch']) {
+    manualAxis = axis;
+    const other = axis === 'yaw' ? 'pitch' : 'yaw';
+    await expect(page.locator(`#demo-${axis}-state`)).toHaveText('Manual');
+    await expect(page.locator(`#demo-${axis}-stick`)).toHaveText('0%');
+    await expect(page.locator(`#demo-${axis}-correction`)).toHaveText('—');
+    await expect(rail(page, axis, 'pilot')).toHaveAttribute('data-active', 'true');
+    await expect(rail(page, axis, 'argos')).toHaveAttribute('data-active', 'false');
+    await expect(page.locator(`#demo-${other}-state`)).toHaveText('Assisted');
+    await expect(rail(page, other, 'argos')).toHaveAttribute('data-active', 'true');
+    const segment = page.locator(`.demo-history-track[data-lane="${axis}"] .demo-segment[data-state="manual"]:not([hidden])`).last();
+    await expect(segment).toHaveAttribute('aria-label', /^MANUAL:/);
+    await expect(page.locator('#demo-history-detail')).toContainText(axis === 'yaw'
+      ? 'Yaw MANUAL · Pitch ARGOS' : 'Yaw ARGOS · Pitch MANUAL');
+  }
   expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
 });
 
@@ -369,6 +540,8 @@ for (const failure of ['offline', 'frozen']) {
     await expectUnavailable(page, ALL_POCKET_FIELDS);
     await expect(page.locator('#service-status')).toHaveText('Service unreachable', { timeout: 5000 });
     await expect(page.locator('#demo-target')).toHaveText('Unavailable');
+    await expect(page.locator('#demo-target-state')).toHaveText('Unavailable');
+    await expect(page.locator('#demo-aim')).toBeHidden();
     await expect(page.locator('#camera-image')).toBeHidden();
     model[failure] = false;
     await expect(page.locator('#service-status')).toHaveText('Service connected');
@@ -387,14 +560,17 @@ test('target loss pauses fresh assisted reports and keeps the remembered identit
   camera.detections = [];
   await expect(page.locator('.vision-box')).toHaveCount(0);
   await expect(page.locator('#demo-target')).toHaveText('Person #7');
-  await expect(page.locator('#demo-target-state')).toHaveText('Assistance paused');
+  await expect(page.locator('#demo-target-state')).toHaveText('Lost');
+  await expect(page.locator('#demo-aim')).toBeHidden();
   for (const axis of ['yaw', 'pitch']) await expect(page.locator(`#demo-${axis}-state`)).toHaveText('Paused');
   camera.phase = 'paused';
   await expect(page.locator('#demo-mode')).toHaveText('Yaw + apparent distance');
   await expect(page.locator('#demo-target')).toHaveText('Person #7');
+  await expect(page.locator('#demo-target-state')).toHaveText('Searching');
   camera.phase = 'tracking'; camera.detections = [person];
   await expectPocketReady(page);
-  await expect(page.locator('#demo-target-state')).toHaveText('Visible in camera');
+  await expect(page.locator('#demo-target-state')).toHaveText('Locked');
+  await expect(page.locator('#demo-aim')).toBeVisible();
   expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
 });
 

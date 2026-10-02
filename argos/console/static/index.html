@@ -130,9 +130,15 @@
         <div class="camera-stage" id="camera-stage">
           <img alt="Image received from the drone camera" hidden="" id="camera-image"/>
           <div aria-label="Detected people in the displayed image" class="vision-layer" hidden id="vision-layer" role="list"></div>
+          <svg class="demo-aim demo-only" id="demo-aim" viewBox="0 0 1000 1000" preserveAspectRatio="none" role="img" aria-label="Image offset from camera center to selected target" hidden>
+            <line class="demo-aim-shadow" x1="500" y1="500" id="demo-aim-shadow"></line>
+            <line class="demo-aim-link" x1="500" y1="500" id="demo-aim-link"></line>
+            <path class="demo-aim-center" d="M488 500h24M500 488v24"></path>
+            <path class="demo-aim-end" id="demo-aim-end"></path>
+          </svg>
           <div class="demo-video-context demo-only" id="demo-video-context">
             <div class="demo-mode"><span class="demo-eyebrow">Selected mode</span><strong id="demo-mode">Unavailable</strong></div>
-            <div class="demo-target"><strong id="demo-target">Unavailable</strong><span id="demo-target-state">Target status unavailable</span></div>
+            <div class="demo-target" id="demo-target-card" data-state="unavailable"><span class="demo-target-state" id="demo-target-state">Unavailable</span><strong id="demo-target">Unavailable</strong></div>
           </div>
           <div class="camera-empty" id="camera-empty">
             <h3 id="camera-empty-title">
@@ -228,9 +234,8 @@
             </details>
           </section>
         </aside>
-        <div class="demo-message demo-only" id="demo-message-bar" aria-live="polite"><strong id="demo-message">Data unavailable</strong><span id="demo-message-detail">Waiting for fresh reports</span></div>
         <section class="demo-history demo-only" id="demo-history" aria-labelledby="demo-history-heading">
-          <div class="demo-section-heading"><h3 id="demo-history-heading">Last 30 seconds</h3><span id="demo-history-status">Waiting for observations</span></div>
+          <div class="demo-section-heading"><h3 id="demo-history-heading">Last 30 seconds</h3><span id="demo-history-status">Waiting for observations</span><span class="demo-history-key">Control ownership · not stick movement</span></div>
           <div class="demo-lanes">
             <div class="demo-lane"><span>YAW</span><div class="demo-history-track" data-lane="yaw" role="img" aria-label="Yaw state history unavailable"><i class="demo-cursor" aria-hidden="true"></i></div></div>
             <div class="demo-lane"><span>PITCH</span><div class="demo-history-track" data-lane="pitch" role="img" aria-label="Pitch state history unavailable"><i class="demo-cursor" aria-hidden="true"></i></div></div>

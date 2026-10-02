@@ -73,6 +73,20 @@
     element("demo-button").setAttribute("aria-pressed", String(enabled));
     text("demo-button", enabled ? "Exit demo" : "Demo view");
     render();
+    layoutDemo();
+  }
+
+  function layoutDemo() {
+    if (!demoActive() || !matchMedia("(min-width:961px) and (min-height:561px)").matches) return;
+    const panel = document.querySelector(".camera-panel");
+    const reserved = [".camera-header", ".camera-footer", ".demo-history", ".demo-provenance"]
+      .reduce((height, selector) => height + panel.querySelector(selector).getBoundingClientRect().height, 0);
+    // Fit the actual frame, rather than stretching it into a widescreen stage.
+    // The remaining width belongs to instruments, not empty outer margins.
+    const width = Math.max(0, Math.min(panel.clientWidth - 350, (panel.clientHeight - reserved) * demoFrameRatio));
+    const value = `${Math.floor(width)}px`;
+    if (panel.style.getPropertyValue("--demo-video-width") !== value) panel.style.setProperty("--demo-video-width", value);
+    element("demo-summary").dataset.wide = String(panel.clientWidth - width >= 720);
   }
 
   function resetDemoHistory() {
@@ -459,7 +473,7 @@
         });
       }
     }
-    const labels = { manual: "PILOT", assisted: "ARGOS", paused: "Paused", waiting: "Waiting", unknown: "Unavailable", visible: "Visible", lost: "Lost", none: "No target" };
+    const labels = { manual: "MANUAL", assisted: "ARGOS", paused: "Paused", waiting: "Waiting", unknown: "Unavailable", visible: "Visible", lost: "Lost", none: "No target" };
     const start = now - DEMO_HISTORY_WINDOW;
     for (const lane of ["yaw", "pitch", "target"]) {
       // Merge adjacent intervals for each lane; another axis can change alone.
@@ -555,6 +569,7 @@
 
   function renderDemo(now) {
     if (!demoActive()) return;
+    const previousRatio = demoFrameRatio;
     const context = JSON.stringify([current?.run_id ?? null, current?.video.source_id ?? null]);
     if (demoHistoryKey !== context) {
       resetDemoHistory();
@@ -563,6 +578,7 @@
     }
     if (frame?.width && frame?.height) demoFrameRatio = frame.width / frame.height;
     element("camera-stage").style.setProperty("--demo-frame-ratio", String(demoFrameRatio));
+    if (previousRatio !== demoFrameRatio) layoutDemo();
     const elapsed = (stateTransitMs + Math.max(0, now - lastReceived)) / 1000;
     const fresh = serviceFresh(now) && !requestFailure;
     const runtime = current?.yaw_assist;
@@ -605,8 +621,6 @@
     const visible = Boolean(detection);
     const targetLost = selected && (preview.phase === "paused" || (imageRecent && !visible));
     text("demo-target", selected ? `Person #${preview.target_id}` : targetKnown ? "No target selected" : "Unavailable");
-    text("demo-target-state", targetLost ? "Assistance paused" : visible ? "Visible in camera"
-      : selected ? "Visibility unavailable" : targetKnown ? "Select a target with Pocket" : "Target status unavailable");
 
     const labels = { manual: "Manual", assisted: "Assisted", paused: "Paused", waiting: "Waiting", unknown: "Unavailable" };
     const axisStates = {}, corrections = {};
@@ -676,6 +690,33 @@
     const heightRatio = finite(measuredRatio) && measuredRatio > 0 ? measuredRatio : null;
     const x = box ? box[0] + box[2] / 2 : null;
     const error = x === null ? null : (x - .5) * 2;
+    // Tracking is visual evidence; Locked additionally requires a fresh per-axis
+    // assistance report. Searching is only the backend's bounded recovery phase.
+    const searching = targetLost && preview.phase === "paused" && yawImageRecent(now)
+      && runTime(now) < preview.recovery_deadline_at
+      && preview.recovery_deadline_at - runTime(now) <= preview.recovery_max_gap_s;
+    const targetState = visible ? [axisStates.yaw, axisStates.pitch].includes("assisted") ? "locked" : "tracked"
+      : searching ? "searching" : targetLost && yawImageRecent(now) ? "lost" : targetKnown && !selected ? "none" : "unavailable";
+    const targetLabel = { locked: "Locked", tracked: "Tracked", searching: "Searching", lost: "Lost", none: "No target", unavailable: "Unavailable" }[targetState];
+    element("demo-target-card").dataset.state = targetState;
+    text("demo-target-state", targetLabel);
+    const aim = element("demo-aim");
+    aim.toggleAttribute("hidden", !visible);
+    aim.dataset.state = targetState;
+    if (visible) {
+      const px = x * 1000, py = (box[1] + box[3] / 2) * 1000;
+      for (const id of ["demo-aim-link", "demo-aim-shadow"]) {
+        element(id).setAttribute("x2", String(px)); element(id).setAttribute("y2", String(py));
+      }
+      element("demo-aim-end").setAttribute("d", `M${px - 5} ${py}h10M${px} ${py - 5}v10`);
+      aim.setAttribute("aria-label", `Image offset: target ${Math.abs(error) <= preview.deadband ? "centered" : `${number.format(Math.abs(error) * 100)}% ${error < 0 ? "left" : "right"}`}. Framing guide, not measured aircraft motion.`);
+    }
+    for (const node of element("vision-layer").children) {
+      const selectedBox = Number(node.dataset.trackId) === preview?.target_id;
+      node.dataset.demoState = selectedBox ? targetState : "unavailable";
+      const label = node.firstElementChild, status = label.querySelector(".demo-box-state");
+      if (status.textContent !== (selectedBox ? targetLabel.toUpperCase() : "")) status.textContent = selectedBox ? targetLabel.toUpperCase() : "";
+    }
     text("demo-centering", error === null ? "Unavailable" : Math.abs(error) <= preview.deadband ? "Centered"
       : `${number.format(Math.abs(error) * 100)}% ${error < 0 ? "left" : "right"}`);
     text("demo-size", heightRatio === null ? "Unavailable" : `${integer.format(heightRatio * 100)}%`);
@@ -717,7 +758,6 @@
     }
     element("demo-summary").dataset.scene = scene;
     text("demo-shot-title", title); text("demo-shot-subtitle", subtitle); text("demo-shot-state", status);
-    text("demo-message", title); text("demo-message-detail", subtitle);
     observeDemoHistory(now, { yaw, pitch, target: visible ? "visible" : targetLost ? "lost" : targetKnown && !selected ? "none" : "unknown" });
   }
 
@@ -746,6 +786,7 @@
     const stage = element("camera-stage"), layer = element("vision-layer");
     const scale = Math.min(stage.clientWidth / result.width, stage.clientHeight / result.height);
     const width = result.width * scale, height = result.height * scale;
+    const labelFloor = demoActive() ? element("demo-video-context").offsetHeight + 24 : 0;
     Object.assign(layer.style, { width: `${width}px`, height: `${height}px`, left: `${(stage.clientWidth - width) / 2}px`, top: `${(stage.clientHeight - height) / 2}px` });
     for (const box of layer.children) {
       const label = box.firstElementChild;
@@ -755,7 +796,8 @@
       // Labels retain their own dark background even for a distant person only
       // a few pixels wide. Place above when possible and keep inside the image.
       label.style.left = `${Math.max(1 - left, Math.min(0, width - left - labelWidth - 3))}px`;
-      label.style.top = `${top >= labelHeight + 4 ? -labelHeight - 4 : Math.max(0, Math.min(box.offsetHeight + 3, height - top - labelHeight - 3))}px`;
+      const labelTop = top >= labelHeight + 4 ? -labelHeight - 4 : Math.max(0, Math.min(box.offsetHeight + 3, height - top - labelHeight - 3));
+      label.style.top = `${Math.min(height - top - labelHeight - 3, Math.max(labelFloor - top, labelTop))}px`;
     }
   }
 
@@ -774,6 +816,9 @@
         box.setAttribute("role", "listitem");
         box.dataset.trackId = String(detection.track_id);
         label.className = "vision-box-label";
+        const status = document.createElement("span"), identity = document.createElement("span");
+        status.className = "demo-box-state";
+        label.append(status, identity);
         hit.className = "vision-hit";
         hit.type = "button";
         hit.hidden = true;
@@ -791,7 +836,7 @@
         });
       }
       Object.assign(box.style, { left: `${100 * x}%`, top: `${100 * y}%`, width: `${100 * width}%`, height: `${100 * height}%` });
-      box.firstElementChild.textContent = `Person #${detection.track_id} · ${Math.round(detection.confidence * 100)}%`;
+      box.firstElementChild.lastElementChild.textContent = `Person #${detection.track_id} · ${Math.round(detection.confidence * 100)}%`;
       box.lastElementChild.setAttribute("aria-label", `Select person #${detection.track_id} for framing`);
       visionIdentities.set(box, { run_id: frame.run_id, video_id: frame.video_id, frame_sequence: frame.sequence, track_id: detection.track_id });
     }
@@ -808,6 +853,10 @@
       const selected = Number(box.dataset.trackId) === (preview ? yawPreviewTarget : visionSelection.target_id);
       box.dataset.selectable = String(allowed);
       box.dataset.selected = String(selected);
+      if (!demoActive()) {
+        box.firstElementChild.firstElementChild.textContent = "";
+        delete box.dataset.demoState;
+      }
       box.lastElementChild.hidden = !allowed;
       box.lastElementChild.setAttribute("aria-label", `Select person #${box.dataset.trackId} for ${preview ? "yaw preview" : "framing"}`);
       box.lastElementChild.setAttribute("aria-pressed", String(selected));
@@ -1622,6 +1671,10 @@
     renderVisionSelection();
   });
   new ResizeObserver(layoutVision).observe(element("camera-stage"));
+  const demoLayoutObserver = new ResizeObserver(layoutDemo);
+  for (const selector of [".workspace", ".camera-header", ".camera-footer", ".demo-history", ".demo-provenance"]) {
+    demoLayoutObserver.observe(document.querySelector(selector));
+  }
   new ResizeObserver(entries => {
     const box = entries[0].contentRect;
     demoRadarSize = { width: box.width, height: box.height };
