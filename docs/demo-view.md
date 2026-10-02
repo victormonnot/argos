@@ -5,10 +5,11 @@ the ordinary display. The fullscreen button remains available when supported by
 the browser. Opening Sources, the capture inspector or another workspace also
 leaves the demo presentation.
 
-The view enlarges the existing camera player without cropping its image. It
-shows the selected person's marker, selected Pocket mode, and separate yaw,
-pitch, roll and throttle readouts. All labels are in English. On narrow screens
-the overview appears below the video and the page scrolls.
+The view places the existing camera beside compact axis controls and an
+image-based framing diagram. The video keeps its source aspect ratio without
+cropping or stretching; a 640 × 480 source stays 4:3. A rolling 30-second history
+spans the width below the camera and instruments. All labels are in English.
+On narrow screens the instruments stack below the video and the page scrolls.
 
 This is a read-only presentation. Entering or leaving it does not select a
 target, change the radio mode or send a control request. Person-selection
@@ -25,24 +26,65 @@ accessible; opening its inspector restores the ordinary recording controls.
   unavailable**, without implying an active search.
 - **Selected mode** shows **Manual**, **Yaw assist**, or **Yaw + apparent
   distance** from the Pocket report. This is independent of each axis's state.
-- **Yaw / Pitch** show **Manual**, **Assisted**, **Paused**, **Waiting**, or
-  **Unavailable** independently. A combined mode can report yaw manual while
-  pitch is assisted. Target loss suppresses an assisted indicator even if the
-  last radio report preceded that loss.
-- **Roll / Throttle** remain pilot-owned in these modes. They display **Manual**
-  only with a fresh report, known mode and valid corresponding stick sample.
-- **Pilot stick** is the reported input before mixing, normalized from
-  `[-1024, 1024]` to `[-100%, 100%]`. A reported zero displays `0%`; missing data
-  displays **Unavailable**.
+- **Axis control** has separate Pilot and ARGOS bars for each axis. The circle
+  marks the pilot's stick before mixing; the diamond marks the reported Lua
+  correction. Each bar has its own fill and value, on the same signed scale
+  normalized from `[-1024, 1024]` to `[-100%, 100%]`.
+- A chevron marks the reported source in control, independently for yaw and
+  pitch. A combined mode can show yaw with the pilot while pitch remains with
+  ARGOS. The source does not follow command magnitude: a valid zero correction
+  still displays `0%` and can remain active. Missing values use a dashed bar,
+  no marker, and an em dash with an accessible **Unavailable** label.
+- **Paused**, **Waiting**, and **Unavailable** have no active-source chevron.
+  Target loss suppresses an assisted indicator even if the last radio report
+  preceded that loss. Roll and throttle remain pilot-owned when their reports
+  are fresh and valid; the view never invents ARGOS corrections for them.
 
 Axis states describe Pocket Lua reports, not native mixer gates or measured
 flight-controller actuation. Apparent distance is based on image size; the demo
 does not report metric range or aircraft motion.
 
+## The shot
+
+The radar-shaped diagram is a view of framing in the camera image. Horizontal
+position moves the subject marker along a fixed arc. With a validated apparent
+size reference, the subject's height relative to that reference controls the
+marker's diameter; the dashed circle shows the centered size goal. Marker radius
+is limited to 4–28 display pixels for readability; **Signal details** retains
+the actual ratio beyond those display limits. The geometry
+is schematic and does not measure physical range, bearing or camera field of
+view. There is no scanning or prediction of a lost person's movement.
+
+Yaw-only mode shows a centering guide without a size goal. Without a validated
+reference the current image position can still appear as a constant-size
+direction marker. Manual mode has no assistance goal. A temporarily lost target
+can leave a static hollow **Last seen** marker for the same camera, run and
+selection; unavailable evidence hides the current and goal markers. Changing
+context clears remembered framing. **Signal details** exposes image centering
+and apparent height/reference without requiring those numbers in the main view.
+
+The diagram reads the selected detection from the image currently displayed.
+It uses `yaw_assist.distance_preview.reference_height` only for fresh combined
+mode when the preview reports `experimental: true`, `valid: true`, and a usable
+reference. The existing reference field has no independent camera, target or
+timestamp identity, so the display also relies on the current matching preview
+and image context. It does not turn this field into a separately synchronized
+measurement. Invalid or missing reference data cannot create a size goal.
+
+## Recent history
+
+The bottom timeline shows locally observed yaw, pitch and target states from
+the last 30 seconds. Inspection describes those observations without replaying
+the camera or changing control. Unknown intervals remain visible as gaps or
+unavailable states; the browser does not fill missed time with invented data.
+The history uses bounded in-memory storage and resets when its observation
+context changes. It is not a recording, flight-controller feedback or a
+substitute for the persisted filming bundle.
+
 ## Data and freshness
 
 The view uses the existing `/api/state` and camera requests. It adds no endpoint,
-capture pipeline or external dependency. Camera images retain the existing
+capture pipeline, telemetry polling loop or external dependency. Camera images retain the existing
 paired image/detection handling and freshness checks.
 
 The optional `yaw_assist` data contains `pilot_sample` (schema version 1),
@@ -59,7 +101,9 @@ indicator. A running older backend without these optional fields keeps the
 camera usable and shows **Unavailable** for absent report data.
 
 Browser regression tests use isolated synthetic reports and images; they do
-not access a live radio or validate physical response. Run them with:
+not access a live radio or validate physical response. They cover independent
+axis bars, valid zero versus absent values, framing provenance and lost targets,
+local history, responsive video proportions and read-only interaction. Run them with:
 
 ```sh
 npm run test:browser -- tests/browser/demo-view.spec.cjs

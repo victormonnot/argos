@@ -34,6 +34,19 @@
   let yawPreviewRevision = 0;
   let yawPreviewMessage = "";
   let demoReportReceipt = null;
+  let demoLastSeen = null;
+  let demoRadar = null;
+  let demoRadarSize = { width: 0, height: 0 };
+  let demoRadarSignature = "";
+  let demoFrameRatio = 4 / 3;
+  let demoHistory = [];
+  let demoHistoryKey = null;
+  let demoHistoryAt = null;
+  let demoHistoryInspection = 0;
+  let demoHistoryPools = null;
+  const DEMO_HISTORY_WINDOW = 30000;
+  const DEMO_HISTORY_INTERVAL = 250;
+  const DEMO_HISTORY_CAP = 128;
   let stopped = false;
   let mutation = null;
   let stateEpoch = 0;
@@ -54,11 +67,21 @@
   const demoActive = () => document.body.classList.contains("demo-mode");
 
   function demoView(enabled) {
+    if (enabled && !demoActive()) resetDemoHistory();
     document.body.classList.toggle("demo-mode", enabled);
     element("demo-summary").hidden = !enabled;
     element("demo-button").setAttribute("aria-pressed", String(enabled));
     text("demo-button", enabled ? "Exit demo" : "Demo view");
     render();
+  }
+
+  function resetDemoHistory() {
+    demoHistory = [];
+    demoHistoryAt = null;
+    demoHistoryInspection = 0;
+    demoLastSeen = null;
+    demoRadarSignature = "";
+    element("demo-history-inspect").value = "0";
   }
 
   function showWorkspace(view, { opener = null, restore = false } = {}) {
@@ -397,8 +420,149 @@
     text("yaw-preview-status", detail);
   }
 
+  function demoHistoryPoint(at, states) {
+    const last = demoHistory.at(-1);
+    if (!last || ["yaw", "pitch", "target"].some(lane => last[lane] !== states[lane])) {
+      const point = { at, ...states };
+      if (last?.at === at) demoHistory[demoHistory.length - 1] = point;
+      else demoHistory.push(point);
+    }
+  }
+
+  function observeDemoHistory(now, states) {
+    if (document.hidden || (demoHistoryAt !== null && now - demoHistoryAt < DEMO_HISTORY_INTERVAL)) return;
+    // Browser suspension cannot turn the last observed state into continuous
+    // assistance. Start an unknown interval at the next expected observation.
+    if (demoHistoryAt !== null && now - demoHistoryAt > 1000) {
+      demoHistoryPoint(demoHistoryAt + DEMO_HISTORY_INTERVAL, { yaw: "unknown", pitch: "unknown", target: "unknown" });
+    }
+    demoHistoryPoint(now, states);
+    demoHistoryAt = now;
+    const cutoff = now - DEMO_HISTORY_WINDOW;
+    while (demoHistory.length > 1 && demoHistory[1].at <= cutoff) demoHistory.shift();
+    if (demoHistory.length > DEMO_HISTORY_CAP) demoHistory.splice(0, demoHistory.length - DEMO_HISTORY_CAP);
+    renderDemoHistory(now);
+  }
+
+  function renderDemoHistory(now = performance.now()) {
+    if (!demoActive()) return;
+    if (!demoHistoryPools) {
+      demoHistoryPools = {};
+      for (const lane of ["yaw", "pitch", "target"]) {
+        const track = document.querySelector(`.demo-history-track[data-lane="${lane}"]`);
+        demoHistoryPools[lane] = Array.from({ length: DEMO_HISTORY_CAP }, () => {
+          const node = document.createElement("span");
+          node.className = "demo-segment";
+          node.hidden = true;
+          track.append(node);
+          return node;
+        });
+      }
+    }
+    const labels = { manual: "PILOT", assisted: "ARGOS", paused: "Paused", waiting: "Waiting", unknown: "Unavailable", visible: "Visible", lost: "Lost", none: "No target" };
+    const start = now - DEMO_HISTORY_WINDOW;
+    for (const lane of ["yaw", "pitch", "target"]) {
+      // Merge adjacent intervals for each lane; another axis can change alone.
+      const intervals = [];
+      for (let i = 0; i < demoHistory.length; i++) {
+        const point = demoHistory[i], end = Math.min(now, demoHistory[i + 1]?.at ?? now);
+        const from = Math.max(start, point.at);
+        if (end <= from) continue;
+        const last = intervals.at(-1);
+        if (last && last.state === point[lane] && last.end === from) last.end = end;
+        else intervals.push({ start: from, end, state: point[lane] });
+      }
+      const track = document.querySelector(`.demo-history-track[data-lane="${lane}"]`);
+      const width = track.clientWidth;
+      track.setAttribute("aria-label", `${lane}: ${intervals.length} observed intervals in the last 30 seconds. ${intervals.length ? `Latest: ${labels[intervals.at(-1).state]}.` : "No observation yet."} Use Inspect for earlier states.`);
+      demoHistoryPools[lane].forEach((node, i) => {
+        const interval = intervals[i];
+        node.hidden = !interval;
+        if (!interval) return;
+        const fraction = (interval.end - interval.start) / DEMO_HISTORY_WINDOW;
+        node.dataset.state = interval.state;
+        node.style.left = `${(interval.start - start) / DEMO_HISTORY_WINDOW * 100}%`;
+        node.style.width = `${fraction * 100}%`;
+        const label = labels[interval.state];
+        node.textContent = width * fraction > label.length * 7 + 12 ? label : "";
+        node.setAttribute("aria-label", `${label}: ${number.format((now - interval.start) / 1000)} to ${number.format((now - interval.end) / 1000)} seconds ago`);
+      });
+    }
+    const observedAt = now + demoHistoryInspection * 1000;
+    const point = demoHistory.findLast(item => item.at <= observedAt);
+    const when = demoHistoryInspection === 0 ? "Now" : `${number.format(-demoHistoryInspection)} s ago`;
+    const detail = point ? `${when} · Yaw ${labels[point.yaw]} · Pitch ${labels[point.pitch]} · Target ${labels[point.target]}` : `${when} · No observation`;
+    text("demo-history-detail", detail);
+    element("demo-history-inspect").setAttribute("aria-valuetext", detail);
+    for (const cursor of document.querySelectorAll(".demo-cursor")) cursor.style.left = `${100 + demoHistoryInspection / 30 * 100}%`;
+    text("demo-history-status", "OBSERVED IN THIS VIEW");
+  }
+
+  function renderDemoRadar() {
+    if (!demoActive() || !demoRadar || !demoRadarSize.width || !demoRadarSize.height) return;
+    const data = demoRadar, { width: w, height: h } = demoRadarSize;
+    const signature = JSON.stringify([data, w, h]);
+    if (signature === demoRadarSignature) return;
+    demoRadarSignature = signature;
+    const cx = w / 2, cy = h - 30, r = Math.max(1, Math.min(w / 2 - 24, h - 46)), orbit = r * .70;
+    // Fixed radius and image-x projection: a radar skin, never spatial ranging.
+    const angle = (data.x ?? .5) * Math.PI - Math.PI / 2;
+    const px = cx + Math.sin(angle) * orbit, py = cy - Math.cos(angle) * orbit;
+    const radius = data.ratio === null ? 7 : Math.min(28, Math.max(4, 14 * data.ratio));
+    const attrs = (id, values) => { for (const [key, value] of Object.entries(values)) element(id).setAttribute(key, String(value)); };
+    const show = (id, visible) => element(id).toggleAttribute("hidden", !visible);
+    const arc = radius => `M ${cx - radius} ${cy} A ${radius} ${radius} 0 0 1 ${cx + radius} ${cy}`;
+    attrs("demo-radar-plot", { viewBox: `0 0 ${w} ${h}` });
+    attrs("demo-radar-fan", { d: `${arc(r)} L ${cx} ${cy} Z` });
+    attrs("demo-radar-grid", { d: [.36, .70, 1].map(k => arc(r * k)).join(" ") + ` M ${cx - r} ${cy} H ${cx + r} M ${cx - r * .707} ${cy - r * .707} L ${cx} ${cy} L ${cx + r * .707} ${cy - r * .707}` });
+    attrs("demo-radar-center", { d: `M ${cx} ${cy - r} V ${cy}` });
+    attrs("demo-radar-link", { d: `M ${cx} ${cy - orbit} A ${orbit} ${orbit} 0 0 ${angle > 0 ? 1 : 0} ${px} ${py}` });
+    attrs("demo-radar-ray", { x1: cx, y1: cy, x2: px, y2: py });
+    attrs("demo-radar-halo", { cx: px, cy: py, r: radius + 8 });
+    attrs("demo-shot-subject", { cx: px, cy: py, r: radius });
+    attrs("demo-shot-goal", { cx, cy: cy - orbit, r: 14 });
+    attrs("demo-shot-center", { d: `M ${cx} ${cy - orbit - 12} V ${cy - orbit + 12}` });
+    const current = data.state === "visible", mark = data.x !== null;
+    const hasGoal = current && data.ratio !== null;
+    const centerOnly = current && ["Y", "D"].includes(data.mode) && !hasGoal;
+    show("demo-shot-subject", mark);
+    show("demo-shot-goal", hasGoal);
+    show("demo-shot-center", centerOnly);
+    show("demo-radar-ray", current);
+    show("demo-radar-halo", current && ["Y", "D"].includes(data.mode));
+    show("demo-radar-link", current && ["Y", "D"].includes(data.mode) && Math.abs(angle) > .01);
+    show("demo-radar-tag", mark);
+    const tag = element("demo-radar-tag");
+    // Keep the Last seen label inside the plot even at the image's right edge.
+    tag.style.left = `${Math.max(4, Math.min(w - (data.state === "lost" ? 68 : 45), px + radius + 8))}px`;
+    tag.style.top = `${py - radius - 15}px`;
+    text("demo-radar-tag", data.state === "lost" ? "Last seen" : `#${data.target}`);
+    show("demo-shot-empty", !mark);
+    show("demo-subject-key-wrap", mark);
+    show("demo-goal-key-wrap", hasGoal || centerOnly);
+    text("demo-subject-key", data.state === "lost" ? "Last seen" : "Subject now");
+    text("demo-goal-key", centerOnly ? "Centering goal" : "Framing goal");
+    text("demo-radar-caption", data.state === "lost" ? mark ? "Last seen position · current size unavailable" : "Subject lost · no remembered position"
+      : !current ? "Image-based view · no current observation"
+      : hasGoal ? "Image-based view · dot size = subject size"
+      : data.mode === "Y" ? "Image-based view · centering only" : "Image-based view · size reference unavailable");
+    element("demo-shot-view").dataset.state = data.state;
+    element("demo-shot-view").dataset.mode = data.mode;
+    element("demo-shot-view").setAttribute("aria-label", !mark ? "Current subject position unavailable."
+      : data.state === "lost" ? "Hollow dot: last seen image position, not a current observation."
+      : `Image-based guide: subject ${Math.abs(data.x - .5) < .018 ? "centered" : data.x > .5 ? "right of center" : "left of center"}. ${hasGoal ? `${integer.format(data.ratio * 100)}% of reference height.` : "Size reference unavailable."} Fixed radius; no measured bearing, distance or aircraft motion.`);
+  }
+
   function renderDemo(now) {
     if (!demoActive()) return;
+    const context = JSON.stringify([current?.run_id ?? null, current?.video.source_id ?? null]);
+    if (demoHistoryKey !== context) {
+      resetDemoHistory();
+      demoHistoryKey = context;
+      demoFrameRatio = 4 / 3;
+    }
+    if (frame?.width && frame?.height) demoFrameRatio = frame.width / frame.height;
+    element("camera-stage").style.setProperty("--demo-frame-ratio", String(demoFrameRatio));
     const elapsed = (stateTransitMs + Math.max(0, now - lastReceived)) / 1000;
     const fresh = serviceFresh(now) && !requestFailure;
     const runtime = current?.yaw_assist;
@@ -436,14 +600,16 @@
       ? Math.max(runTime(now) - preview.frame_received_at, preview.frame_age_s + elapsed) : Infinity;
     const imageRecent = selected && yawImageRecent(now) && analysisAge <= preview.frame_max_age_s
       && preview.frame_received_at <= current.at;
-    const visible = imageRecent && preview.phase === "tracking"
-      && frame.vision.detections.some(item => item.track_id === preview.target_id && item.confidence >= .5);
+    const detection = imageRecent && preview.phase === "tracking"
+      ? frame.vision.detections.find(item => item.track_id === preview.target_id && item.confidence >= .5) : null;
+    const visible = Boolean(detection);
     const targetLost = selected && (preview.phase === "paused" || (imageRecent && !visible));
     text("demo-target", selected ? `Person #${preview.target_id}` : targetKnown ? "No target selected" : "Unavailable");
     text("demo-target-state", targetLost ? "Assistance paused" : visible ? "Visible in camera"
       : selected ? "Visibility unavailable" : targetKnown ? "Select a target with Pocket" : "Target status unavailable");
 
     const labels = { manual: "Manual", assisted: "Assisted", paused: "Paused", waiting: "Waiting", unknown: "Unavailable" };
+    const axisStates = {}, corrections = {};
     for (const axis of ["yaw", "pitch", "roll", "throttle"]) {
       const stick = reportFresh ? sample.sticks?.[axis] : null;
       const stickValid = Number.isInteger(stick) && Math.abs(stick) <= 1024;
@@ -464,11 +630,95 @@
       }
       text(`demo-${axis}-state`, labels[state]);
       element(`demo-${axis}-state`).dataset.state = state;
-      text(`demo-${axis}-stick`, stickValid
-        ? `${stick > 0 ? "+" : ""}${number.format(stick / 1024 * 100)}%` : "Unavailable");
+      axisStates[axis] = state;
+      corrections[axis] = state === "assisted" ? assistance[axis].value : null;
+      const card = document.querySelector(`.demo-axis[data-axis="${axis}"]`);
+      card.dataset.state = state;
+      card.setAttribute("aria-label", `${axis}: ${labels[state]}`);
+      for (const kind of ["pilot", "argos"]) {
+        const value = kind === "pilot" ? stickValid ? stick : null : corrections[axis];
+        const valid = value !== null;
+        const formatted = valid ? `${value > 0 ? "+" : ""}${number.format(value / 1024 * 100)}%` : "—";
+        const label = kind === "pilot" ? "Pilot input" : "ARGOS correction";
+        const rail = card.querySelector(`.demo-rail[data-kind="${kind}"]`);
+        const active = kind === "pilot" ? state === "manual" : state === "assisted";
+        rail.dataset.active = String(active);
+        rail.dataset.empty = String(!valid);
+        rail.setAttribute("aria-label", `${label}: ${valid ? formatted : "unavailable"}. ${active ? "Reported control source." : labels[state] + "."}`);
+        const marker = rail.querySelector(".demo-marker"), fill = rail.querySelector(".demo-fill");
+        marker.hidden = !valid;
+        fill.hidden = !valid;
+        if (valid) {
+          marker.style.left = `${50 + value / 1024 * 50}%`;
+          fill.style.left = `${50 + Math.min(0, value) / 1024 * 50}%`;
+          fill.style.width = `${Math.abs(value) / 1024 * 50}%`;
+        }
+        text(`demo-${axis}-${kind === "pilot" ? "stick" : "correction"}`, formatted);
+        const output = card.querySelector(`.demo-value[data-kind="${kind}"]`);
+        output.dataset.empty = String(!valid);
+        output.setAttribute("aria-label", `${label} ${valid ? formatted : "unavailable"}`);
+      }
     }
     text("demo-report-status", reportFresh ? `Pocket report · ${ageText(reportAge)} ago`
       : sample ? "Pocket report unavailable · stale or invalid" : "Pocket report unavailable");
+
+    // Read the box paired with the displayed JPEG, not a newer preview error.
+    // The size reference has no frame identity of its own in this API. Only use
+    // it while the backend marks it valid, with fresh D-mode observations.
+    const targetKey = selected ? JSON.stringify([current.run_id, current.video.source_id, preview.target_id, preview.revision]) : null;
+    if (demoLastSeen?.key !== targetKey) demoLastSeen = null;
+    const box = detection?.box, distance = runtime?.distance_preview;
+    const reference = assistance && mode === "D" && distance?.experimental === true && distance.valid === true
+      && finite(distance.reference_height) && distance.reference_height > 0 && distance.reference_height <= 1 ? distance.reference_height : null;
+    const heightKnown = box && detection.confidence >= .65 && box[0] > 0 && box[1] > 0
+      && box[0] + box[2] < 1 && box[1] + box[3] < 1 && reference !== null;
+    const measuredRatio = heightKnown ? box[3] / reference : null;
+    const heightRatio = finite(measuredRatio) && measuredRatio > 0 ? measuredRatio : null;
+    const x = box ? box[0] + box[2] / 2 : null;
+    const error = x === null ? null : (x - .5) * 2;
+    text("demo-centering", error === null ? "Unavailable" : Math.abs(error) <= preview.deadband ? "Centered"
+      : `${number.format(Math.abs(error) * 100)}% ${error < 0 ? "left" : "right"}`);
+    text("demo-size", heightRatio === null ? "Unavailable" : `${integer.format(heightRatio * 100)}%`);
+    if (visible) demoLastSeen = { key: targetKey, x, ratio: heightRatio };
+    const remembered = targetLost ? demoLastSeen : null;
+    demoRadar = { state: visible ? "visible" : targetLost ? "lost" : "unknown", mode: modeKnown ? mode : "unknown",
+      x: visible ? x : remembered?.x ?? null, ratio: visible ? heightRatio : remembered?.ratio ?? null, target: selected ? preview.target_id : null };
+    renderDemoRadar();
+
+    let scene = "missing", title = "Waiting for live data.", subtitle = "Current observations are unavailable.", status = "UNAVAILABLE";
+    const yaw = axisStates.yaw, pitch = axisStates.pitch;
+    if (targetLost) {
+      scene = "lost"; title = "Subject lost."; subtitle = "Assistance paused."; status = "PAUSED";
+    } else if (targetKnown && !selected) {
+      title = "Choose a subject."; subtitle = "Select the person with Pocket."; status = "NO TARGET";
+    } else if (visible && !modeKnown) {
+      title = "Waiting for Pocket data."; subtitle = "Subject visible · control report unavailable";
+    } else if (visible && mode === "M") {
+      scene = "manual"; title = "Pilot in control."; subtitle = "Assistance off · subject still visible"; status = "MANUAL";
+    } else if (visible && yaw === "assisted" && pitch === "assisted") {
+      const aligned = Math.abs(error) <= preview.deadband && heightRatio !== null && Math.round(heightRatio * 100) === 100
+        && corrections.yaw === 0 && corrections.pitch === 0;
+      scene = aligned ? "zero" : "assist"; title = aligned ? "The framing lines up." : "Keep the subject centered.";
+      subtitle = aligned ? "Assistance active · zero correction" : heightRatio !== null ? "Keep the same size in the frame." : "Size reference unavailable.";
+      status = aligned ? "ALIGNED" : "ASSISTED";
+    } else if (visible && mode === "Y" && yaw === "assisted") {
+      scene = "yaw"; title = "Keep the subject centered."; subtitle = "Forward / back stays with the pilot."; status = "ASSISTED";
+    } else if (visible && ((yaw === "manual" && pitch === "assisted") || (yaw === "assisted" && pitch === "manual"))) {
+      scene = "pilot"; title = "Pilot has priority.";
+      subtitle = yaw === "manual" ? "Turning: pilot · Size assistance: ARGOS" : "Turning: ARGOS · Forward / back: pilot"; status = "SHARED";
+    } else if (visible && [yaw, pitch].includes("unknown")) {
+      title = "Waiting for axis reports."; subtitle = "See each axis for available control data.";
+    } else if (visible && [yaw, pitch].includes("waiting")) {
+      title = "Waiting for assistance."; subtitle = "Subject visible · assistance not confirmed"; status = "WAITING";
+    } else if (visible && [yaw, pitch].includes("paused")) {
+      title = "Assistance paused."; subtitle = "Subject visible · check the axis states"; status = "PAUSED";
+    } else if (visible && yaw === "manual" && pitch === "manual") {
+      scene = "pilot"; title = "Pilot in control."; subtitle = "Assistance selected · pilot has priority"; status = "MANUAL";
+    }
+    element("demo-summary").dataset.scene = scene;
+    text("demo-shot-title", title); text("demo-shot-subtitle", subtitle); text("demo-shot-state", status);
+    text("demo-message", title); text("demo-message-detail", subtitle);
+    observeDemoHistory(now, { yaw, pitch, target: visible ? "visible" : targetLost ? "lost" : targetKnown && !selected ? "none" : "unknown" });
   }
 
   function visionResult(header) {
@@ -731,6 +981,7 @@
           const now = performance.now();
           const previousUrl = frame?.url;
           frame = { sequence, receivedAt, observedAt: now, initialAge: Math.max(0, runTime(now) - receivedAt), url: candidateUrl, vision: result,
+            width: decoded.naturalWidth, height: decoded.naturalHeight,
             run_id: requestedRun, video_id: requestedVideo };
           // The decoded image and its own result enter the DOM in one turn.
           // Never overlay detections on a newer independently fetched raw JPEG.
@@ -1347,6 +1598,10 @@
   });
   element("focus-button").addEventListener("click", () => focusView(!document.body.classList.contains("focus-mode")));
   element("demo-button").addEventListener("click", () => demoView(!demoActive()));
+  element("demo-history-inspect").addEventListener("input", event => {
+    demoHistoryInspection = Math.min(0, Math.max(-30, Number(event.target.value) || 0));
+    renderDemoHistory();
+  });
   element("vision-toggle").addEventListener("change", () => {
     visionEnabled = element("vision-toggle").checked;
     if (!visionEnabled) void clearYawPreview();
@@ -1367,6 +1622,19 @@
     renderVisionSelection();
   });
   new ResizeObserver(layoutVision).observe(element("camera-stage"));
+  new ResizeObserver(entries => {
+    const box = entries[0].contentRect;
+    demoRadarSize = { width: box.width, height: box.height };
+    renderDemoRadar();
+  }).observe(element("demo-shot-view"));
+  new ResizeObserver(() => renderDemoHistory()).observe(element("demo-history"));
+  document.addEventListener("visibilitychange", () => {
+    if (demoActive() && document.hidden) {
+      const now = performance.now();
+      demoHistoryPoint(now, { yaw: "unknown", pitch: "unknown", target: "unknown" });
+      demoHistoryAt = now;
+    }
+  });
   if (!document.fullscreenEnabled) element("fullscreen-button").hidden = true;
   element("fullscreen-button").addEventListener("click", async () => {
     try {

@@ -4,15 +4,15 @@ const AXES = ['roll', 'pitch', 'throttle', 'yaw'];
 
 // Synthetic images and reports stay inside this browser fixture. The production
 // console still uses its configured camera and never supplies demonstration data.
-async function setupDemoCamera(page, model) {
-  const jpeg = await page.evaluate(() => {
-    const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 360;
+async function setupDemoCamera(page, model, { width = 640, height = 480 } = {}) {
+  const jpeg = await page.evaluate(({ width, height }) => {
+    const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
     const context = canvas.getContext('2d');
-    context.fillStyle = '#364840'; context.fillRect(0, 0, 640, 360);
+    context.fillStyle = '#364840'; context.fillRect(0, 0, width, height);
     return canvas.toDataURL('image/jpeg').split(',')[1];
-  });
+  }, { width, height });
   const camera = {
-    video: 'demo-camera-1', sequence: 0, phase: 'tracking',
+    video: 'demo-camera-1', sequence: 0, phase: 'tracking', target: 7,
     detections: [{ track_id: 7, confidence: .94, box: [.2, .2, .2, .6] }],
   };
   model.modifyState = state => {
@@ -21,7 +21,7 @@ async function setupDemoCamera(page, model) {
     Object.assign(state.video, {
       source: 'device', source_id: camera.video, state: 'recent', endpoint: '/dev/video2',
       label: 'USB camera', sequence: camera.sequence, received_at: state.at - .02,
-      rx_age_s: .02, width: 640, height: 360,
+      rx_age_s: .02, width, height,
     });
     state.vision = {
       configured: true, state: 'recent', detail: '', model: 'YOLOX-Tiny', age_limit_s: 1,
@@ -29,7 +29,7 @@ async function setupDemoCamera(page, model) {
     };
     state.yaw_preview = {
       enabled: true, continuous: true, phase: camera.phase, detail: '', revision: 1,
-      target_id: 7, run_id: model.run, video_id: camera.video, frame_sequence: camera.sequence,
+      target_id: camera.target, run_id: model.run, video_id: camera.video, frame_sequence: camera.sequence,
       frame_received_at: state.at - .02, frame_age_s: .02, frame_max_age_s: .45,
       error_x: camera.phase === 'tracking' ? -.4 : null,
       yaw: camera.phase === 'tracking' ? -.1 : 0, yaw_limit: .2, deadband: .035,
@@ -49,7 +49,7 @@ async function setupDemoCamera(page, model) {
       'X-Run-Id': model.run, 'X-Video-Id': camera.video,
     };
     if (route.request().url().includes('/vision/')) headers['X-Vision-Result'] = JSON.stringify({
-      width: 640, height: 360, inference_ms: 25, detections: camera.detections,
+      width, height, inference_ms: 25, detections: camera.detections,
     });
     await route.fulfill({ contentType: 'image/jpeg', headers, body: Buffer.from(jpeg, 'base64') });
   });
@@ -80,7 +80,8 @@ test('demo shares the live image and leaves missing Pocket reports unavailable',
   await expect(page.locator('#demo-mode')).toHaveText('Unavailable');
   for (const axis of AXES) {
     await expect(page.locator(`#demo-${axis}-state`)).toHaveText('Unavailable');
-    await expect(page.locator(`#demo-${axis}-stick`)).toHaveText('Unavailable');
+    await expect(page.locator(`#demo-${axis}-stick`)).toHaveText('—');
+    await expect(page.locator(`#demo-${axis}-stick`).locator('xpath=..')).toHaveAttribute('aria-label', /unavailable/i);
   }
   expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
 });
@@ -142,26 +143,47 @@ test('a temporarily lost target keeps its selected identity with assistance paus
   expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
 });
 
-for (const size of [{ width: 1366, height: 650 }, { width: 1920, height: 1080 }, { width: 390, height: 844 }]) {
-  test(`demo enlarges the video and keeps its summary reachable at ${size.width}x${size.height}`, async ({ page, model }) => {
+for (const size of [{ width: 1366, height: 650 }, { width: 1920, height: 1080 }, { width: 390, height: 844 }, { width: 320, height: 740 }]) {
+  test(`demo preserves native video ratio and full-width bottom history at ${size.width}x${size.height}`, async ({ page, model }) => {
     await page.setViewportSize(size);
     await setupDemoCamera(page, model);
-    const ordinary = await page.locator('#camera-stage').boundingBox();
     await enterDemo(page);
-    const expanded = await page.locator('#camera-stage').boundingBox();
-    expect(expanded.width * expanded.height).toBeGreaterThan(ordinary.width * ordinary.height);
+    const video = await page.locator('#camera-stage').boundingBox();
+    const sidebar = await page.locator('#demo-summary').boundingBox();
+    const history = await page.locator('#demo-history').boundingBox();
+    expect(video.width / video.height).toBeCloseTo(4 / 3, 2);
+    expect(history.y).toBeGreaterThanOrEqual(Math.max(video.y + video.height, sidebar.y + sidebar.height) - 1);
+    if (size.width >= 1000) {
+      expect(sidebar.x).toBeGreaterThanOrEqual(video.x + video.width - 1);
+      expect(Math.abs(history.x - video.x)).toBeLessThan(2);
+      expect(Math.abs(history.width - (sidebar.x + sidebar.width - video.x))).toBeLessThan(2);
+    } else {
+      expect(sidebar.y).toBeGreaterThanOrEqual(video.y + video.height - 1);
+      expect(Math.abs(history.width - video.width)).toBeLessThan(2);
+    }
     await expect(page.locator('#camera-image')).toHaveCSS('object-fit', 'contain');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
     await page.locator('#demo-summary').scrollIntoViewIfNeeded();
     await expect(page.locator('#demo-summary')).toBeInViewport();
     for (const axis of AXES) {
-      await page.locator(`#demo-${axis}-state`).scrollIntoViewIfNeeded();
-      await expect(page.locator(`#demo-${axis}-state`)).toBeInViewport();
+      await page.locator(`.demo-axis[data-axis="${axis}"]`).scrollIntoViewIfNeeded();
+      await expect(page.locator(`.demo-axis[data-axis="${axis}"]`)).toBeInViewport();
     }
     await page.screenshot({ path: test.info().outputPath('demo-view.png'), fullPage: true });
     expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
   });
 }
+
+test('demo derives the native ratio from a widescreen camera instead of assuming 4:3', async ({ page, model }) => {
+  await setupDemoCamera(page, model, { width: 640, height: 360 });
+  await enterDemo(page);
+  await expect.poll(async () => {
+    const box = await page.locator('#camera-stage').boundingBox();
+    return box.width / box.height;
+  }).toBeCloseTo(16 / 9, 2);
+  await expect(page.locator('#camera-image')).toHaveCSS('object-fit', 'contain');
+  expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+});
 
 function attachPocketReports(model) {
   const cameraState = model.modifyState;
@@ -179,6 +201,7 @@ function attachPocketReports(model) {
       session: sample.session, generation: sample.generation, ticket: sample.ticket, ack: sample.ack,
       radio_state: 'A', radio_cause: 'A', radio_mode: 'D', radio_yaw_phase: 'A', radio_pitch_phase: 'A',
       pilot_sample: sample, pilot_sample_count: 20, pilot_sample_age_s: reports.age, pilot_sample_fresh: true,
+      distance_preview: { experimental: true, valid: true, reference_height: .5, pitch: -20, reason: 'tracking' },
       assistance: {
         source: 'pocket_lua_report', fresh: true, selected_mode: 'D',
         meaning: 'Last reported Lua output; not native mixer or flight-controller feedback',
@@ -198,7 +221,11 @@ async function expectPocketReady(page) {
 }
 
 async function expectUnavailable(page, ids) {
-  for (const id of ids) await expect(page.locator(`#demo-${id}`)).toHaveText('Unavailable');
+  for (const id of ids) {
+    const field = page.locator(`#demo-${id}`);
+    await expect(field).toHaveText(id.endsWith('-stick') ? '—' : 'Unavailable');
+    if (id.endsWith('-stick')) await expect(field.locator('xpath=..')).toHaveAttribute('aria-label', /unavailable/i);
+  }
 }
 
 const ALL_POCKET_FIELDS = ['mode', ...AXES.flatMap(axis => [`${axis}-state`, `${axis}-stick`])];
@@ -368,5 +395,282 @@ test('target loss pauses fresh assisted reports and keeps the remembered identit
   camera.phase = 'tracking'; camera.detections = [person];
   await expectPocketReady(page);
   await expect(page.locator('#demo-target-state')).toHaveText('Visible in camera');
+  expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+});
+
+function rail(page, axis, kind) {
+  return page.locator(`.demo-axis[data-axis="${axis}"] .demo-rail[data-kind="${kind}"]`);
+}
+
+test('each pilot and ARGOS bar uses its own signed value and reported source, including valid zero', async ({ page, model }) => {
+  await setupDemoCamera(page, model);
+  const reports = attachPocketReports(model);
+  await enterDemo(page);
+  await expectPocketReady(page);
+  await expect(page.locator('#demo-yaw-correction')).toHaveText('+8%');
+  await expect(page.locator('#demo-pitch-correction')).toHaveText('-2%');
+  await page.screenshot({ path: test.info().outputPath('demo-fresh-combined.png'), fullPage: true });
+  await expect(rail(page, 'yaw', 'pilot')).toHaveAttribute('data-active', 'false');
+  await expect(rail(page, 'yaw', 'argos')).toHaveAttribute('data-active', 'true');
+  const geometry = async (axis, kind) => rail(page, axis, kind).evaluate(node => {
+    const track = node.getBoundingClientRect();
+    const marker = node.querySelector('.demo-marker').getBoundingClientRect();
+    const fill = node.querySelector('.demo-fill').getBoundingClientRect();
+    return { marker: (marker.x + marker.width / 2 - track.x) / track.width, fill: fill.width / track.width };
+  });
+  expect((await geometry('yaw', 'pilot')).marker).toBeCloseTo(.625, 2);
+  expect((await geometry('yaw', 'argos')).marker).toBeCloseTo(.54, 2);
+  expect((await geometry('yaw', 'pilot')).fill).toBeCloseTo(.125, 2);
+  expect((await geometry('yaw', 'argos')).fill).toBeCloseTo(.04, 2);
+  expect((await geometry('pitch', 'pilot')).marker).toBeCloseTo(.25, 2);
+  expect((await geometry('pitch', 'argos')).marker).toBeCloseTo(.49, 2);
+
+  reports.modify = runtime => {
+    runtime.pilot_sample.sticks.yaw = 0;
+    runtime.pilot_sample.lua_outputs.yaw.value = runtime.assistance.yaw.value = 0;
+    runtime.pilot_sample.lua_outputs.pitch = { valid: false, value: 0 };
+    runtime.assistance.pitch = { state: 'paused', valid: false, value: null };
+  };
+  await expect(page.locator('#demo-yaw-correction')).toHaveText('0%');
+  await expect(page.locator('#demo-yaw-stick')).toHaveText('0%');
+  await expect(rail(page, 'yaw', 'argos')).toHaveAttribute('data-active', 'true');
+  await expect(rail(page, 'yaw', 'argos')).toHaveAttribute('data-empty', 'false');
+  await expect(rail(page, 'yaw', 'argos').locator('.demo-marker')).toBeVisible();
+  expect((await geometry('yaw', 'argos')).marker).toBeCloseTo(.5, 2);
+  expect((await geometry('yaw', 'argos')).fill).toBe(0);
+  await expect(page.locator('#demo-pitch-correction')).toHaveText('—');
+  await expect(rail(page, 'pitch', 'argos')).toHaveAttribute('data-empty', 'true');
+  await expect(rail(page, 'pitch', 'argos').locator('.demo-marker')).toBeHidden();
+  await expect(rail(page, 'pitch', 'argos')).toHaveAttribute('data-active', 'false');
+  await expect(rail(page, 'pitch', 'pilot')).toHaveAttribute('data-active', 'false');
+  for (const axis of ['roll', 'throttle']) {
+    await expect(rail(page, axis, 'pilot')).toHaveAttribute('data-active', 'true');
+    await expect(rail(page, axis, 'argos')).toHaveAttribute('data-empty', 'true');
+    await expect(page.locator(`#demo-${axis}-correction`)).toHaveText('—');
+  }
+  reports.modify = runtime => {
+    runtime.radio_yaw_phase = runtime.pilot_sample.yaw_phase = 'M';
+    runtime.pilot_sample.lua_outputs.yaw = { valid: false, value: 0 };
+    runtime.assistance.yaw = { state: 'manual', valid: false, value: null };
+  };
+  await expect(rail(page, 'yaw', 'pilot')).toHaveAttribute('data-active', 'true');
+  await expect(rail(page, 'yaw', 'argos')).toHaveAttribute('data-active', 'false');
+  await expect(rail(page, 'pitch', 'argos')).toHaveAttribute('data-active', 'true');
+  expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+});
+
+test('radar follows paired image position and validated apparent height without inventing range', async ({ page, model }) => {
+  const camera = await setupDemoCamera(page, model);
+  const reports = attachPocketReports(model);
+  await enterDemo(page);
+  await expectPocketReady(page);
+  const subject = page.locator('#demo-shot-subject');
+  const goal = page.locator('#demo-shot-goal');
+  await expect(subject).toBeVisible();
+  await expect(goal).toBeVisible();
+  const circle = node => node.evaluate(element => ({
+    x: Number(element.getAttribute('cx')), y: Number(element.getAttribute('cy')), r: Number(element.getAttribute('r')),
+  }));
+  const initial = await circle(subject), target = await circle(goal);
+  expect(initial.x).toBeLessThan(target.x);
+  expect(initial.r / target.r).toBeCloseTo(1.2, 2);
+  // Preview error is deliberately left at -.4: the paired detection is the
+  // source of the drawing, rather than a newer independent control snapshot.
+  camera.detections[0].box = [.6, .2, .2, .4];
+  await expect.poll(async () => (await circle(subject)).x).toBeGreaterThan(target.x);
+  await expect.poll(async () => (await circle(subject)).r / target.r).toBeCloseTo(.8, 2);
+  camera.detections[0].box = [.4, .2, .2, .5];
+  await expect.poll(async () => (await circle(subject)).x).toBeCloseTo(target.x, 2);
+  await expect.poll(async () => (await circle(subject)).r).toBeCloseTo(target.r, 2);
+  await page.locator('#demo-shot-details summary').click();
+  await expect(page.locator('#demo-centering')).toHaveText('Centered');
+  await expect(page.locator('#demo-size')).toContainText('100');
+  await expect(page.locator('#demo-shot-details')).toHaveAttribute('open', '');
+  reports.modify = runtime => { runtime.distance_preview.valid = false; };
+  await expect(goal).toBeHidden();
+  await expect(subject).toBeVisible();
+  await expect(page.locator('#demo-size')).toHaveText('Unavailable');
+  const directionRadius = (await circle(subject)).r;
+  camera.detections[0].box = [.3, .2, .2, .6];
+  await expect.poll(async () => (await circle(subject)).x).toBeLessThan(target.x);
+  expect((await circle(subject)).r).toBe(directionRadius);
+  await expect(page.locator('#demo-shot-details')).toHaveAttribute('open', '');
+  expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+});
+
+for (const [label, modify] of [
+  ['absent reference', runtime => { delete runtime.distance_preview; }],
+  ['zero reference', runtime => { runtime.distance_preview.reference_height = 0; }],
+  ['overflowing ratio', runtime => { runtime.distance_preview.reference_height = Number.MIN_VALUE; }],
+  ['out-of-image reference', runtime => { runtime.distance_preview.reference_height = 1.2; }],
+  ['non-experimental source', runtime => { runtime.distance_preview.experimental = false; }],
+  ['yaw-only mode', runtime => { runtime.assistance.selected_mode = 'Y'; }],
+]) {
+  test(`radar uses only a direction marker with ${label}`, async ({ page, model }) => {
+    await setupDemoCamera(page, model);
+    const reports = attachPocketReports(model);
+    reports.modify = modify;
+    await enterDemo(page);
+    await expect(page.locator('#demo-shot-subject')).toBeVisible();
+    await expect(page.locator('#demo-shot-goal')).toBeHidden();
+    await page.locator('#demo-shot-details summary').click();
+    await expect(page.locator('#demo-size')).toHaveText('Unavailable');
+    expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+  });
+}
+
+test('a clipped subject keeps image direction while withholding its apparent-size goal', async ({ page, model }) => {
+  const camera = await setupDemoCamera(page, model);
+  attachPocketReports(model);
+  await enterDemo(page);
+  await expect(page.locator('#demo-shot-goal')).toBeVisible();
+  camera.detections[0].box = [0, .2, .2, .6];
+  await expect(page.locator('#demo-shot-goal')).toBeHidden();
+  await expect(page.locator('#demo-shot-subject')).toBeVisible();
+  await page.locator('#demo-shot-details summary').click();
+  await expect(page.locator('#demo-size')).toHaveText('Unavailable');
+  await expect(page.locator('#demo-centering')).toContainText('left');
+  expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+});
+
+test('lost radar preserves a static last-seen marker, while unavailable data and context changes clear it', async ({ page, model }) => {
+  const camera = await setupDemoCamera(page, model);
+  attachPocketReports(model);
+  await enterDemo(page);
+  await expectPocketReady(page);
+  const subject = page.locator('#demo-shot-subject');
+  await expect(subject).toBeVisible();
+  const before = await subject.evaluate(node => ['cx', 'cy', 'r'].map(name => node.getAttribute(name)));
+  camera.phase = 'paused'; camera.detections = [];
+  await expect(page.locator('#demo-radar-tag')).toContainText('Last seen');
+  await expect(subject).toBeVisible();
+  await expect(page.locator('#demo-shot-goal')).toBeHidden();
+  expect(await subject.evaluate(node => ['cx', 'cy', 'r'].map(name => node.getAttribute(name)))).toEqual(before);
+  await page.waitForTimeout(400);
+  expect(await subject.evaluate(node => ['cx', 'cy', 'r'].map(name => node.getAttribute(name)))).toEqual(before);
+
+  camera.target = 8;
+  await expect(page.locator('#demo-target')).toHaveText('Person #8');
+  await expect(subject).toBeHidden();
+  camera.target = 7; camera.phase = 'tracking';
+  camera.detections = [{ track_id: 7, confidence: .94, box: [.2, .2, .2, .6] }];
+  await expect(subject).toBeVisible();
+  model.offline = true;
+  await expect(subject).toBeHidden();
+  await expect(page.locator('#demo-shot-goal')).toBeHidden();
+  camera.phase = 'paused'; camera.detections = []; model.offline = false;
+  await expect(page.locator('#service-status')).toHaveText('Service connected');
+  // An unavailable interval must not re-label the old drawing as live evidence.
+  await expect(page.locator('#demo-shot-goal')).toBeHidden();
+  camera.video = 'replacement-camera';
+  await expect(subject).toBeHidden();
+  expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+});
+
+test('local history records independent axis changes and unknown intervals without filling pre-entry time', async ({ page, model }) => {
+  await setupDemoCamera(page, model);
+  const reports = attachPocketReports(model);
+  await enterDemo(page);
+  await expectPocketReady(page);
+  const segments = (lane, state) => page.locator(`.demo-history-track[data-lane="${lane}"] .demo-segment[data-state="${state}"]:not([hidden])`);
+  await expect(segments('yaw', 'assisted')).not.toHaveCount(0);
+  await expect(segments('pitch', 'assisted')).not.toHaveCount(0);
+  await expect(segments('target', 'visible')).not.toHaveCount(0);
+  const inspect = page.locator('#demo-history-inspect');
+  await expect(inspect).toHaveAttribute('min', '-30');
+  await expect(inspect).toHaveAttribute('max', '0');
+  await inspect.evaluate(node => { node.value = '-30'; node.dispatchEvent(new Event('input', { bubbles: true })); });
+  await expect(page.locator('#demo-history-detail')).toContainText(/no observation|unavailable|not observed/i);
+
+  reports.modify = runtime => {
+    runtime.radio_yaw_phase = runtime.pilot_sample.yaw_phase = 'M';
+    runtime.pilot_sample.lua_outputs.yaw = { valid: false, value: 0 };
+    runtime.assistance.yaw = { state: 'manual', valid: false, value: null };
+  };
+  await expect(segments('yaw', 'manual')).not.toHaveCount(0);
+  await expect(segments('yaw', 'assisted')).not.toHaveCount(0);
+  await expect(segments('pitch', 'manual')).toHaveCount(0);
+  await expect(segments('pitch', 'assisted')).not.toHaveCount(0);
+  model.offline = true;
+  await expect(segments('yaw', 'unknown')).not.toHaveCount(0);
+  await expect(segments('pitch', 'unknown')).not.toHaveCount(0);
+  model.offline = false; reports.modify = () => {};
+  await expectPocketReady(page);
+  await inspect.evaluate(node => { node.value = '0'; node.dispatchEvent(new Event('input', { bubbles: true })); });
+  await expect(page.locator('#demo-history-detail')).toContainText(/yaw/i);
+  await expect(page.locator('#demo-history-detail')).toContainText(/pitch/i);
+  const beforePolls = model.calls.filter(call => call.path === '/api/state').length;
+  await page.waitForTimeout(1000);
+  const addedPolls = model.calls.filter(call => call.path === '/api/state').length - beforePolls;
+  expect(addedPolls).toBeGreaterThan(0);
+  expect(addedPolls, 'demo uses the existing 100 ms state poll, without a second telemetry poll').toBeLessThanOrEqual(14);
+  const stateCalls = model.calls.filter(call => call.path === '/api/state');
+  expect(stateCalls.length).toBeGreaterThan(2);
+  expect(new Set(model.calls.map(call => call.path))).toEqual(new Set(['/api/state']));
+  expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+});
+
+test('history expires observations after its 30-second local window instead of extending the old state across a clock gap', async ({ page, model }) => {
+  await setupDemoCamera(page, model);
+  const reports = attachPocketReports(model);
+  await enterDemo(page);
+  await expectPocketReady(page);
+  const assisted = page.locator('.demo-history-track[data-lane="yaw"] .demo-segment[data-state="assisted"]:not([hidden])');
+  await expect(assisted).not.toHaveCount(0);
+  const count = await page.locator('.demo-segment').count();
+  reports.modify = runtime => {
+    runtime.assistance.selected_mode = 'M';
+    for (const axis of ['yaw', 'pitch']) {
+      runtime.pilot_sample.lua_outputs[axis] = { valid: false, value: 0 };
+      runtime.assistance[axis] = { state: 'manual', valid: false, value: null };
+    }
+  };
+  // Browser time is the local history's clock. Jumping it while real fixture
+  // reports keep their independent monotonic origin also exercises missed time.
+  await page.clock.install();
+  await page.clock.fastForward(31_000);
+  await expect(assisted).toHaveCount(0);
+  expect(await page.locator('.demo-segment').count()).toBe(count);
+  await page.locator('#demo-history-inspect').evaluate(node => {
+    node.value = '-15'; node.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await expect(page.locator('#demo-history-detail')).toContainText(/unknown|unavailable|not observed|no observation/i);
+  expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+});
+
+test('history and radar memory reset for a new run and camera, with a bounded reusable timeline', async ({ page, model }) => {
+  const camera = await setupDemoCamera(page, model);
+  const reports = attachPocketReports(model);
+  await enterDemo(page);
+  await expectPocketReady(page);
+  const yawAssisted = page.locator('.demo-history-track[data-lane="yaw"] .demo-segment[data-state="assisted"]:not([hidden])');
+  await expect(yawAssisted).not.toHaveCount(0);
+  await expect(page.locator('.demo-history-track')).toHaveCount(3);
+  const count = await page.locator('.demo-segment').count();
+  expect(count).toBeLessThanOrEqual(3 * 128);
+  reports.modify = runtime => {
+    runtime.assistance.selected_mode = 'M';
+    for (const axis of ['yaw', 'pitch']) {
+      runtime.pilot_sample.lua_outputs[axis] = { valid: false, value: 0 };
+      runtime.assistance[axis] = { state: 'manual', valid: false, value: null };
+    }
+  };
+  model.run = 'replacement-run';
+  await expect(page.locator('#demo-mode')).toHaveText('Manual');
+  await expect(yawAssisted).toHaveCount(0);
+  await expect(page.locator('#demo-shot-goal')).toBeHidden();
+  await expect(page.locator('#demo-shot-subject')).toBeVisible();
+  camera.phase = 'paused'; camera.detections = [];
+  await expect(page.locator('#demo-radar-tag')).toContainText('Last seen');
+  camera.video = 'replacement-video';
+  await expect(page.locator('#demo-shot-subject')).toBeHidden();
+  await expect(page.locator('.demo-history-track[data-lane="target"] .demo-segment[data-state="visible"]:not([hidden])')).toHaveCount(0);
+  expect(await page.locator('.demo-segment').count()).toBe(count);
+  await page.locator('#demo-button').click();
+  await enterDemo(page);
+  await page.locator('#demo-history-inspect').evaluate(node => {
+    node.value = '-1'; node.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await expect(page.locator('#demo-history-detail')).toContainText(/no observation|unavailable|not observed/i);
   expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
 });
