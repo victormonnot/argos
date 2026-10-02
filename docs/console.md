@@ -125,10 +125,11 @@ reception age is independent of heartbeat reception age.
 
 ## Reading the interface
 
-- **Demo view**: a read-only camera presentation with the selected target,
+- **Demo view**: a camera presentation with read-only flight data: selected target,
   Pocket mode, separate Pilot/ARGOS axis bars, an image-based framing diagram,
-  and a local 30-second history. See [Demo view](demo-view.md) for report
-  meanings, unavailable states and freshness limits.
+  and a local 30-second history. A compact **Record raw** button starts/stops
+  camera capture in place. See [Demo view](demo-view.md) for report meanings,
+  unavailable states, the bounded last-report display and recording behavior.
 - **Onboard camera**: the complete image, its source, and its
   reception age. It is hidden when reception expires, stops, or can no longer be
   verified.

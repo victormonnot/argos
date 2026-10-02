@@ -881,3 +881,117 @@ test('history and radar memory reset for a new run and camera, with a bounded re
   await expect(page.locator('#demo-history-detail')).toContainText(/no observation|unavailable|not observed/i);
   expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
 });
+
+async function prepareLastReport(page, model) {
+  await page.clock.install();
+  const camera = await setupDemoCamera(page, model);
+  const reports = attachPocketReports(model);
+  reports.receivedAt = 1_000_000 + model.clock() - .02;
+  await enterDemo(page);
+  await expectPocketReady(page);
+  await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 100));
+  return { camera, reports };
+}
+
+function expirePocketReport(runtime) {
+  runtime.pilot_sample_fresh = false;
+  runtime.assistance.fresh = false;
+  runtime.assistance.selected_mode = null;
+  for (const axis of ['yaw', 'pitch']) runtime.assistance[axis] = { state: 'unknown', valid: false, value: null };
+}
+
+async function showLastReport(page, reports) {
+  reports.age = .5;
+  reports.modify = expirePocketReport;
+  await page.clock.runFor(150);
+  await expect(page.locator('#demo-summary')).toHaveAttribute('data-held', 'true');
+}
+
+test('demo retains a muted last report through backend expiry without extending control history or Locked', async ({ page, model }) => {
+  const { reports } = await prepareLastReport(page, model);
+  await showLastReport(page, reports);
+  await expect(page.locator('#demo-mode')).toHaveText('Yaw + apparent distance');
+  await expect(page.locator('#demo-report-hint')).toBeVisible();
+  await expect(page.locator('#demo-report-hint')).toHaveText(/Last report · 0\.[5-8] s/);
+  await expect(page.locator('#demo-mode-hint')).toBeVisible();
+  await expect(page.locator('#demo-yaw-correction')).toHaveText('+8%');
+  await expect(page.locator('#demo-yaw-stick')).toHaveText('+25%');
+  await expect(page.locator('.demo-rail[data-active=true]')).toHaveCount(0);
+  await expect(page.locator('.demo-rail').first()).toHaveCSS('opacity', '0.5');
+  await expect(page.locator('#demo-target-state')).toHaveText('Tracked');
+  await expect(page.locator('#demo-shot-state')).toHaveText('LAST REPORT');
+  await page.clock.runFor(300); // The bounded history samples at 250 ms.
+  await expect(page.locator('.demo-history-track[data-lane="yaw"] .demo-segment[data-state="unknown"]:not([hidden])')).not.toHaveCount(0);
+  await page.screenshot({ path: test.info().outputPath('demo-last-report.png'), fullPage: true });
+  reports.age = 1.01;
+  await page.clock.runFor(100);
+  await expectUnavailable(page, ALL_POCKET_FIELDS);
+  await expect(page.locator('#demo-report-hint')).toBeHidden();
+  expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+});
+
+test('last report expires locally even when HTTP keeps repeating a fresh age and receipt', async ({ page, model }) => {
+  const { reports } = await prepareLastReport(page, model);
+  await page.clock.runFor(450);
+  await expect(page.locator('#demo-summary')).toHaveAttribute('data-held', 'true');
+  await page.clock.runFor(650);
+  await expectUnavailable(page, ALL_POCKET_FIELDS);
+  // Only a genuinely new receipt can restore a current report.
+  reports.receivedAt = null;
+  await page.clock.runFor(150);
+  await expectPocketReady(page);
+  await expect(page.locator('#demo-summary')).toHaveAttribute('data-held', 'false');
+});
+
+for (const change of ['disconnected', 'disabled', 'malformed', 'correlation', 'generation', 'session', 'target', 'source', 'run', 'hidden', 'exit']) {
+  test(`a ${change} change immediately clears retained Pocket data`, async ({ page, model }) => {
+    const { camera, reports } = await prepareLastReport(page, model);
+    await showLastReport(page, reports);
+    const changes = {
+      disconnected: runtime => { runtime.connected = false; },
+      disabled: runtime => { runtime.enabled = false; },
+      malformed: runtime => { runtime.pilot_sample.sticks.yaw = null; },
+      correlation: runtime => { runtime.radio_yaw_phase = 'M'; },
+      generation: runtime => { runtime.generation += 1; },
+      session: runtime => { runtime.session = 'replacement'; },
+      target: () => { camera.target = 8; },
+      source: () => { camera.video = 'replacement'; },
+      run: () => { model.run = 'replacement'; },
+      hidden: () => {}, exit: () => {},
+    };
+    reports.modify = runtime => { expirePocketReport(runtime); changes[change](runtime); };
+    if (change === 'hidden') {
+      await page.evaluate(() => {
+        Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+    } else if (change === 'exit') {
+      await page.locator('#demo-button').click();
+      await enterDemo(page);
+    }
+    await page.clock.runFor(200);
+    await expect(page.locator('#demo-summary')).toHaveAttribute('data-held', 'false');
+    await expect(page.locator('#demo-mode')).toHaveText('Unavailable');
+    await expect(page.locator('#demo-yaw-correction')).toHaveText('—');
+    await expect(page.locator('#demo-report-hint')).toBeHidden();
+  });
+}
+
+for (const next of ['manual', 'waiting', 'paused']) {
+  test(`a new ${next} report replaces retained assistance immediately`, async ({ page, model }) => {
+    const { reports } = await prepareLastReport(page, model);
+    await showLastReport(page, reports);
+    reports.age = .02; reports.receivedAt = null;
+    reports.modify = runtime => {
+      const phase = { manual: 'M', waiting: 'R', paused: 'P' }[next];
+      runtime.radio_yaw_phase = runtime.pilot_sample.yaw_phase = phase;
+      runtime.pilot_sample.lua_outputs.yaw = { valid: false, value: 0 };
+      runtime.assistance.yaw = { state: next, valid: false, value: null };
+    };
+    await page.clock.runFor(200);
+    await expect(page.locator('#demo-summary')).toHaveAttribute('data-held', 'false');
+    await expect(page.locator('#demo-yaw-state')).toHaveText({ manual: 'Manual', waiting: 'Waiting', paused: 'Paused' }[next]);
+    await expect(page.locator('#demo-yaw-correction')).toHaveText('—');
+    await expect(page.locator('#demo-report-hint')).toBeHidden();
+  });
+}

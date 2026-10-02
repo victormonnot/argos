@@ -15,11 +15,18 @@ height, with equally sized instrument columns on either side. On narrow
 or very short screens the page scrolls; on narrow screens the instruments stack
 below the video. All labels are in English.
 
-This is a read-only presentation. Entering or leaving it does not select a
+The flight display is read-only. Entering or leaving it does not select a
 target, change the radio mode or send a control request. Person-selection
 buttons are hidden and inactive in the demo. Use the ordinary Pocket workflow
-to select a target and choose the assistance mode. The capture indicator remains
-accessible; opening its inspector restores the ordinary recording controls.
+to select a target and choose the assistance mode.
+
+**Record raw** in the camera header starts raw camera video and its existing
+flight-log bundle without leaving demo. **Stop raw · mm:ss** stops the capture;
+**Finalizing…** prevents another start until the writers finish. It requires a
+recent physical camera source. The saved camera video has no browser overlays;
+record the screen separately to keep the demo dashboard in a video. An existing
+session-only capture shows **Stop capture**, without claiming raw video is being
+saved. The global capture indicator still opens the ordinary recording inspector.
 
 ## Reading the overview
 
@@ -108,17 +115,29 @@ and independent `yaw` / `pitch` objects with `state`, `valid` and `value`.
 The display consumes these derived states, never global `radio_state` or ACK as
 proof of axis activity. Raw AP1 mode `N` is not a display-mode value.
 
-Reports expire at 350 ms, including elapsed browser time and request transit,
-matching the service's receipt limit. A disconnected service or radio, stale
-sample, unknown source, or missing/malformed field cannot light an assisted
-indicator. A running older backend without these optional fields keeps the
+Current reports expire at 350 ms, including elapsed browser time and request
+transit, matching the service's receipt limit. In demo only, the last validated
+mode and bars may remain until that same report reaches **1 second total age**.
+They are dimmed and marked **Last report · age**, with no active-source chevron.
+Repeated HTTP snapshots cannot renew this deadline. Beyond it, they become
+**Unavailable**. This is display memory: the timeline stays unknown during the
+gap, and neither **Locked** nor the live radar goal survives on stale evidence.
+
+Only age expiry permits this brief hold. A new report takes effect immediately;
+invalid/contradictory data, disconnection, target loss, or a changed run, camera,
+radio session/generation or selection clears the retained report. Leaving demo
+or hiding the tab also clears it. The camera keeps its independent freshness
+checks. Normal console and radio/control freshness thresholds are unchanged.
+A disconnected service or radio, unknown source, or missing/malformed field
+cannot light an assisted indicator. A running older backend without these optional fields keeps the
 camera usable and shows **Unavailable** for absent report data.
 
 Browser regression tests use isolated synthetic reports and images; they do
 not access a live radio or validate physical response. They cover independent
 axis bars, valid zero versus absent values, framing provenance and lost targets,
-local history, responsive video proportions and read-only interaction. Run them with:
+local history, responsive video proportions, bounded last-report retention and
+in-place raw recording. Synthetic recording responses do not capture hardware. Run them with:
 
 ```sh
-npm run test:browser -- tests/browser/demo-view.spec.cjs
+npm run test:browser -- tests/browser/demo-view.spec.cjs tests/browser/demo-recording.spec.cjs
 ```

@@ -34,6 +34,7 @@
   let yawPreviewRevision = 0;
   let yawPreviewMessage = "";
   let demoReportReceipt = null;
+  let demoLastReport = null;
   let demoLastSeen = null;
   let demoRadar = null;
   let demoRadarSize = { width: 0, height: 0 };
@@ -67,6 +68,7 @@
   const demoActive = () => document.body.classList.contains("demo-mode");
 
   function demoView(enabled) {
+    if (!enabled) demoLastReport = null;
     if (enabled && !demoActive()) resetDemoHistory();
     document.body.classList.toggle("demo-mode", enabled);
     element("demo-summary").hidden = !enabled;
@@ -89,6 +91,7 @@
   }
 
   function resetDemoHistory() {
+    demoLastReport = null;
     demoHistory = [];
     demoHistoryAt = null;
     demoHistoryInspection = 0;
@@ -605,7 +608,6 @@
     const modes = { M: "Manual", Y: "Yaw assist", D: "Yaw + apparent distance" };
     const mode = assistance?.selected_mode;
     const modeKnown = typeof mode === "string" && Object.hasOwn(modes, mode);
-    text("demo-mode", modeKnown ? modes[mode] : "Unavailable");
 
     const preview = yawPreviewView();
     const targetKnown = fresh && preview?.enabled && (preview.target_id === null
@@ -622,7 +624,7 @@
     text("demo-target", selected ? `Person #${preview.target_id}` : targetKnown ? "No target selected" : "Unavailable");
 
     const labels = { manual: "Manual", assisted: "Assisted", paused: "Paused", waiting: "Waiting", unknown: "Unavailable" };
-    const axisStates = {}, corrections = {};
+    const axisStates = {}, corrections = {}, sticks = {};
     for (const axis of ["yaw", "pitch", "roll", "throttle"]) {
       const stick = reportFresh ? sample.sticks?.[axis] : null;
       const stickValid = Number.isInteger(stick) && Math.abs(stick) <= 1024;
@@ -641,23 +643,59 @@
         else if (targetLost) state = "paused";
         else if (!visible) state = "unknown";
       }
-      text(`demo-${axis}-state`, labels[state]);
-      element(`demo-${axis}-state`).dataset.state = state;
       axisStates[axis] = state;
+      sticks[axis] = stickValid ? stick : null;
       corrections[axis] = state === "assisted" ? assistance[axis].value : null;
+    }
+
+    // Retain only a previously validated observation of this exact receipt and
+    // context. New or contradictory data always wins; only age expiry can hold.
+    const reportKey = JSON.stringify([context, runtime?.session, runtime?.generation,
+      runtime?.radio_state, runtime?.radio_mode, runtime?.radio_yaw_phase, runtime?.radio_pitch_phase,
+      preview?.enabled, preview?.run_id, preview?.video_id, preview?.target_id, preview?.revision, preview?.phase]);
+    const sampleKey = JSON.stringify(sample);
+    const assistanceKey = JSON.stringify(runtime?.assistance);
+    const connected = fresh && !document.hidden && runtime?.enabled === true && runtime.connected === true
+      && finite(runtime.status_age_s) && runtime.status_age_s >= 0 && runtime.status_age_s + elapsed < 1.5;
+    if (!connected || targetLost || demoLastReport?.key !== reportKey || demoLastReport?.sampleKey !== sampleKey) demoLastReport = null;
+    const validated = reportFresh && modeKnown && Object.values(axisStates).every(state => state !== "unknown")
+      && Object.values(sticks).every(value => value !== null);
+    if (connected && !targetLost && validated) {
+      demoLastReport = { key: reportKey, sampleKey, assistanceKey, mode, states: { ...axisStates },
+        sticks: { ...sticks }, corrections: { ...corrections } };
+    }
+    const expired = runtime?.pilot_sample_fresh === false && runtime.assistance?.source === "pocket_lua_report"
+      && runtime.assistance.fresh === false && runtime.assistance.selected_mode === null
+      && ["yaw", "pitch"].every(axis => runtime.assistance[axis]?.state === "unknown"
+        && runtime.assistance[axis].valid === false && runtime.assistance[axis].value === null);
+    const unchanged = runtime?.pilot_sample_fresh === true && assistanceKey === demoLastReport?.assistanceKey;
+    const held = Boolean(demoLastReport && reportAge > .35 && reportAge <= 1 && (expired || unchanged));
+    if (!validated && !held) demoLastReport = null;
+    const display = held ? demoLastReport : { mode, states: axisStates, sticks, corrections };
+    text("demo-mode", held || modeKnown ? modes[display.mode] : "Unavailable");
+    element("demo-summary").dataset.held = String(held);
+    document.querySelector(".demo-mode").dataset.held = String(held);
+    for (const id of ["demo-mode-hint", "demo-report-hint"]) {
+      element(id).hidden = !held;
+      text(id, held ? `Last report · ${ageText(reportAge)}` : "");
+    }
+    for (const axis of ["yaw", "pitch", "roll", "throttle"]) {
+      const state = display.states[axis];
+      text(`demo-${axis}-state`, held ? `Last: ${labels[state]}` : labels[state]);
+      element(`demo-${axis}-state`).dataset.state = state;
       const card = document.querySelector(`.demo-axis[data-axis="${axis}"]`);
       card.dataset.state = state;
-      card.setAttribute("aria-label", `${axis}: ${labels[state]}`);
+      card.setAttribute("aria-label", `${axis}: ${held ? "last report, " : ""}${labels[state]}`);
       for (const kind of ["pilot", "argos"]) {
-        const value = kind === "pilot" ? stickValid ? stick : null : corrections[axis];
+        const value = kind === "pilot" ? display.sticks[axis] : display.corrections[axis];
         const valid = value !== null;
         const formatted = valid ? `${value > 0 ? "+" : ""}${number.format(value / 1024 * 100)}%` : "—";
         const label = kind === "pilot" ? "Pilot input" : "ARGOS correction";
         const rail = card.querySelector(`.demo-rail[data-kind="${kind}"]`);
-        const active = kind === "pilot" ? state === "manual" : state === "assisted";
+        const active = !held && (kind === "pilot" ? state === "manual" : state === "assisted");
         rail.dataset.active = String(active);
         rail.dataset.empty = String(!valid);
-        rail.setAttribute("aria-label", `${label}: ${valid ? formatted : "unavailable"}. ${active ? "Reported control source." : labels[state] + "."}`);
+        rail.setAttribute("aria-label", `${label}: ${valid ? formatted : "unavailable"}. ${held ? "Last report, not current control." : active ? "Reported control source." : labels[state] + "."}`);
         const marker = rail.querySelector(".demo-marker"), fill = rail.querySelector(".demo-fill");
         marker.hidden = !valid;
         fill.hidden = !valid;
@@ -669,10 +707,10 @@
         text(`demo-${axis}-${kind === "pilot" ? "stick" : "correction"}`, formatted);
         const output = card.querySelector(`.demo-value[data-kind="${kind}"]`);
         output.dataset.empty = String(!valid);
-        output.setAttribute("aria-label", `${label} ${valid ? formatted : "unavailable"}`);
+        output.setAttribute("aria-label", `${held ? "Last report: " : ""}${label} ${valid ? formatted : "unavailable"}`);
       }
     }
-    text("demo-report-status", reportFresh ? `Pocket report · ${ageText(reportAge)} ago`
+    text("demo-report-status", held ? `Last Pocket report · ${ageText(reportAge)} ago` : reportFresh ? `Pocket report · ${ageText(reportAge)} ago`
       : sample ? "Pocket report unavailable · stale or invalid" : "Pocket report unavailable");
 
     // Read the box paired with the displayed JPEG, not a newer preview error.
@@ -731,6 +769,8 @@
       scene = "lost"; title = "Subject lost."; subtitle = "Assistance paused."; status = "PAUSED";
     } else if (targetKnown && !selected) {
       title = "Choose a subject."; subtitle = "Select the person with Pocket."; status = "NO TARGET";
+    } else if (visible && held) {
+      title = "Awaiting an update."; subtitle = `Last Pocket report · ${ageText(reportAge)} ago`; status = "LAST REPORT";
     } else if (visible && !modeKnown) {
       title = "Waiting for Pocket data."; subtitle = "Subject visible · control report unavailable";
     } else if (visible && mode === "M") {
@@ -1168,6 +1208,37 @@
     }
   }
 
+  function renderDemoRecording(fresh, now, blocked) {
+    const button = element("demo-record-button"), recording = current?.recording;
+    const active = recording?.state === "recording", filming = recording?.filming;
+    const camera = filming?.camera;
+    const rawActive = active && filming?.id === recording.id && filming.state === "recording" && camera?.state === "recording";
+    const finalizing = recording?.visual?.state === "finalizing" || (filming && filming.writer_stopped !== true);
+    const failed = recording?.state === "error" || recording?.visual?.state === "error" || filming?.state === "error" || camera?.state === "error";
+    const elapsed = lastReceived === null ? Infinity : (stateTransitMs + Math.max(0, now - lastReceived)) / 1000;
+    const cameraReady = current?.configuration.video_source === "device" && current?.video.state === "recent"
+      && finite(current.video.rx_age_s) && current.video.rx_age_s >= 0 && current.video.rx_age_s + elapsed <= current.video.age_limit_s;
+    const pending = mutation === "recording-start" || mutation === "recording-stop";
+    button.disabled = blocked || (!active && (finalizing || !cameraReady));
+    button.dataset.state = !fresh ? "unavailable" : pending ? "pending" : failed ? "error" : rawActive ? "recording" : active ? "capture" : finalizing ? "finalizing" : "idle";
+    const seconds = finite(recording?.started_at) ? Math.max(0, Math.floor(runTime(now) - recording.started_at)) : null;
+    const duration = seconds === null ? "" : `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+    text("demo-record-label", pending ? mutation === "recording-start" ? "Starting…" : "Stopping…"
+      : !fresh ? "Record unavailable" : active ? rawActive ? `Stop raw${duration ? ` · ${duration}` : ""}` : failed ? "Stop · raw error" : "Stop capture"
+      : finalizing ? "Finalizing…" : "Record raw");
+    const error = recording?.error || recording?.visual?.detail || filming?.error || camera?.error;
+    button.title = !fresh ? "Connect to the service to control recording."
+      : pending ? "Recording request in progress."
+      : active ? rawActive ? "Stop raw camera recording and finalize the video and flight logs."
+        : failed ? `Stop capture. Raw video has an error${error ? `: ${error}` : "."}` : "Stop the current capture. Raw camera recording is not confirmed."
+      : finalizing ? "Finishing the previous video and flight logs."
+      : !cameraReady ? "Raw recording requires a recent physical camera source."
+      : failed ? `Start a new raw recording. Previous capture failed${error ? `: ${error}` : "."}`
+      : "Record raw camera video without ARGOS overlays, together with flight logs.";
+    button.setAttribute("aria-label", !fresh ? "Raw recording unavailable" : active ? rawActive ? "Stop raw video recording" : "Stop current capture" : "Start raw video recording");
+    button.setAttribute("aria-busy", String(pending));
+  }
+
   function renderControls(fresh, now) {
     const previouslyFocused = document.activeElement;
     const journalVisible = document.body.dataset.view === "observation" && inspectorPanel === "recording" && !document.body.classList.contains("focus-mode");
@@ -1178,6 +1249,7 @@
     const cameraReady = current?.video?.state === "recent";
     const telemetryReady = current && !["unconfigured", "error", "reconnecting"].includes(current.telemetry.state);
     const blocked = !fresh || mutation !== null || Boolean(current?.reconnecting);
+    renderDemoRecording(fresh, now, blocked);
     if (current && !sourcesDirty && !mutation && configurationSignature !== JSON.stringify(current.configuration)) fillSourcesForm();
     configureFormVisibility();
     element("sources-apply").disabled = blocked || active || !sourcesDirty;
@@ -1616,9 +1688,8 @@
     }
   });
   element("recording-include-visual").addEventListener("change", render);
-  for (const action of ["start", "stop"]) element(`recording-${action}`).addEventListener("click", async () => {
-    if (!serviceFresh() || mutation || element(`recording-${action}`).disabled) return;
-    const actionButton = element(`recording-${action}`);
+  async function changeRecording(action, { raw = false, actionButton = element(`recording-${action}`) } = {}) {
+    if (!serviceFresh() || mutation || actionButton.disabled) return;
     const restoreFocus = document.activeElement === actionButton;
     const requestedRun = current.run_id;
     mutation = `recording-${action}`;
@@ -1626,11 +1697,16 @@
     text("recording-action-status", "");
     render();
     try {
-      const body = await postJson(`/api/recordings/${action}`, action === "start" ? { include_visual: element("recording-include-visual").checked } : {});
+      const payload = action === "start" ? raw ? { include_visual: true, include_filming: true } : { include_visual: element("recording-include-visual").checked } : {};
+      const body = await postJson(`/api/recordings/${action}`, payload);
       if (!validRecording(body)) throw new Error("Invalid service response.");
       if (current.run_id === requestedRun) current.recording = body;
       text("recording-action-status", body.state === "error" ? `Capture : ${body.error || "incomplete recording."}` : "");
-      text("action-status", body.state === "error" ? "" : action === "start" ? "Recording started." : "Recording complete.");
+      if (raw && action === "start" && body.state === "recording" && (body.filming?.id !== body.id || body.filming?.state !== "recording" || body.filming?.camera?.state !== "recording")) {
+        text("recording-action-status", "Capture started, but raw video recording is not confirmed. Check the recording status before retrying.");
+      }
+      const finishing = body.visual?.state === "finalizing" || (body.filming && body.filming.writer_stopped !== true);
+      text("action-status", body.state === "error" ? "" : action === "start" ? "Recording started." : finishing ? "Recording stopped. Finalizing video and flight logs." : "Recording complete.");
     } catch (error) {
       text("recording-action-status", `Session recording : ${error.message}`);
     } finally {
@@ -1638,11 +1714,17 @@
       pollResumeAt = performance.now();
       stateEpoch += 1;
       render();
-      if (restoreFocus && document.body.dataset.view === "observation" && inspectorPanel === "recording" && !document.body.classList.contains("focus-mode") && [document.body, actionButton].includes(document.activeElement)) {
+      if (raw && restoreFocus && demoActive() && !actionButton.disabled && [document.body, actionButton].includes(document.activeElement)) actionButton.focus();
+      else if (!raw && restoreFocus && document.body.dataset.view === "observation" && inspectorPanel === "recording" && !document.body.classList.contains("focus-mode") && [document.body, actionButton].includes(document.activeElement)) {
         const target = current.recording.state === "recording" ? element("recording-stop") : !element("recording-download").hidden ? element("recording-download") : element("recording-start");
         (target.disabled ? document.querySelector('[data-panel="recording"]') : target).focus();
       }
     }
+  }
+  for (const action of ["start", "stop"]) element(`recording-${action}`).addEventListener("click", () => { void changeRecording(action); });
+  element("demo-record-button").addEventListener("click", event => {
+    if (!demoActive()) return;
+    void changeRecording(current?.recording.state === "recording" ? "stop" : "start", { raw: true, actionButton: event.currentTarget });
   });
   element("focus-button").addEventListener("click", () => focusView(!document.body.classList.contains("focus-mode")));
   element("demo-button").addEventListener("click", () => demoView(!demoActive()));
@@ -1682,6 +1764,7 @@
   new ResizeObserver(() => renderDemoHistory()).observe(element("demo-history"));
   document.addEventListener("visibilitychange", () => {
     if (demoActive() && document.hidden) {
+      demoLastReport = null;
       const now = performance.now();
       demoHistoryPoint(now, { yaw: "unknown", pitch: "unknown", target: "unknown" });
       demoHistoryAt = now;
