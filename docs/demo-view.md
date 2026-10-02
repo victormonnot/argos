@@ -5,12 +5,13 @@ the ordinary display. The fullscreen button remains available when supported by
 the browser. Opening Sources, the capture inspector or another workspace also
 leaves the demo presentation.
 
-The view places the existing camera beside compact axis controls and an
-image-based framing diagram. The video keeps its source aspect ratio without
-cropping or stretching; a 640 × 480 source stays 4:3. A rolling 30-second history
+The view centers the existing camera between compact axis controls on the left
+and an image-based framing diagram on the right. The video keeps its source
+aspect ratio without cropping or stretching; a 640 × 480 source stays 4:3.
+A rolling 30-second history
 spans the width below the camera and instruments. The desktop layout uses the
 whole window, including fullscreen, with the camera sized to the available
-height. A wide instrument area places axes and radar side by side. On narrow
+height, with equally sized instrument columns on either side. On narrow
 or very short screens the page scrolls; on narrow screens the instruments stack
 below the video. All labels are in English.
 

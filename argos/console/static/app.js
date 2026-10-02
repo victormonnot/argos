@@ -82,11 +82,10 @@
     const reserved = [".camera-header", ".camera-footer", ".demo-history", ".demo-provenance"]
       .reduce((height, selector) => height + panel.querySelector(selector).getBoundingClientRect().height, 0);
     // Fit the actual frame, rather than stretching it into a widescreen stage.
-    // The remaining width belongs to instruments, not empty outer margins.
-    const width = Math.max(0, Math.min(panel.clientWidth - 350, (panel.clientHeight - reserved) * demoFrameRatio));
+    // Keep equal instrument columns on either side of the native image.
+    const width = Math.max(0, Math.min(panel.clientWidth - 560, (panel.clientHeight - reserved) * demoFrameRatio));
     const value = `${Math.floor(width)}px`;
     if (panel.style.getPropertyValue("--demo-video-width") !== value) panel.style.setProperty("--demo-video-width", value);
-    element("demo-summary").dataset.wide = String(panel.clientWidth - width >= 720);
   }
 
   function resetDemoHistory() {

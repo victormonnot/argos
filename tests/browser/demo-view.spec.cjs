@@ -66,6 +66,7 @@ async function enterDemo(page) {
   await expect(page.locator('#demo-button')).toHaveText('Exit demo');
   await expect(page.locator('#demo-button')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('#demo-summary')).toBeVisible();
+  await expect(page.locator('.demo-shot')).toBeVisible();
 }
 
 test('demo shares the live image and leaves missing Pocket reports unavailable', async ({ page, model }) => {
@@ -108,6 +109,7 @@ test('demo entry, target interaction and exit are read-only', async ({ page, mod
   await expect(page.locator('body')).not.toHaveClass(/\bdemo-mode\b/);
   await expect(page.locator('#demo-button')).toHaveAttribute('aria-pressed', 'false');
   await expect(page.locator('#demo-summary')).toBeHidden();
+  await expect(page.locator('.demo-shot')).toBeHidden();
   await expect(page.locator('#yaw-preview')).toBeVisible();
   await expect(page.locator('#vision-toggle')).toBeVisible();
   await expect(page.locator('.vision-box')).toHaveAttribute('data-selectable', 'true');
@@ -127,6 +129,7 @@ test('leaving demo for another workspace or the recording inspector restores the
     await expect(page.locator('body')).toHaveAttribute('data-view', view);
     await expect(page.locator('body')).not.toHaveClass(/\bdemo-mode\b/);
     await expect(page.locator('#demo-summary')).toBeHidden();
+    await expect(page.locator('.demo-shot')).toBeHidden();
     await page.locator('#view-observation').click();
     await expect(page.locator('#demo-button')).toHaveAttribute('aria-pressed', 'false');
     await expect(page.locator('#yaw-preview')).toBeVisible();
@@ -135,6 +138,7 @@ test('leaving demo for another workspace or the recording inspector restores the
   await page.locator('#global-recording').click();
   await expect(page.locator('body')).not.toHaveClass(/\bdemo-mode\b/);
   await expect(page.locator('#demo-summary')).toBeHidden();
+  await expect(page.locator('.demo-shot')).toBeHidden();
   await expect(page.locator('#inspector')).toBeVisible();
   await expect(page.locator('#recording-start')).toBeVisible();
   await expect(page.locator('#yaw-preview')).toBeVisible();
@@ -155,8 +159,8 @@ test('a temporarily lost target keeps its selected identity with assistance paus
 });
 
 async function expectDemoFillsDesktop(page, size) {
-  // A centered 1200 px dashboard can preserve the camera ratio yet waste most
-  // of a large display. Check the actual screen edges and bottom timeline.
+  // Keep the camera itself centered between balanced instrument panels; the
+  // surrounding dashboard and bottom timeline still fill the entire screen.
   await expect.poll(async () => {
     const panel = await page.locator('.camera-panel').boundingBox();
     return Math.abs(panel.x) + Math.abs(panel.width - size.width);
@@ -166,26 +170,48 @@ async function expectDemoFillsDesktop(page, size) {
     const provenance = await page.locator('.demo-provenance').boundingBox();
     return Math.max(history.y + history.height, provenance.y + provenance.height);
   }).toBeLessThanOrEqual(size.height + 1);
+  const video = await page.locator('#camera-stage').boundingBox();
+  const controls = await page.locator('#demo-summary').boundingBox();
+  const shot = await page.locator('.demo-shot').boundingBox();
+  const footer = await page.locator('.camera-footer').boundingBox();
+  const history = await page.locator('#demo-history').boundingBox();
+  expect(Math.abs(video.x + video.width / 2 - size.width / 2)).toBeLessThan(2);
+  expect(Math.abs(controls.width - shot.width)).toBeLessThan(2);
+  expect(Math.min(controls.width, shot.width)).toBeGreaterThanOrEqual(279);
+  expect(controls.x + controls.width).toBeLessThanOrEqual(video.x + 1);
+  expect(video.x + video.width).toBeLessThanOrEqual(shot.x + 1);
+  expect(Math.abs(footer.x - video.x)).toBeLessThan(2);
+  expect(Math.abs(footer.width - video.width)).toBeLessThan(2);
+  expect(footer.y).toBeGreaterThanOrEqual(video.y + video.height - 1);
+  expect(history.y).toBeGreaterThanOrEqual(Math.max(controls.y + controls.height, shot.y + shot.height, footer.y + footer.height) - 1);
+  expect(Math.abs(history.x - controls.x)).toBeLessThan(2);
+  expect(Math.abs(history.x + history.width - shot.x - shot.width)).toBeLessThan(2);
   expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(size.height + 1);
 }
 
-for (const size of [{ width: 1366, height: 650 }, { width: 1920, height: 1080 }, { width: 2560, height: 1440 }, { width: 390, height: 844 }, { width: 320, height: 740 }]) {
+for (const size of [{ width: 1366, height: 650 }, { width: 1920, height: 1080 }, { width: 2560, height: 1440 }, { width: 960, height: 900 }, { width: 390, height: 844 }, { width: 320, height: 740 }]) {
   test(`demo preserves native video ratio and full-width bottom history at ${size.width}x${size.height}`, async ({ page, model }) => {
     await page.setViewportSize(size);
     await setupDemoCamera(page, model);
     await enterDemo(page);
-    if (size.width >= 1000) await expectDemoFillsDesktop(page, size);
+    if (size.width > 960) await expectDemoFillsDesktop(page, size);
     const video = await page.locator('#camera-stage').boundingBox();
-    const sidebar = await page.locator('#demo-summary').boundingBox();
+    const controls = await page.locator('#demo-summary').boundingBox();
+    const shot = await page.locator('.demo-shot').boundingBox();
     const history = await page.locator('#demo-history').boundingBox();
     expect(video.width / video.height).toBeCloseTo(4 / 3, 2);
-    expect(history.y).toBeGreaterThanOrEqual(Math.max(video.y + video.height, sidebar.y + sidebar.height) - 1);
-    if (size.width >= 1000) {
-      expect(sidebar.x).toBeGreaterThanOrEqual(video.x + video.width - 1);
+    expect(history.y).toBeGreaterThanOrEqual(Math.max(video.y + video.height, controls.y + controls.height, shot.y + shot.height) - 1);
+    if (size.width <= 960) {
+      expect(controls.y).toBeGreaterThanOrEqual(video.y + video.height - 1);
+      expect(shot.y).toBeGreaterThanOrEqual(video.y + video.height - 1);
+      if (size.width > 700) {
+        expect(Math.abs(controls.y - shot.y)).toBeLessThan(2);
+        expect(controls.x + controls.width).toBeLessThanOrEqual(shot.x + 1);
+      } else {
+        expect(shot.y).toBeGreaterThanOrEqual(controls.y + controls.height - 1);
+        expect(Math.abs(controls.width - shot.width)).toBeLessThan(2);
+      }
       expect(Math.abs(history.x - video.x)).toBeLessThan(2);
-      expect(Math.abs(history.width - (sidebar.x + sidebar.width - video.x))).toBeLessThan(2);
-    } else {
-      expect(sidebar.y).toBeGreaterThanOrEqual(video.y + video.height - 1);
       expect(Math.abs(history.width - video.width)).toBeLessThan(2);
     }
     await expect(page.locator('#camera-image')).toHaveCSS('object-fit', 'contain');
@@ -197,6 +223,8 @@ for (const size of [{ width: 1366, height: 650 }, { width: 1920, height: 1080 },
       await page.locator(`.demo-axis[data-axis="${axis}"]`).scrollIntoViewIfNeeded();
       await expect(page.locator(`.demo-axis[data-axis="${axis}"]`)).toBeInViewport();
     }
+    await page.locator('#demo-shot-details summary').scrollIntoViewIfNeeded();
+    await expect(page.locator('#demo-shot-details summary')).toBeInViewport();
     await page.screenshot({ path: test.info().outputPath('demo-view.png'), fullPage: true });
     expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
   });
@@ -234,6 +262,9 @@ test('fullscreen demo fills the screen and keeps the complete native camera imag
   const video = await page.locator('#camera-stage').boundingBox();
   expect(video.width / video.height).toBeCloseTo(4 / 3, 2);
   await expect(page.locator('#camera-image')).toHaveCSS('object-fit', 'contain');
+  await page.locator('#demo-shot-details summary').click();
+  await expect(page.locator('#demo-shot-details')).toHaveAttribute('open', '');
+  await expectDemoFillsDesktop(page, size);
   await page.evaluate(() => document.exitFullscreen());
   await expect(page.locator('#fullscreen-button')).toHaveAttribute('aria-pressed', 'false');
   expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
