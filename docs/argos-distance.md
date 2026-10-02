@@ -21,14 +21,15 @@ mapping alone is not a live flight-mode measurement.
 Pitch is limited to ±51 Lua units, approximately 5% stick **before output
 curves**; this is not a measured tilt angle or velocity. Throttle, roll and arming
 remain manual. Roll input does not directly cancel either assistance. CH7 remains
-fixed low, independently of SC. Moving an assisted axis beyond 10% of its
-centre-to-stop travel temporarily gives that axis to the pilot, at **any**
-amplitude or duration, including full deflection. Rud affects yaw in both
+fixed low, independently of SC. Moving yaw beyond **20%**, or pitch beyond
+**10%**, of its centre-to-stop travel temporarily gives that axis to the pilot,
+including full deflection. The wider yaw margin tolerates incidental rotation
+input while handling throttle in Mode 2. Rud affects yaw in both
 assisted modes; Ele affects pitch only in distance mode. Each axis is independent:
 a pitch correction can keep yaw assisted, and a yaw correction can keep pitch
 assisted.
 
-Recenter the corresponding stick within 5% for 200 ms. Its automatic correction
+Recenter yaw within **10%**, or pitch within **5%**, for **200 ms**. Its automatic correction
 then resumes using a fresh radio ticket issued after recentering, provided the
 target and image are still valid. Pitch resumes toward the **original** size
 reference; neither stick captures a new distance or reselects a target. A strong
@@ -109,7 +110,9 @@ Check stick priority reaches each channel, SC middle releases both axes, and unp
 Pocket USB restores manual pitch. This is a new pitch path; earlier yaw checks
 do not validate its sign or mixer mapping.
 
-After updating stick priority, check full-deflection pitch and yaw corrections
+After updating stick priority, check that throttle movements with incidental
+yaw below 20% keep yaw assistance, while larger yaw corrections take priority.
+Check full-deflection pitch and yaw corrections
 reach their channels, that the other axis stays eligible, and that recentering
 resumes correction without an SC cycle or reference change. One combined
 props-off receiver sequence can cover those handoffs and SC manual release.

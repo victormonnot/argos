@@ -207,6 +207,33 @@ def test_real_delayed_ticket_does_not_refresh_distance_output():
 
 @pytest.mark.parametrize("mode", ["Y", "D"])
 @pytest.mark.parametrize("sign", [-1, 1])
+def test_real_mode2_incidental_yaw_and_wider_recenter_preserve_same_session(mode, sign):
+    with actual_radio() as port:
+        pair = Pair(port)
+        pair.arm(mode=mode)
+        sc = 1024 if mode == "D" else -1024
+        original = pair.host.session, pair.host.status.generation, pair.host.selection_key
+        expected_pitch = (40, 1024) if mode == "D" else (0, 0)
+        for tick in range(70, 120, 5):
+            pair.step(tick, rud=sign * 150, thr=-1024 + (tick - 70) * 40, sc=sc, mode=mode)
+            assert port.output[:2] == (75, 1024)
+            assert port.output[4:] == expected_pitch
+        assert pair.host.snapshot()["pilot_sample"]["yaw_phase"] == "A"
+        for tick in range(120, 140, 5):
+            pair.step(tick, rud=sign * 206, sc=sc, mode=mode)
+            assert port.output[:2] == (0, 0)
+        for tick in range(140, 160, 5):
+            pair.step(tick, rud=sign * 102, sc=sc, mode=mode)
+            assert port.output[:2] == (0, 0)
+        for tick in range(160, 210, 5):
+            pair.step(tick, rud=sign * 102, sc=sc, mode=mode)
+        assert port.output[:2] == (75, 1024) and port.output[4:] == expected_pitch
+        assert pair.host.snapshot()["radio_yaw_phase"] == "A"
+        assert (pair.host.session, pair.host.status.generation, pair.host.selection_key) == original
+
+
+@pytest.mark.parametrize("mode", ["Y", "D"])
+@pytest.mark.parametrize("sign", [-1, 1])
 def test_real_full_yaw_override_keeps_distance_and_resumes_same_session(mode, sign):
     with actual_radio() as port:
         pair = Pair(port)

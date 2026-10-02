@@ -47,9 +47,9 @@ test("ANGLE exit and unsupported start require manual rearm",function()
   r:arm("D"); r:set(2,80,true,nil,nil,30,true); eq(r.output[5],30)
   r.ele=200; r.sc=0; r:step(); r.sc=1024; r:step(); eq(r:latestStatus().state,"M")
 end)
-test("every stick amplitude temporarily releases only its own axis",function()
+test("every above-threshold stick amplitude temporarily releases only its own axis",function()
   for _,axis in ipairs({"rud","ele"}) do
-    for _,amplitude in ipairs({103,257,513,1024,-1024}) do
+    for _,amplitude in ipairs({axis == "rud" and 206 or 103,257,513,1024,-1024}) do
       local r=active(); local initial=r:latestStatus()
       local phase=axis == "rud" and "yawPhase" or "pitchPhase"
       local output=axis == "rud" and 1 or 5
@@ -75,6 +75,54 @@ test("every stick amplitude temporarily releases only its own axis",function()
       eq(r:latestStatus().generation,initial.generation)
     end
   end
+end)
+test("Mode 2 incidental yaw stays assisted with native 20 percent boundary",function()
+  for _,mode in ipairs({"Y","D"}) do
+    for _,sign in ipairs({-1,1}) do
+      local r=active(mode)
+      for i,magnitude in ipairs({127,132,150,205}) do
+        r.rud=sign*magnitude; r.thr=-1024+i*400
+        r:set(i+1,80,true,i*5,nil,mode == "D" and 30 or 0,mode == "D")
+        eq(r:latestStatus().yawPhase,"A"); eq(r.output[1],80); eq(r.output[2],1024)
+      end
+      r.rud=sign*206; r:set(6,80,true,25,nil,mode == "D" and 30 or 0,mode == "D")
+      eq(r:latestStatus().yawPhase,"M"); eq(r.output[2],0)
+      eq(r.output[6],mode == "D" and 1024 or 0)
+    end
+  end
+end)
+test("yaw recenter accepts 10 percent for 200 ms then needs a new ticket",function()
+  for _,sign in ipairs({-1,1}) do
+    local r=active(); local generation=r:latestStatus().generation
+    r.rud=sign*206; r:set(2,80,true,5,nil,30,true)
+    r.rud=sign*102; r:set(3,80,true,10,nil,30,true)
+    r:set(4,80,true,29,nil,30,true)
+    eq(r:latestStatus().yawPhase,"M"); eq(r.output[2],0)
+    local old=r:latestStatus()
+    r:set(5,80,true,30,old,30,true)
+    eq(r:latestStatus().yawPhase,"R"); eq(r.output[2],0)
+    r:set(6,80,true,31,old,30,true); eq(r.output[2],0)
+    r:set(7,80,true,32,nil,30,true)
+    eq(r:latestStatus().yawPhase,"A"); eq(r.output[2],1024)
+    eq(r.output[6],1024); eq(r:latestStatus().generation,generation)
+  end
+end)
+test("yaw leaving the wider recenter band restarts the full dwell",function()
+  local r=active(); r.rud=206; r:set(2,80,true,5,nil,30,true)
+  r.rud=102; r:set(3,80,true,10,nil,30,true)
+  r.rud=103; r:set(4,80,true,20,nil,30,true)
+  r.rud=102; r:set(5,80,true,25,nil,30,true)
+  r:set(6,80,true,44,nil,30,true)
+  eq(r:latestStatus().yawPhase,"M"); eq(r.output[2],0)
+  r:set(7,80,true,45,nil,30,true)
+  eq(r:latestStatus().yawPhase,"R"); eq(r.output[2],0)
+  local queued=r:latestStatus()
+  r.rud=103; r:set(8,80,true,46,queued,30,true)
+  eq(r:latestStatus().yawPhase,"M"); eq(r.output[2],0)
+  r.rud=102; r:set(9,80,true,50,nil,30,true)
+  r:set(10,80,true,69,nil,30,true); eq(r.output[2],0)
+  r:set(11,80,true,70,nil,30,true); eq(r:latestStatus().yawPhase,"R")
+  r:set(12,80,true,71,nil,30,true); eq(r.output[2],1024)
 end)
 test("lease expiry still withdraws both outputs",function()
   local e=active(); e:step(nil,30); eq(e:latestStatus().cause,"E")

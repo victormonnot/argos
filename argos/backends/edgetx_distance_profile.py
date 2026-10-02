@@ -30,7 +30,7 @@ _GATE_ROWS = (
     ("FUNC_AND", "L11,L12", "!L10", 0, 0),     # L07 yaw replacement
     # No delay. Duration stretches an observed gesture across Sticky's 100 ms
     # sampling; continued stick deflection is independently suppressed by Lua.
-    ("FUNC_APOS", "Rud,10", "L12", 0, 2),
+    ("FUNC_APOS", "Rud,20", "L12", 0, 2),
     ("FUNC_VPOS", "lua(0,1),0", "NONE", 0, 0), # L09 raw yaw validity
     ("FUNC_STICKY", "L8,L9", "NONE", 0, 0),
     ("FUNC_AND", "L6,!L8", "NONE", 0, 0),
@@ -145,9 +145,9 @@ def validate_profile(raw: bytes, *, source: bytes | None = None):
             "internal_rf": "CRSF CH1–16", "external_rf": "OFF",
             "yaw_switch": "SC↑", "distance_switch": "SC↓", "angle_switch": "SB↑",
             "manual_switch": "SC middle", "native_gate": "L01–L18",
-            "yaw_manual_release_percent": 10, "pitch_manual_release_percent": 10,
+            "yaw_manual_release_percent": 20, "pitch_manual_release_percent": 10,
             "yaw_soft_return_ms": 200, "pitch_soft_return_ms": 200,
-            "manual_return_center_percent": 5,
+            "yaw_return_center_percent": 10, "pitch_return_center_percent": 5,
             "yaw_limit": 205, "pitch_limit": 51, "preservation_checked": source is not None,
             "hardware_validated": False}
 

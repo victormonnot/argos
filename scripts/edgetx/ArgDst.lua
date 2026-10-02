@@ -17,8 +17,10 @@ local cause = "S" -- V3 status: startup, manual, waiting, active, target, expiry
 local value, fresh, heartbeat = 0, 0, 0
 local pitch, pitchFresh = 0, 0
 -- Phase N: outside mode; A: automatic; M: stick; R: fresh ticket wait.
-local yawAxis = {phase = "N"}
-local pitchAxis = {phase = "N"}
+-- Match EdgeTX's rounded native percentages: Rud 20%, Ele 10%.
+-- Wider yaw margins tolerate Mode 2 throttle handling; pitch stays unchanged.
+local yawAxis = {phase = "N", release = 205, center = 102} -- 20% / 10%
+local pitchAxis = {phase = "N", release = 102, center = 51} -- 10% / 5%
 local leaseIssued = nil
 local lastAccepted = nil
 local enabledAt = nil
@@ -79,13 +81,13 @@ end
 
 local function axisAuthority(axis, now, stick)
   local magnitude = math.abs(stick)
-  if magnitude > 102 or (axis.phase == "R" and magnitude > 51) then
+  if magnitude > axis.release or (axis.phase == "R" and magnitude > axis.center) then
     -- Native channel gates detect this independently, including when Lua stalls.
-    -- Any amplitude/duration temporarily releases this axis, without changing
+    -- Any amplitude above its threshold temporarily releases this axis, without changing
     -- the radio generation, selected person or distance reference.
     resetAxis(axis, "M")
   elseif axis.phase == "M" then
-    if magnitude <= 51 then
+    if magnitude <= axis.center then
       if axis.centeredAt == nil then axis.centeredAt = now end
       if elapsed(now, axis.centeredAt) >= 20 then
         phaseTo(axis, "R")

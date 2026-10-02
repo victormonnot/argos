@@ -21,9 +21,12 @@ def test_isolated_model_preserves_original_and_yaw_profile(manual):
     assert report['angle_switch'] == 'SB↑'
     assert report['schema'] == 'argos-edgetx-distance-profile-v3'
     assert report['native_gate'] == 'L01–L18'
-    assert report['yaw_manual_release_percent'] == report['pitch_manual_release_percent'] == 10
+    assert report['yaw_manual_release_percent'] == 20
+    assert report['pitch_manual_release_percent'] == 10
     assert report['yaw_soft_return_ms'] == report['pitch_soft_return_ms'] == 200
-    assert report['manual_return_center_percent'] == 5
+    assert report['yaw_return_center_percent'] == 10
+    assert report['pitch_return_center_percent'] == 5
+    assert 'manual_return_center_percent' not in report
     assert b'ArgFly' not in result and b'ArgDst' in result
     assert result.count(b'flightModes: 000000000') == 12
     assert report['preservation_checked'] and not report['hardware_validated']
@@ -38,7 +41,8 @@ def test_crlf_preserved_and_twice_identical(manual):
 
 
 @pytest.mark.parametrize('before,after', [
-    (b'"Ele,10"', b'"Rud,10"'), (b'"Rud,10"', b'"Rud,25"'),
+    (b'"Ele,10"', b'"Rud,10"'), (b'"Rud,20"', b'"Rud,25"'),
+    (b'"Rud,20"', b'"Rud,10"'), (b'"Ele,10"', b'"Ele,20"'),
     (b'"L8,L9"', b'"L8,SC1"'), (b'"L13,L14"', b'"L13,SC1"'),
     (b'"L17,SC2"', b'"L17,SC0"'), (b'"SB0"', b'"SB1"'),
     (b'"lua(0,2),0"', b'"lua(0,1),0"'), (b'"L18"', b'"NONE"'),
@@ -99,7 +103,7 @@ def test_each_native_axis_depends_on_its_own_stick_and_validity(manual):
     g = model['logicalSw']
     yaw_path, yaw_text = _dependency_contract(g,7)
     pitch_path, pitch_text = _dependency_contract(g,18)
-    assert 'Rud,10' in yaw_text and 'lua(0,1),0' in yaw_text
+    assert 'Rud,20' in yaw_text and 'lua(0,1),0' in yaw_text
     assert 'Ele' not in yaw_text and 'lua(0,5)' not in yaw_text and 15 not in yaw_path
     assert 'Ele,10' in pitch_text and 'lua(0,5),0' in pitch_text
     assert 'Rud' not in pitch_text and 'lua(0,1)' not in pitch_text and 10 not in pitch_path
@@ -115,12 +119,40 @@ def test_full_throw_has_no_amplitude_duration_or_sc_only_native_latch(manual):
     _, model, _ = yaw._parse(distance.prepare_profile(manual))
     g = model['logicalSw']
     stick_rows = [row for row in g.values() if row['func']=='FUNC_APOS']
-    assert {row['def'] for row in stick_rows} == {'Rud,10','Ele,10'}
+    assert {row['def'] for row in stick_rows} == {'Rud,20','Ele,10'}
     assert all(row['delay']=='0' and row['duration']=='2' for row in stick_rows)
     sticky_rows = [row for row in g.values() if row['func']=='FUNC_STICKY']
     assert {row['def'] for row in sticky_rows} == {'L8,L9','L13,L14'}
     assert all(row['andsw']=='NONE' and row['lsPersist']=='0' for row in sticky_rows)
     assert all('SC1' not in row['def'] for row in sticky_rows)
+
+
+@pytest.mark.parametrize('axis,raw,release', [
+    ('Rud', 154, False), ('Rud', -154, False),  # About 15%: Mode 2 margin.
+    ('Rud', 205, False), ('Rud', -205, False),
+    ('Rud', 206, True), ('Rud', -206, True),
+    ('Ele', 102, False), ('Ele', -102, False),
+    ('Ele', 103, True), ('Ele', -103, True),
+    ('Rud', 1024, True), ('Ele', -1024, True),
+])
+def test_native_stick_thresholds_preserve_pitch_and_widen_only_yaw(
+        manual, axis, raw, release):
+    # Only the firmware's source comparison is represented here, not scheduling
+    # or the full mixer. EdgeTX 2.12.4 edgetx.h calc100toRESX rounds to nearest;
+    # switches.cpp LS_FUNC_APOS uses a strict abs(x)>y comparison. In particular,
+    # 20% maps to 205, not truncation to 204; Lua must use that same boundary.
+    # https://github.com/EdgeTX/edgetx/blob/v2.12.4/radio/src/edgetx.h
+    # https://github.com/EdgeTX/edgetx/blob/v2.12.4/radio/src/switches.cpp
+    _, model, _ = yaw._parse(distance.prepare_profile(manual))
+    row = next(row for row in model['logicalSw'].values()
+               if row['func'] == 'FUNC_APOS' and row['def'].startswith(axis + ','))
+    percent = int(row['def'].split(',')[1])
+    threshold = (percent * 1024 + 50) // 100
+    assert threshold == {'Rud': 205, 'Ele': 102}[axis]
+    assert (abs(raw) > threshold) is release
+    # Native immediate release and pulse stretching remain independent of Lua.
+    assert row['delay'] == '0' and row['duration'] == '2'
+    assert row['andsw'] == {'Rud': 'L12', 'Ele': 'SC2'}[axis]
 
 
 def test_build_separate_artifact_no_overwrite(manual,tmp_path):
@@ -210,8 +242,8 @@ def test_frozen_axis_validity_cannot_reopen_after_recenter(
 
 @pytest.mark.parametrize('held_ticks', [1,2,20,100])
 def test_large_or_long_gesture_still_resets_on_fresh_axis_validity(held_ticks):
-    # Amplitude is deliberately absent: the native predicate is only >10%,
-    # established in the structural test. Holding it never changes reset policy.
+    # Once either axis exceeds its own threshold, holding that predicate never
+    # changes the reset policy; amplitude adds no further latch.
     latch = _StickyEdges()
     assert latch.tick(True,False)
     for _ in range(held_ticks):
