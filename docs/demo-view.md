@@ -53,10 +53,13 @@ saved. The global capture indicator still opens the ordinary recording inspector
   ARGOS. The source does not follow command magnitude: a valid zero correction
   still displays `0%` and can remain active. Missing values use a dashed bar,
   no marker, and an em dash with an accessible **Unavailable** label.
-- **Paused**, **Waiting**, and **Unavailable** have no active-source chevron.
-  Target loss suppresses an assisted indicator even if the last radio report
-  preceded that loss. Roll and throttle remain pilot-owned when their reports
-  are fresh and valid; the view never invents ARGOS corrections for them.
+- **Paused**, **Waiting**, and **Unavailable** reports have no active-source
+  chevron. The small caption under an axis settles over 0.5 seconds and groups
+  Paused/Waiting as **Standby**; fine hatching marks the interruption immediately.
+  **Unavailable** and the separate **Last report** qualifier bypass this
+  smoothing. Values and control-source chevrons always follow the exact report.
+  Target loss suppresses assistance even if the last radio report preceded it.
+  Roll and throttle remain pilot-owned when their reports are fresh and valid.
 
 Axis states describe Pocket Lua reports, not native mixer gates or measured
 flight-controller actuation. Apparent distance is based on image size; the demo
@@ -80,6 +83,8 @@ can leave a static hollow **Last seen** marker for the same camera, run and
 selection; unavailable evidence hides the current and goal markers. Changing
 context clears remembered framing. **Signal details** exposes image centering
 and apparent height/reference without requiring those numbers in the main view.
+It also lists each axis's exact current report, independently of the settled
+caption or a retained last report.
 
 The diagram reads the selected detection from the image currently displayed.
 It uses `yaw_assist.distance_preview.reference_height` only for fresh combined
@@ -91,18 +96,35 @@ measurement. Invalid or missing reference data cannot create a size goal.
 
 ## Recent history
 
-The bottom timeline shows locally observed yaw, pitch and target states from
-the last 30 seconds. **MANUAL** and **ARGOS** describe reported control ownership,
-not whether the pilot is moving a stick. A near-zero stick does not override a
-Pocket report of manual priority, and a small nonzero stick cannot turn a
-reported assisted interval into manual. Raw stick bars retain the reported
-values; the frontend adds no takeover threshold or filtering.
-Inspection describes those observations without replaying
-the camera or changing control. Unknown intervals remain visible as gaps or
-unavailable states; the browser does not fill missed time with invented data.
-The history uses bounded in-memory storage and resets when its observation
-context changes. It is not a recording, flight-controller feedback or a
-substitute for the persisted filming bundle.
+The bottom timeline summarizes the last 30 seconds of locally observed yaw,
+pitch and target states. Its two colored axis groups are **ARGOS assistance**
+and **MANUAL**. ARGOS is an assistance family, not proof of continuous control:
+Paused/Waiting intervals have fine hatching. Waiting can include the wait for a
+fresh command after the pilot recenters a stick. A blank/dark gap means unknown
+evidence and never inherits the previous group.
+
+A category change must persist for 0.5 seconds to create a new colored block;
+a shorter excursion is hatched within the existing group. Once confirmed, the
+new block begins at the observed transition time. Text appears only on portions
+longer than 2 seconds with enough screen space. Hatching also covers brief
+manual takeovers: their live Pilot chevron and exact state remain immediate.
+**MANUAL** follows Pocket-reported ownership, never a threshold applied to stick
+movement. The frontend changes no control, takeover or recenter settings.
+
+**INSPECT** reads the original observed states, including Paused, Waiting and
+brief Manual changes, rather than the grouped blocks. **Signal details** shows
+the exact current state of every axis. These are browser observations; reports
+between browser updates can still be missed. The persisted filming logs retain
+their original evidence and are not rewritten by this presentation.
+
+Every locally observed transition is kept in a bounded 512-point history;
+the timeline redraws at most four times per second during ordinary updates.
+DOM blocks are reused (128 groups per lane, plus 128 hatch spans per axis).
+If interruption density exceeds that display pool, older hatches merge
+conservatively instead of disappearing into solid assistance. Unknown intervals
+and missed time remain gaps. Context changes reset the appropriate history or
+caption memory; nothing before entry is invented. Inspect neither replays the
+camera nor changes control, and this history is not flight-controller feedback.
 
 ## Data and freshness
 
@@ -137,7 +159,8 @@ camera usable and shows **Unavailable** for absent report data.
 Browser regression tests use isolated synthetic reports and images; they do
 not access a live radio or validate physical response. They cover independent
 axis bars, valid zero versus absent values, framing provenance and lost targets,
-local history, responsive video proportions, bounded last-report retention and
+local history, presentation settling with exact inspection, responsive video
+proportions, bounded last-report retention and
 in-place raw recording. Synthetic recording responses do not capture hardware. Run them with:
 
 ```sh

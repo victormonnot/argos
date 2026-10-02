@@ -1014,3 +1014,145 @@ for (const next of ['manual', 'waiting', 'paused']) {
     await expect(page.locator('#demo-report-hint')).toBeHidden();
   });
 }
+
+async function setupSettledTimeline(page, model) {
+  await page.clock.install();
+  await setupDemoCamera(page, model);
+  const reports = attachPocketReports(model);
+  await enterDemo(page);
+  await expectPocketReady(page);
+  await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 100));
+  return reports;
+}
+
+function setReportedAxis(runtime, axis, state) {
+  if (state === 'assisted') return;
+  const phase = state === 'manual' ? 'M' : state === 'waiting' ? 'R' : 'A';
+  runtime[`radio_${axis}_phase`] = runtime.pilot_sample[`${axis}_phase`] = phase;
+  runtime.pilot_sample.lua_outputs[axis] = { valid: false, value: 0 };
+  runtime.assistance[axis] = { state, valid: false, value: null };
+}
+
+async function inspectTimeline(page, seconds = 0) {
+  await page.locator('#demo-history-inspect').evaluate((node, value) => {
+    node.value = String(value); node.dispatchEvent(new Event('input', { bubbles: true }));
+  }, seconds);
+}
+
+const visibleTimeline = (page, lane, state) => page.locator(`.demo-history-track[data-lane="${lane}"] .demo-segment${state ? `[data-state="${state}"]` : ''}:not([hidden])`);
+
+test('brief pause and waiting reports use hatches and a settled caption while Inspect keeps each observed state', async ({ page, model }) => {
+  const reports = await setupSettledTimeline(page, model);
+  reports.modify = runtime => setReportedAxis(runtime, 'pitch', 'paused');
+  await page.clock.runFor(150);
+  await expect(page.locator('#demo-pitch-state')).toHaveText('Paused');
+  await expect(page.locator('#demo-pitch-detail')).toHaveText('Paused');
+  await expect(page.locator('#demo-pitch-label')).toBeHidden();
+  await expect(page.locator('.demo-axis[data-axis="pitch"] .demo-rail[data-active=true]')).toHaveCount(0);
+  await inspectTimeline(page);
+  await expect(page.locator('#demo-history-detail')).toContainText('Pitch Paused');
+  const pauseAt = await page.evaluate(() => performance.now());
+  reports.modify = runtime => setReportedAxis(runtime, 'pitch', 'waiting');
+  await page.clock.runFor(200);
+  await expect(page.locator('#demo-pitch-label')).toBeHidden();
+  await inspectTimeline(page);
+  await expect(page.locator('#demo-history-detail')).toContainText('Pitch Waiting');
+  const waitingAt = await page.evaluate(() => performance.now());
+  reports.modify = runtime => setReportedAxis(runtime, 'pitch', 'paused');
+  await page.clock.runFor(400); // Cross 500 ms plus one 100 ms render tick.
+  await expect(page.locator('#demo-pitch-label')).toHaveText('Standby');
+  await expect(page.locator('#demo-pitch-label')).toBeVisible();
+  const now = await page.evaluate(() => performance.now());
+  for (const [at, state] of [[pauseAt, 'Paused'], [waitingAt, 'Waiting']]) {
+    await inspectTimeline(page, Math.round((at - now) / 50) * .05);
+    await expect(page.locator('#demo-history-detail')).toContainText(`Pitch ${state}`);
+  }
+  await expect(visibleTimeline(page, 'pitch', 'assisted')).toHaveCount(1);
+  await expect(visibleTimeline(page, 'pitch', 'paused')).toHaveCount(0);
+  await expect(visibleTimeline(page, 'pitch', 'waiting')).toHaveCount(0);
+  await expect(page.locator('.demo-history-track[data-lane="pitch"] .demo-interruption:not([hidden])')).not.toHaveCount(0);
+  reports.modify = () => {};
+  await page.clock.runFor(150);
+  await expect(page.locator('#demo-pitch-detail')).toHaveText('Assisted');
+  await page.clock.runFor(600);
+  await expect(page.locator('#demo-pitch-label')).toBeHidden();
+  await expect(page.locator('#demo-pitch-detail')).toHaveText('Assisted');
+  expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
+});
+
+test('brief manual takeover changes live authority immediately, then sustained ownership gets a block and a long label', async ({ page, model }) => {
+  const reports = await setupSettledTimeline(page, model);
+  await page.clock.runFor(2200);
+  reports.modify = runtime => setReportedAxis(runtime, 'pitch', 'manual');
+  await page.clock.runFor(200);
+  await expect(page.locator('.demo-axis[data-axis="pitch"] .demo-rail[data-kind="pilot"]')).toHaveAttribute('data-active', 'true');
+  await expect(page.locator('.demo-axis[data-axis="pitch"] .demo-rail[data-kind="argos"]')).toHaveAttribute('data-active', 'false');
+  await expect(page.locator('#demo-pitch-detail')).toHaveText('Manual');
+  await inspectTimeline(page);
+  await expect(page.locator('#demo-history-detail')).toContainText('Pitch MANUAL');
+  await expect(visibleTimeline(page, 'pitch', 'manual')).toHaveCount(0);
+  reports.modify = () => {};
+  await page.clock.runFor(300);
+  await inspectTimeline(page);
+  await expect(visibleTimeline(page, 'pitch', 'manual')).toHaveCount(0);
+  await expect(page.locator('.demo-history-track[data-lane="pitch"] .demo-interruption:not([hidden])')).not.toHaveCount(0);
+  reports.modify = runtime => setReportedAxis(runtime, 'pitch', 'manual');
+  await page.clock.runFor(700);
+  await inspectTimeline(page);
+  await expect(visibleTimeline(page, 'pitch', 'manual')).toHaveCount(1);
+  await expect(visibleTimeline(page, 'pitch', 'manual')).toHaveText('');
+  await page.clock.runFor(1600);
+  await inspectTimeline(page);
+  await expect(visibleTimeline(page, 'pitch', 'manual')).toHaveText('MANUAL');
+});
+
+test('unknown data bypasses caption settling and never becomes hatched assistance', async ({ page, model }) => {
+  const reports = await setupSettledTimeline(page, model);
+  reports.modify = runtime => setReportedAxis(runtime, 'pitch', 'waiting');
+  await page.clock.runFor(700);
+  await expect(page.locator('#demo-pitch-label')).toHaveText('Standby');
+  reports.modify = runtime => setReportedAxis(runtime, 'pitch', 'unknown');
+  await page.clock.runFor(150);
+  await expect(page.locator('#demo-pitch-label')).toHaveText('Unavailable');
+  await expect(page.locator('#demo-pitch-detail')).toHaveText('Unavailable');
+  await page.clock.runFor(100); // Give the immediate gap a nonzero screen width.
+  await inspectTimeline(page);
+  await expect(visibleTimeline(page, 'pitch', 'unknown')).not.toHaveCount(0);
+  await expect(visibleTimeline(page, 'pitch').last()).toHaveAttribute('data-state', 'unknown');
+  await expect(page.locator('#demo-history-detail')).toContainText('Pitch Unavailable');
+  await expect(page.locator('.demo-axis[data-axis="pitch"] .demo-rail[data-active=true]')).toHaveCount(0);
+});
+
+test('an established manual span keeps its category as a different-axis observation reaches the 30-second cutoff', async ({ page, model }) => {
+  const reports = await setupSettledTimeline(page, model);
+  reports.modify = runtime => setReportedAxis(runtime, 'yaw', 'manual');
+  await page.clock.runFor(300);
+  reports.modify = runtime => { setReportedAxis(runtime, 'yaw', 'manual'); setReportedAxis(runtime, 'pitch', 'paused'); };
+  await page.clock.runFor(400);
+  await inspectTimeline(page);
+  await expect(visibleTimeline(page, 'yaw', 'manual')).toHaveCount(1);
+  reports.modify = () => {};
+  await page.clock.runFor(29_800);
+  await inspectTimeline(page);
+  // The retained left edge is inside the manual interval, after its original
+  // start was pruned. It must not become an ARGOS-colored short excursion.
+  await expect(visibleTimeline(page, 'yaw', 'manual')).toHaveCount(1);
+  await expect(page.locator('.demo-segment')).toHaveCount(3 * 128);
+  await expect(page.locator('.demo-interruption')).toHaveCount(2 * 128);
+});
+
+test('dense interruption history keeps its oldest hatch even when the display pool is full', async ({ page, model }) => {
+  test.setTimeout(45_000);
+  const reports = await setupSettledTimeline(page, model);
+  let count = 0;
+  reports.modify = runtime => { if (++count % 2) setReportedAxis(runtime, 'pitch', 'paused'); };
+  await page.clock.runFor(29_000);
+  await inspectTimeline(page);
+  expect(count).toBeGreaterThan(256);
+  const hatches = page.locator('.demo-history-track[data-lane="pitch"] .demo-interruption:not([hidden])');
+  await expect(hatches).toHaveCount(128);
+  await expect(hatches.first()).toHaveAttribute('data-state', 'dense');
+  expect(await hatches.first().evaluate(node => parseFloat(node.style.left))).toBeLessThan(5);
+  expect(await page.locator('.demo-interruption').count()).toBe(256);
+  await expect(page.locator('#demo-history-detail')).toContainText(/Pitch (Paused|ARGOS)/);
+});

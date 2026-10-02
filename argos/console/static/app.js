@@ -45,9 +45,15 @@
   let demoHistoryAt = null;
   let demoHistoryInspection = 0;
   let demoHistoryPools = null;
+  let demoHistoryRenderedAt = null;
+  let demoAxisPresentation = {};
+  let demoPresentationKey = null;
   const DEMO_HISTORY_WINDOW = 30000;
   const DEMO_HISTORY_INTERVAL = 250;
   const DEMO_HISTORY_CAP = 128;
+  const DEMO_OBSERVATION_CAP = 512;
+  const DEMO_SETTLE_MS = 500;
+  const DEMO_LABEL_MS = 2000;
   let stopped = false;
   let mutation = null;
   let stateEpoch = 0;
@@ -94,6 +100,9 @@
     demoLastReport = null;
     demoHistory = [];
     demoHistoryAt = null;
+    demoHistoryRenderedAt = null;
+    demoAxisPresentation = {};
+    demoPresentationKey = null;
     demoHistoryInspection = 0;
     demoLastSeen = null;
     demoRadarSignature = "";
@@ -436,73 +445,148 @@
     text("yaw-preview-status", detail);
   }
 
+  // Only presentation settles. Exact axis values, authority and observations
+  // keep their original timing; unknown data never inherits a previous owner.
+  function settleDemoState(memory, state, now, delayStandby = false) {
+    if (state === "unknown") return { stable: "unknown", candidate: null, since: now };
+    if (!memory || memory.stable === "unknown") {
+      memory = { stable: delayStandby && state === "standby" ? null : state, candidate: state, since: now };
+    }
+    if (memory.stable === state) memory.candidate = null;
+    else {
+      if (memory.candidate !== state) { memory.candidate = state; memory.since = now; }
+      if (now - memory.since >= DEMO_SETTLE_MS) { memory.stable = state; memory.candidate = null; }
+    }
+    return memory;
+  }
+
+  function demoAxisFamily(state) {
+    return ["assisted", "paused", "waiting"].includes(state) ? "assisted" : state;
+  }
+
   function demoHistoryPoint(at, states) {
     const last = demoHistory.at(-1);
     if (!last || ["yaw", "pitch", "target"].some(lane => last[lane] !== states[lane])) {
-      const point = { at, ...states };
+      const point = { at, ...states,
+        yawBase: demoAxisPresentation.yaw?.family.stable ?? "unknown",
+        pitchBase: demoAxisPresentation.pitch?.family.stable ?? "unknown",
+        yawSince: demoAxisPresentation.yaw?.familyAt ?? at,
+        pitchSince: demoAxisPresentation.pitch?.familyAt ?? at };
       if (last?.at === at) demoHistory[demoHistory.length - 1] = point;
       else demoHistory.push(point);
     }
   }
 
   function observeDemoHistory(now, states) {
-    if (document.hidden || (demoHistoryAt !== null && now - demoHistoryAt < DEMO_HISTORY_INTERVAL)) return;
-    // Browser suspension cannot turn the last observed state into continuous
-    // assistance. Start an unknown interval at the next expected observation.
+    if (document.hidden) return;
     if (demoHistoryAt !== null && now - demoHistoryAt > 1000) {
       demoHistoryPoint(demoHistoryAt + DEMO_HISTORY_INTERVAL, { yaw: "unknown", pitch: "unknown", target: "unknown" });
     }
+    // Capture every locally observed transition, including brief ones. Only
+    // timeline drawing is throttled; Inspect never reads the smoothed blocks.
     demoHistoryPoint(now, states);
     demoHistoryAt = now;
     const cutoff = now - DEMO_HISTORY_WINDOW;
     while (demoHistory.length > 1 && demoHistory[1].at <= cutoff) demoHistory.shift();
-    if (demoHistory.length > DEMO_HISTORY_CAP) demoHistory.splice(0, demoHistory.length - DEMO_HISTORY_CAP);
-    renderDemoHistory(now);
+    if (demoHistory.length > DEMO_OBSERVATION_CAP) demoHistory.splice(0, demoHistory.length - DEMO_OBSERVATION_CAP);
+    if (demoHistoryRenderedAt === null || now - demoHistoryRenderedAt >= DEMO_HISTORY_INTERVAL) renderDemoHistory(now);
+  }
+
+  function demoTimelineGroups(intervals, initial, firstSince) {
+    const families = [], groups = [], interruptions = [];
+    const append = (list, interval) => {
+      const previous = list.at(-1);
+      if (previous && previous.state === interval.state && previous.end === interval.start) previous.end = interval.end;
+      else list.push({ ...interval });
+    };
+    for (const interval of intervals) append(families, { ...interval, state: demoAxisFamily(interval.state) });
+    let stable = initial;
+    for (const interval of families) {
+      // Another axis may have inserted the first retained point midway
+      // through this family. Preserve its original start across window pruning.
+      const since = interval === families[0] && finite(firstSince) ? Math.min(firstSince, interval.start) : interval.start;
+      const short = interval.end - since < DEMO_SETTLE_MS;
+      if (interval.state === "unknown" || stable === "unknown" || !stable || !short) stable = interval.state;
+      append(groups, { ...interval, state: stable });
+      if (stable !== interval.state) interruptions.push({ ...interval, state: "transition" });
+    }
+    for (const interval of intervals) {
+      if (["paused", "waiting"].includes(interval.state)) interruptions.push({ ...interval, state: "interrupted" });
+    }
+    // Union overlapping hatch spans; the original states stay in demoHistory.
+    interruptions.sort((a, b) => a.start - b.start);
+    const hatches = [];
+    for (const interval of interruptions) {
+      const previous = hatches.at(-1);
+      if (previous && previous.end >= interval.start) previous.end = Math.max(previous.end, interval.end);
+      else hatches.push({ ...interval });
+    }
+    return { groups, hatches };
   }
 
   function renderDemoHistory(now = performance.now()) {
     if (!demoActive()) return;
+    demoHistoryRenderedAt = now;
     if (!demoHistoryPools) {
       demoHistoryPools = {};
       for (const lane of ["yaw", "pitch", "target"]) {
         const track = document.querySelector(`.demo-history-track[data-lane="${lane}"]`);
-        demoHistoryPools[lane] = Array.from({ length: DEMO_HISTORY_CAP }, () => {
+        const pool = className => Array.from({ length: DEMO_HISTORY_CAP }, () => {
           const node = document.createElement("span");
-          node.className = "demo-segment";
+          node.className = className;
           node.hidden = true;
           track.append(node);
           return node;
         });
+        demoHistoryPools[lane] = { groups: pool("demo-segment"), hatches: lane === "target" ? [] : pool("demo-interruption") };
       }
     }
     const labels = { manual: "MANUAL", assisted: "ARGOS", paused: "Paused", waiting: "Waiting", unknown: "Unavailable", visible: "Visible", lost: "Lost", none: "No target" };
     const start = now - DEMO_HISTORY_WINDOW;
     for (const lane of ["yaw", "pitch", "target"]) {
-      // Merge adjacent intervals for each lane; another axis can change alone.
       const intervals = [];
       for (let i = 0; i < demoHistory.length; i++) {
         const point = demoHistory[i], end = Math.min(now, demoHistory[i + 1]?.at ?? now);
-        const from = Math.max(start, point.at);
-        if (end <= from) continue;
+        if (end <= point.at) continue;
         const last = intervals.at(-1);
-        if (last && last.state === point[lane] && last.end === from) last.end = end;
-        else intervals.push({ start: from, end, state: point[lane] });
+        if (last && last.state === point[lane] && last.end === point.at) last.end = end;
+        else intervals.push({ start: point.at, end, state: point[lane] });
       }
+      const visual = lane === "target" ? { groups: intervals, hatches: [] }
+        : demoTimelineGroups(intervals, demoHistory[0]?.[`${lane}Base`], demoHistory[0]?.[`${lane}Since`]);
       const track = document.querySelector(`.demo-history-track[data-lane="${lane}"]`);
       const width = track.clientWidth;
-      track.setAttribute("aria-label", `${lane}: ${intervals.length} observed intervals in the last 30 seconds. ${intervals.length ? `Latest: ${labels[intervals.at(-1).state]}.` : "No observation yet."} Use Inspect for earlier states.`);
-      demoHistoryPools[lane].forEach((node, i) => {
-        const interval = intervals[i];
-        node.hidden = !interval;
-        if (!interval) return;
-        const fraction = (interval.end - interval.start) / DEMO_HISTORY_WINDOW;
-        node.dataset.state = interval.state;
-        node.style.left = `${(interval.start - start) / DEMO_HISTORY_WINDOW * 100}%`;
-        node.style.width = `${fraction * 100}%`;
-        const label = labels[interval.state];
-        node.textContent = width * fraction > label.length * 7 + 12 ? label : "";
-        node.setAttribute("aria-label", `${label}: ${number.format((now - interval.start) / 1000)} to ${number.format((now - interval.end) / 1000)} seconds ago`);
-      });
+      track.setAttribute("aria-label", `${lane}: ${intervals.length} observed intervals. ${intervals.length ? `Latest exact state: ${labels[intervals.at(-1).state]}.` : "No observation yet."} Hatched spans are interrupted assistance or brief changes, not confirmed control. Use Inspect for exact observed states.`);
+      for (const kind of ["groups", "hatches"]) {
+        let shown = visual[kind].filter(interval => interval.end > start);
+        if (shown.length > DEMO_HISTORY_CAP) {
+          if (kind === "hatches") {
+            // Dense interruptions must never disappear into a solid ARGOS
+            // block. Coarsen the oldest hatches, preserving exact Inspect data.
+            const folded = shown.length - DEMO_HISTORY_CAP + 1;
+            shown = [{ start: shown[0].start, end: shown[folded - 1].end, state: "dense" }, ...shown.slice(folded)];
+          } else shown = shown.slice(-DEMO_HISTORY_CAP);
+        }
+        demoHistoryPools[lane][kind].forEach((node, i) => {
+          const interval = shown[i];
+          node.hidden = !interval;
+          if (!interval) return;
+          const from = Math.max(start, interval.start), duration = interval.end - from;
+          const fraction = duration / DEMO_HISTORY_WINDOW;
+          node.dataset.state = interval.state;
+          node.style.left = `${(from - start) / DEMO_HISTORY_WINDOW * 100}%`;
+          node.style.width = `${fraction * 100}%`;
+          if (kind === "hatches") {
+            node.title = "Interrupted assistance or brief change · Inspect for the exact observed state";
+            node.setAttribute("aria-hidden", "true");
+          } else {
+            const label = labels[interval.state];
+            // Keep long block labels together even when interrupted by hatches.
+            node.textContent = duration > DEMO_LABEL_MS && width * fraction > label.length * 7 + 12 ? label : "";
+            node.setAttribute("aria-label", `${label}${lane !== "target" && interval.state === "assisted" ? " assistance group, including hatched interruptions" : ""}: ${number.format((now - from) / 1000)} to ${number.format((now - interval.end) / 1000)} seconds ago`);
+          }
+        });
+      }
     }
     const observedAt = now + demoHistoryInspection * 1000;
     const point = demoHistory.findLast(item => item.at <= observedAt);
@@ -623,6 +707,8 @@
     const targetLost = selected && (preview.phase === "paused" || (imageRecent && !visible));
     text("demo-target", selected ? `Person #${preview.target_id}` : targetKnown ? "No target selected" : "Unavailable");
 
+    const presentationKey = JSON.stringify([context, runtime?.session, runtime?.generation, preview?.target_id, preview?.revision]);
+    if (demoPresentationKey !== presentationKey) { demoAxisPresentation = {}; demoPresentationKey = presentationKey; }
     const labels = { manual: "Manual", assisted: "Assisted", paused: "Paused", waiting: "Waiting", unknown: "Unavailable" };
     const axisStates = {}, corrections = {}, sticks = {};
     for (const axis of ["yaw", "pitch", "roll", "throttle"]) {
@@ -680,11 +766,25 @@
       text(id, held ? `Last report · ${ageText(reportAge)}` : "");
     }
     for (const axis of ["yaw", "pitch", "roll", "throttle"]) {
-      const state = display.states[axis];
+      const state = display.states[axis], exact = axisStates[axis];
+      const presentation = demoAxisPresentation[axis] ?? {};
+      const family = demoAxisFamily(exact);
+      if (presentation.observedFamily !== family) { presentation.observedFamily = family; presentation.familyAt = now; }
+      presentation.family = settleDemoState(presentation.family, family, now);
+      presentation.caption = settleDemoState(presentation.caption, ["paused", "waiting"].includes(exact) ? "standby" : exact, now, true);
+      demoAxisPresentation[axis] = presentation;
+      const caption = held ? "" : presentation.caption.stable === "standby" ? "Standby" : exact === "unknown" ? "Unavailable" : "";
+      text(`demo-${axis}-label`, caption);
+      element(`demo-${axis}-label`).hidden = !caption;
+      text(`demo-${axis}-detail`, labels[exact]);
       text(`demo-${axis}-state`, held ? `Last: ${labels[state]}` : labels[state]);
       element(`demo-${axis}-state`).dataset.state = state;
       const card = document.querySelector(`.demo-axis[data-axis="${axis}"]`);
       card.dataset.state = state;
+      card.dataset.caption = caption ? "visible" : "hidden";
+      card.dataset.interrupted = String(!held && ["paused", "waiting"].includes(exact));
+      card.dataset.transition = String(!held && exact !== "unknown" && presentation.family.candidate !== null);
+      card.title = `${axis}: ${labels[exact]}. Caption settles over 0.5 s; bars show the current report.`;
       card.setAttribute("aria-label", `${axis}: ${held ? "last report, " : ""}${labels[state]}`);
       for (const kind of ["pilot", "argos"]) {
         const value = kind === "pilot" ? display.sticks[axis] : display.corrections[axis];
@@ -1767,6 +1867,7 @@
   document.addEventListener("visibilitychange", () => {
     if (demoActive() && document.hidden) {
       demoLastReport = null;
+      demoAxisPresentation = {};
       const now = performance.now();
       demoHistoryPoint(now, { yaw: "unknown", pitch: "unknown", target: "unknown" });
       demoHistoryAt = now;
