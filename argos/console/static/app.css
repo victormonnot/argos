@@ -651,7 +651,7 @@ body.demo-mode .demo-video-context { display:flex; }
 .demo-scale>div { display:flex; justify-content:space-between; margin:0 5px 0 10px; font-family:var(--mono); }
 .demo-scale>span:last-child { text-align:right; }
 .demo-shot { grid-column:3; grid-row:2/4; min-width:0; min-height:0; padding:11px 12px 10px; border-left:1px solid var(--line); }
-.demo-shot .demo-section-heading { margin-bottom:5px; }
+.demo-shot .demo-section-heading { justify-content:flex-end; margin-bottom:5px; }
 #demo-shot-title { font-size:20px; font-weight:400; line-height:1.2; letter-spacing:-.2px; margin:0 0 4px; }
 #demo-shot-subtitle { color:var(--muted); font-size:12px; min-height:17px; }
 .demo-shot-view { position:relative; height:152px; margin:9px 0 6px; overflow:hidden; background:var(--image); isolation:isolate; }

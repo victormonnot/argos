@@ -1338,7 +1338,7 @@
     const duration = seconds === null ? "" : `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
     text("demo-record-label", pending ? mutation === "recording-start" ? "Starting…" : "Stopping…"
       : !fresh ? "Record unavailable" : active ? rawActive ? `Stop raw${duration ? ` · ${duration}` : ""}` : failed ? "Stop · raw error" : "Stop capture"
-      : finalizing ? "Finalizing…" : "Record raw");
+      : finalizing ? "Finalizing…" : "Start recording");
     const error = recording?.error || recording?.visual?.detail || filming?.error || camera?.error;
     button.title = !fresh ? "Connect to the service to control recording."
       : pending ? "Recording request in progress."

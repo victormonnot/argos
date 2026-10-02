@@ -1126,13 +1126,21 @@ test('unknown data bypasses caption settling and never becomes hatched assistanc
 test('an established manual span keeps its category as a different-axis observation reaches the 30-second cutoff', async ({ page, model }) => {
   const reports = await setupSettledTimeline(page, model);
   reports.modify = runtime => setReportedAxis(runtime, 'yaw', 'manual');
+  // Start the span only after the asynchronous mock response reached the UI.
+  // Changing the Node fixture alone does not start a browser observation.
+  await page.clock.runFor(150);
+  await expect(page.locator('#demo-yaw-detail')).toHaveText('Manual');
   await page.clock.runFor(300);
   reports.modify = runtime => { setReportedAxis(runtime, 'yaw', 'manual'); setReportedAxis(runtime, 'pitch', 'paused'); };
-  await page.clock.runFor(400);
+  await page.clock.runFor(100);
+  await expect(page.locator('#demo-pitch-detail')).toHaveText('Paused');
+  await page.clock.runFor(200);
   await inspectTimeline(page);
   await expect(visibleTimeline(page, 'yaw', 'manual')).toHaveCount(1);
   reports.modify = () => {};
-  await page.clock.runFor(29_800);
+  await page.clock.runFor(100);
+  await expect(page.locator('#demo-yaw-detail')).toHaveText('Assisted');
+  await page.clock.runFor(29_700);
   await inspectTimeline(page);
   // The retained left edge is inside the manual interval, after its original
   // start was pruned. It must not become an ARGOS-colored short excursion.

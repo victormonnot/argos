@@ -110,7 +110,7 @@
           </h2>
           <div class="camera-actions">
             <button aria-describedby="recording-action-status" class="button button-quiet demo-only" disabled id="demo-record-button" type="button">
-              <span aria-hidden="true" class="demo-record-dot"></span><span id="demo-record-label">Record raw</span>
+              <span aria-hidden="true" class="demo-record-dot"></span><span id="demo-record-label">Start recording</span>
             </button>
             <label class="vision-toggle" for="vision-toggle">
               <input aria-describedby="vision-status" disabled id="vision-toggle" type="checkbox"/>
@@ -208,9 +208,9 @@
             <div class="demo-scale"><span>▸ In control</span><div><span>−100</span><span>0</span><span>+100</span></div><span>%</span></div>
           </section>
         </aside>
-        <section class="demo-shot demo-only" aria-labelledby="demo-shot-heading">
-          <div class="demo-section-heading"><h3 id="demo-shot-heading">The shot</h3><span id="demo-shot-state">UNAVAILABLE</span></div>
-          <h4 id="demo-shot-title">Waiting for live data.</h4>
+        <section class="demo-shot demo-only" aria-labelledby="demo-shot-title">
+          <div class="demo-section-heading"><span id="demo-shot-state">UNAVAILABLE</span></div>
+          <h3 id="demo-shot-title">Waiting for live data.</h3>
           <p id="demo-shot-subtitle">Current inputs and assistance are unavailable.</p>
           <div class="demo-shot-view" id="demo-shot-view" data-state="unknown" data-mode="unknown" role="img" aria-label="No current subject observation">
             <svg class="demo-radar-plot" id="demo-radar-plot" aria-hidden="true">

@@ -20,7 +20,7 @@ target, change the radio mode or send a control request. Person-selection
 buttons are hidden and inactive in the demo. Use the ordinary Pocket workflow
 to select a target and choose the assistance mode.
 
-**Record raw** in the camera header starts raw camera video and its existing
+**Start recording** in the camera header starts raw camera video and its existing
 flight-log bundle without leaving demo. **Stop raw · mm:ss** stops the capture;
 **Finalizing…** prevents another start until the writers finish. It requires a
 recent physical camera source. The saved camera video has no browser overlays;
@@ -65,7 +65,7 @@ Axis states describe Pocket Lua reports, not native mixer gates or measured
 flight-controller actuation. Apparent distance is based on image size; the demo
 does not report metric range or aircraft motion.
 
-## The shot
+## Subject framing
 
 The heading leads with confirmed assistance: **Keeping the subject centered.**
 when yaw is assisted, or **Keeping the subject the same size.** when only pitch

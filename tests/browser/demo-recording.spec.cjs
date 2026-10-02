@@ -78,7 +78,7 @@ test('demo records raw video in place, prevents duplicate requests and waits for
   await page.waitForTimeout(150);
   await expect(button).toBeDisabled();
   model.recording = filmedRecording('complete');
-  await expect(button).toHaveText('Record raw');
+  await expect(button).toHaveText('Start recording');
   await expect(button).toBeEnabled();
   await expect(page.locator('body')).toHaveClass(/\bdemo-mode\b/);
 });
@@ -114,7 +114,7 @@ test('a rejected raw start stays in demo and exposes the error without claiming 
   await button.click();
   await expect(page.locator('#recording-action-status')).toBeVisible();
   await expect(page.locator('#recording-action-status')).toContainText('Camera writer could not open its file.');
-  await expect(button).toHaveText('Record raw');
+  await expect(button).toHaveText('Start recording');
   await expect(button).toBeEnabled();
   await expect(page.locator('body')).toHaveClass(/\bdemo-mode\b/);
 });
@@ -127,7 +127,7 @@ test('demo distinguishes a session-only capture from confirmed raw video and can
   await expect(button).toHaveText('Stop capture');
   await expect(button).toHaveAttribute('title', /Raw camera recording is not confirmed/);
   await button.click();
-  await expect(button).toHaveText('Record raw');
+  await expect(button).toHaveText('Start recording');
   expect(model.calls.filter(call => call.method === 'POST').map(call => call.path)).toEqual(['/api/recordings/stop']);
   await expect(page.locator('body')).toHaveClass(/\bdemo-mode\b/);
 });
@@ -146,7 +146,7 @@ test('a raw writer error remains stoppable after loss of the camera', async ({ p
   await expect(button).toHaveAttribute('title', /Disk full/);
   await expect(button).toBeEnabled();
   await button.click();
-  await expect(button).toHaveText('Record raw');
+  await expect(button).toHaveText('Start recording');
   await expect(button).toBeDisabled();
 });
 
