@@ -97,7 +97,7 @@ measurement. Invalid or missing reference data cannot create a size goal.
 ## Recent history
 
 The bottom timeline summarizes the last 30 seconds of locally observed yaw,
-pitch and target states. Its two colored axis groups are **ARGOS assistance**
+pitch and target states. Its two colored axis groups are **ARGOS**
 and **MANUAL**. ARGOS is an assistance family, not proof of continuous control:
 Paused/Waiting intervals have fine hatching. Waiting can include the wait for a
 fresh command after the pilot recenters a stick. A blank/dark gap means unknown
