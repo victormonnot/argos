@@ -741,12 +741,14 @@
     aim.toggleAttribute("hidden", !visible);
     aim.dataset.state = targetState;
     if (visible) {
-      const px = x * 1000, py = (box[1] + box[3] / 2) * 1000;
+      // Yaw corrects horizontal image offset; project the target onto the
+      // image midline instead of suggesting a vertical flight direction.
+      const px = x * 1000, py = 500;
       for (const id of ["demo-aim-link", "demo-aim-shadow"]) {
         element(id).setAttribute("x2", String(px)); element(id).setAttribute("y2", String(py));
       }
       element("demo-aim-end").setAttribute("d", `M${px - 5} ${py}h10M${px} ${py - 5}v10`);
-      aim.setAttribute("aria-label", `Image offset: target ${Math.abs(error) <= preview.deadband ? "centered" : `${number.format(Math.abs(error) * 100)}% ${error < 0 ? "left" : "right"}`}. Framing guide, not measured aircraft motion.`);
+      aim.setAttribute("aria-label", `Horizontal image offset: target ${Math.abs(error) <= preview.deadband ? "centered" : `${number.format(Math.abs(error) * 100)}% ${error < 0 ? "left" : "right"}`}. Yaw framing guide, not measured aircraft motion.`);
     }
     for (const node of element("vision-layer").children) {
       const selectedBox = Number(node.dataset.trackId) === preview?.target_id;

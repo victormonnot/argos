@@ -36,10 +36,12 @@ saved. The global capture indicator still opens the ordinary recording inspector
   (amber) appears only during the backend's bounded visual recovery window,
   with a recent image. **Lost** means recent evidence of loss without an active
   recovery window. Missing or expired visual evidence shows **Unavailable**.
-- A line connects the image center to the selected person's box center. It
-  shows image offset, not a measured flight direction or commanded trajectory.
-  It is dashed for tracking and solid for confirmed assistance. Loss or stale
-  visual evidence removes it; no predicted line follows a missing target.
+- A horizontal line at image mid-height runs from the center to the selected
+  person's horizontal position. It shows the left/right image offset relevant
+  to yaw, without suggesting a climb or descent. It is dashed for tracking and
+  solid for confirmed assistance, not a measured flight direction or commanded
+  trajectory. Loss or stale visual evidence removes it; no predicted line
+  follows a missing target.
 - **Selected mode** shows **Manual**, **Yaw assist**, or **Yaw + apparent
   distance** from the Pocket report. This is independent of each axis's state.
 - **Axis control** has separate Pilot and ARGOS bars for each axis. The circle

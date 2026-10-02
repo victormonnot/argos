@@ -331,16 +331,35 @@ test('target status and centering guide follow the displayed detection and expir
   await expect(page.locator('.vision-box-label')).toContainText('Person #7 · 94%');
 
   const guideEndpointError = () => page.evaluate(() => {
-    const line = document.getElementById('demo-aim-link');
-    const end = new DOMPoint(Number(line.getAttribute('x2')), Number(line.getAttribute('y2'))).matrixTransform(line.getScreenCTM());
+    const stage = document.getElementById('camera-stage').getBoundingClientRect();
     const box = document.querySelector('.vision-box[data-selected=true]').getBoundingClientRect();
-    return Math.hypot(end.x - box.x - box.width / 2, end.y - box.y - box.height / 2);
+    const centerX = stage.x + stage.width / 2, centerY = stage.y + stage.height / 2;
+    return Math.max(...['demo-aim-link', 'demo-aim-shadow'].flatMap(id => {
+      const line = document.getElementById(id);
+      const point = n => new DOMPoint(Number(line.getAttribute(`x${n}`)), Number(line.getAttribute(`y${n}`))).matrixTransform(line.getScreenCTM());
+      const start = point(1), end = point(2);
+      return [Math.hypot(start.x - centerX, start.y - centerY),
+        Math.hypot(end.x - box.x - box.width / 2, end.y - centerY)];
+    }));
   });
   await expect.poll(guideEndpointError).toBeLessThan(1);
   camera.detections[0].box = [.6, .15, .2, .3];
   camera.detections[0].confidence = .86;
   await expect(aim).toHaveAttribute('aria-label', /40% right/);
   await expect(page.locator('.vision-box-label')).toContainText('Person #7 · 86%');
+  await expect.poll(guideEndpointError).toBeLessThan(1);
+
+  // Vertical movement at the same horizontal position must not tilt the yaw
+  // guide. A horizontally centered subject has no span even above the center.
+  camera.detections[0].box = [.6, .65, .2, .2];
+  camera.detections[0].confidence = .82;
+  await expect(page.locator('.vision-box-label')).toContainText('Person #7 · 82%');
+  await expect(aim).toHaveAttribute('aria-label', /40% right/);
+  await expect.poll(guideEndpointError).toBeLessThan(1);
+  camera.detections[0].box = [.4, .1, .2, .2];
+  camera.detections[0].confidence = .81;
+  await expect(page.locator('.vision-box-label')).toContainText('Person #7 · 81%');
+  await expect(aim).toHaveAttribute('aria-label', /Horizontal image offset: target centered/);
   await expect.poll(guideEndpointError).toBeLessThan(1);
 
   // Losing only the Pocket report must remove the claim of a control lock,
