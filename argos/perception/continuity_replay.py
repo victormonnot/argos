@@ -287,7 +287,8 @@ def _snapshot(now, camera, candidate, preview):
 
 def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
            tick_seconds=.01, extra_worker_ms=0, tracker_factory=None,
-           image_provider=None, preview_suppressions=None):
+           image_provider=None, preview_suppressions=None, preview_factory=None,
+           measure_preview=False):
     """Return scalar diagnostics, per-source-frame decisions and software durations.
 
     ``frames`` contain sequence/receipt, normalized detections, aligned appearance
@@ -311,6 +312,12 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
     initial selection. Raw detections, tracker state, schedules and thresholds
     are unchanged. This annotation-assisted counterfactual is not a deployable
     policy; annotations and their identity judgments are external evidence.
+
+    ``preview_factory(on_recovery=callback, on_policy=callback)`` can supply an
+    isolated offline YawPreview subclass. It cannot be combined with annotated
+    suppression. ``measure_preview`` records actual owner-call CPU/wall costs
+    without charging them to either controlled replay clock. The default path
+    constructs the unchanged production preview and adds no cost fields.
     """
     frames, start, end, selection, max_hz, tick_seconds, extra_worker_ms = _inputs(
         frames, start, end, selection, mode, max_hz, tick_seconds, extra_worker_ms)
@@ -318,6 +325,12 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
         raise ValueError("tracker_factory must be callable")
     if image_provider is not None and (tracker_factory is None or not callable(image_provider)):
         raise ValueError("image_provider requires a custom tracker and must be callable")
+    if preview_factory is not None and not callable(preview_factory):
+        raise ValueError("preview_factory must be callable")
+    if type(measure_preview) is not bool:
+        raise ValueError("measure_preview must be a boolean")
+    if preview_factory is not None and preview_suppressions is not None:
+        raise ValueError("prototype policies cannot consume annotation suppressions")
     suppressions = _preview_suppressions(preview_suppressions, frames, selection)
     now = start
     events, pending, decisions = [], [], {}
@@ -335,6 +348,9 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
     def recovery(record):
         events.append({"kind": "recovery", **record})
 
+    def policy(record):
+        events.append({"kind": "recovery_policy", **record})
+
     comparison = None
     if tracker_factory is None:
         tracker = ImageTracker(on_diagnostic=association)
@@ -343,7 +359,22 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
         if not callable(getattr(adapter, "update", None)) or not callable(getattr(adapter, "reset", None)):
             raise ValueError("tracker_factory must return an update/reset adapter")
         comparison = tracker = _ComparisonTracker(adapter, frames, image_provider)
-    preview = YawPreview(True, continuous=True, on_recovery=recovery)
+    preview = (YawPreview(True, continuous=True, on_recovery=recovery)
+               if preview_factory is None else
+               preview_factory(on_recovery=recovery, on_policy=policy))
+    if not isinstance(preview, YawPreview):
+        raise ValueError("preview_factory must return an offline YawPreview subclass")
+    preview_costs = []
+
+    def preview_call(method, *args, **kwargs):
+        if not measure_preview:
+            return getattr(preview, method)(*args, **kwargs)
+        wall, cpu = time.perf_counter(), time.process_time()
+        try:
+            return getattr(preview, method)(*args, **kwargs)
+        finally:
+            preview_costs.append(((time.perf_counter() - wall) * 1000,
+                                  (time.process_time() - cpu) * 1000))
     validator = YawValidator()
     camera = _Camera(lambda: now)
     session = SimpleNamespace(run_id=RUN_ID, video_source_id=VIDEO_ID, video=camera,
@@ -385,7 +416,7 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
     last_phase = last_demand = None
     last_time, phase_durations, admitted_seconds = start, Counter(), 0.
     selection_result = None
-    last_state = preview.state(start)
+    last_state = preview_call("state", start)
     last_consumer = {"valid": False, "reason": "selection_required", "value": 0}
     delivered_ages, worker_delays = [], []
     accepted_sequences = set()
@@ -498,7 +529,7 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
             # sequence, including a frame first delivered before selection.
             observation = filtered_observation
         # New results arrive before expiry evaluation at this same instant.
-        preview.observe(observation, now)
+        preview_call("observe", observation, now)
         for sequence in delivered:
             accepted_sequences.add(sequence)
             last_accepted = sequence
@@ -522,13 +553,13 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
                 if len(matches) != 1:
                     raise RuntimeError("Selection needs exactly one strong detection overlapping the supplied box")
                 item, overlap = matches[0]
-                preview.select(item["track_id"], revision=preview.revision, now=now)
+                preview_call("select", item["track_id"], revision=preview.revision, now=now)
                 selection_result.update(accepted=True, track_id=item["track_id"], iou=overlap,
                                         frame_sequence=candidate.sample.sequence)
             except RuntimeError as exc:
                 selection_result["reason"] = str(exc)
             events.append({"kind": "selection", **selection_result})
-        last_state = preview.state(now)
+        last_state = preview_call("state", now)
         try:
             trial = copy(validator)
             demand = trial.validate(_snapshot(now, camera, candidate, last_state), now, now,
@@ -548,6 +579,10 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
             last_demand = demand_key
         for sequence in delivered:
             decisions[sequence].update(preview=deepcopy(last_state), consumer=deepcopy(last_consumer))
+            if preview_factory is not None:
+                decisions[sequence].update(
+                    preview_detection_indices=list(preview.preview_detection_indices),
+                    preview_detections=deepcopy(preview.preview_detections))
             events.append({"kind": "frame_analyzed", "at": now, "sequence": sequence,
                            "received_at": by_sequence[sequence]["received_at"],
                            "preview_phase": last_state["phase"], "consumer_valid": last_consumer["valid"]})
@@ -607,4 +642,19 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
             "Annotations do not alter association, source receipts, worker schedules, thresholds or initial selection; unknown and unannotated candidates remain.",
             "Avoiding one ambiguity stop does not establish recovery or correct identity later in the window.",
         ])
+    if preview_factory is not None:
+        report["summary"]["preview_policy"] = deepcopy(preview.metadata)
+        report["summary"]["limits"].append(
+            "Experimental offline recovery policy, without annotations or flight integration; "
+            "predicted position tests current measurements and never supplies commands.")
+    if measure_preview:
+        report["summary"]["execution_cost"] = {
+            "preview_owner_calls": len(preview_costs),
+            "preview_wall_ms": distribution([row[0] for row in preview_costs]),
+            "preview_cpu_ms": distribution([row[1] for row in preview_costs]),
+            "preview_total_wall_ms": sum(row[0] for row in preview_costs),
+            "preview_total_cpu_ms": sum(row[1] for row in preview_costs),
+            "scope": "observe/select/state calls including repeated owner polls and diagnostic callbacks; "
+                     "excludes detector, association and dry consumer; costs do not delay replay clocks",
+        }
     return report

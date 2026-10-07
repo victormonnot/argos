@@ -13,6 +13,49 @@ APPEARANCE = [1.] + [0.] * 207
 BOX = [.4, .2, .05, .5]
 
 
+@pytest.mark.parametrize("mode", ["recorded", "simulated"])
+def test_owner_cost_measurement_preserves_default_replay(mode):
+    from examples.compare_trackers import semantic_value
+    frames = [frame(i + 1, i * .1) for i in range(4)]
+    baseline = run(frames, mode=mode)
+    measured = run(frames, mode=mode, measure_preview=True)
+    assert semantic_value(measured) == semantic_value(baseline)
+    costs = measured["summary"]["execution_cost"]
+    assert costs["preview_owner_calls"] > len(frames)
+    assert costs["preview_total_cpu_ms"] >= 0
+    assert costs["preview_wall_ms"]["count"] == costs["preview_owner_calls"]
+
+
+@pytest.mark.parametrize("mode", ["recorded", "simulated"])
+def test_offline_policy_keeps_raw_tracker_and_clock_evidence(mode):
+    from argos.perception.recovery_prototype import make_preview
+    from examples.validate_continuity import upstream_projection
+    frames = [frame(i + 1, i * .1) for i in range(4)]
+    before = deepcopy(frames)
+    baseline = run(frames, mode=mode)
+    prototype = run(frames, mode=mode,
+                    preview_factory=lambda **kw: make_preview("motion_duplicates", **kw))
+    assert upstream_projection(prototype) == upstream_projection(baseline)
+    assert frames == before
+    assert prototype["summary"]["preview_policy"]["offline_only"] is True
+    for decision in prototype["frame_decisions"]:
+        if decision["status"] == "accepted":
+            assert decision["preview_detections"] == decision["detections"]
+            assert decision["preview_detection_indices"] == [0]
+    assert '"appearances"' not in json.dumps(prototype)
+
+
+@pytest.mark.parametrize("kwargs,message", [
+    ({"preview_factory": 1}, "callable"),
+    ({"measure_preview": 1}, "boolean"),
+    ({"preview_factory": lambda **kw: None}, "YawPreview"),
+    ({"preview_factory": lambda **kw: None, "preview_suppressions": []}, "annotation"),
+])
+def test_invalid_or_annotation_fed_policy_fails(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        run([frame(1, 0.)], **kwargs)
+
+
 def frame(sequence, received, *, available=None, box=None, confidence=.9,
           appearances=True, empty=False, worker_ms=10.):
     return {"sequence": sequence, "received_at": received,

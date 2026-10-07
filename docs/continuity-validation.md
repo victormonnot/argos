@@ -119,3 +119,7 @@ The preceding desktop CPU/RSS comparison retains its stated scope. Annotation
 lookup/filter execution is not a deployable performance result; the simulated
 clock still omits owner blocking and IPC. Live integration, further policy
 experiments and laptop measurements are separate work.
+
+The [offline recovery prototype](recovery-prototype.md) tests bounded horizontal
+motion and automatic duplicate handling without providing these annotations to
+the policy. It preserves the same detector, association and replay clocks.
