@@ -12,6 +12,7 @@ dist/tracking-venv/bin/python examples/compare_recovery.py \
   --reference /path/to/reference.json \
   --candidate-review /path/to/detection-review.json \
   --protocol /path/to/protocol.json \
+  --previous-comparison /path/to/completed-version-1-recovery-comparison \
   --output-dir /path/to/new-recovery-comparison
 ```
 
@@ -19,6 +20,9 @@ Use the preceding comparison's isolated environment. The output directory must
 be new or empty. The protocol fixes policy constants before inspecting new
 results. Existing reference and candidate-review files are evaluation inputs,
 not inputs to the policy. They must not be silently relabeled to suit an outcome.
+Protocol version 2 requires `--previous-comparison` to verify the unchanged
+legacy policies against the completed version 1 experiment. Protocol version 1
+retains its three original policies and can still run without this argument.
 
 ## Compared policies
 
@@ -29,10 +33,17 @@ and replay clocks. No learned ReID network is added. The runner compares:
 | Policy | Recovery input and horizontal geometry |
 | --- | --- |
 | `current` | Existing recovery behavior |
-| `motion` | Existing observations, with bounded horizontal motion prediction |
-| `motion_duplicates` | Motion prediction and strict duplicate grouping before recovery |
+| `motion` | Existing observations, with horizontal motion recalculated from recent history |
+| `motion_duplicates` | Recalculated motion and strict duplicate grouping before recovery |
+| `motion_held` | A bounded motion estimate retained from an actual selected measurement (version 2) |
+| `motion_held_duplicates` | Retained motion and the same strict duplicate grouping (version 2) |
 
-Motion history contains only recent, measured, strong observations of the
+Version 1 compares the first three policies. Version 2 compares all five;
+`current`, `motion` and `motion_duplicates` are legacy parity controls. The
+viewer derives its selector and tables from the report's actual policy list,
+including when displaying a version 1 report.
+
+In `motion` and `motion_duplicates`, history contains only recent, measured, strong observations of the
 selected target. Every retained sample must be at most 0.7 seconds old relative to the candidate
 image receipt; at least two distinct eligible receipts are required. If an older
 sample expires, recovery falls back to static geometry even when the latest
@@ -43,6 +54,26 @@ the candidate must lie within the existing 0.25 image-width horizontal tolerance
 of that prediction. Insufficient motion evidence retains the existing behavior.
 Motion remains an association aid: it never manufactures a detector observation
 or a fresh measurement for a skipped image.
+
+The two `motion_held` policies calculate and retain a scalar horizontal velocity
+when an actual strong selected measurement arrives. Its two measurements must
+have distinct, increasing sequence numbers and receipts no more than 0.7 seconds
+apart. The latest measurement becomes the estimate's anchor. Velocity is capped
+at one image width per second, as in the recalculated policy. The estimate remains
+eligible only until 0.5 seconds after that anchor: pruning the older history sample
+does not erase it early. A rejected candidate, repeated owner read or pending
+recovery does not renew the estimate or its anchor. Once expired, it falls back
+to the existing static geometry. Selection changes clear this history.
+
+For these retained estimates, horizontal gating uses
+`effective_dx = abs(candidate_cx - predicted_cx) + 0.1 * horizon_s`, with the
+existing limit of 0.25 image widths. The additional term is an explicitly fixed,
+**uncalibrated assumption** of 0.1 image widths per second. It tightens the gate
+as the estimate ages; it is neither a statistical confidence bound nor a motion
+or identity guarantee. Diagnostic events retain `motion_residual_x`,
+`motion_uncertainty_margin_x` and `motion_effective_dx`, together with the
+source measurement and anchor identifiers and times. Rejected candidates never
+become selected measurements through this prediction.
 
 Appearance similarity still requires 0.88. The existing vertical tolerance of
 0.15, scale checks, confirmation over two images and recovery deadline remain.
@@ -72,6 +103,8 @@ policy/clock combination runs three times in fresh subprocesses, each processing
 both windows. Semantic repeatability is checked independently of execution costs.
 A changed result must be attributable to selection/recovery: detector outputs,
 raw associations and the delivery schedule must remain unchanged.
+Version 2 additionally binds the previous completed recovery report and requires
+semantic parity for all three legacy policies, independently of execution costs.
 
 CPU, wall time and process memory concern this cached replay on the desktop.
 They do not include fresh detector inference or establish laptop or physical

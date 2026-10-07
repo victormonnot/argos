@@ -184,3 +184,98 @@ def test_different_protocol_is_not_silently_run(evidence, section, key, value):
     with pytest.raises(SystemExit):
         cli.main(evidence["args"])
     assert not evidence["output"].exists()
+
+
+def held_protocol(bindings):
+    value = protocol(bindings)
+    value.update(version=2, policies=list(cli.HELD_POLICIES), held_motion=dict(
+        estimate_history_reference="anchor_receipt", sample_span_s=.7, horizon_s=.5,
+        velocity_max_widths_per_s=1., uncertainty_rate_widths_per_s=.1,
+        uncertainty_kind="fixed_assumption_not_calibrated", gate="absolute_residual_plus_margin",
+        renewal="selected_strong_measurement_advancing_sequence_and_receipt_only",
+        fallback="unchanged_static_geometry_when_estimate_unavailable_or_expired",
+        predicted_commands=False, legacy_policies_unchanged=True))
+    return value
+
+
+@pytest.fixture
+def held_evidence(evidence):
+    previous = evidence["source"].parent / "previous"
+    base = json.loads((evidence["source"] / "report.json").read_text())
+    prior = dict(format="argos.recovery-prototype-comparison", version=1, state="complete",
+        cache_sha256=base["cache"]["sha256"], windows=base["windows"],
+        reference=dict(sha256=cli.digest(evidence["ref"])),
+        candidate_review_sha256=cli.digest(evidence["ref"].parent / "review.json"),
+        runs=[dict(policy=policy, mode=mode, window="unreviewed", run=sample_run())
+              for policy in cli.POLICIES for mode in cli.MODES])
+    write(previous / "report.json", prior)
+    bindings = json.loads(evidence["protocol"].read_text())["input_sha256"]
+    bindings[str(previous / "report.json")] = cli.digest(previous / "report.json")
+    write(evidence["protocol"], held_protocol(bindings))
+    evidence["args"] += ["--previous-comparison", str(previous)]
+    return dict(evidence, previous=previous)
+
+
+def test_held_cli_checks_all_three_legacy_policies_and_isolates_worker_labels(held_evidence):
+    assert cli.main(held_evidence["args"]) == 0
+    report = json.loads((held_evidence["output"] / "report.json").read_text())
+    assert report["configuration"]["policies"] == list(cli.HELD_POLICIES)
+    assert len(held_evidence["jobs"]) == 40  # Ten warmups, thirty measured workers.
+    assert len(report["runs"]) == 10
+    for row in report["runs"]:
+        assert row["previous_semantic_parity"] == (True if row["policy"] in cli.POLICIES else None)
+    assert all(set(job) == {"source", "cache_sha256", "windows", "policy", "mode", "result", "threads", "max_hz"}
+               for job in held_evidence["jobs"])
+
+
+def test_held_protocol_requires_previous_comparison(held_evidence):
+    with pytest.raises(SystemExit):
+        cli.main(held_evidence["args"][:-2])
+    assert not held_evidence["output"].exists()
+
+
+@pytest.mark.parametrize("damage", ["unbound", "labels", "windows", "missing", "duplicate", "incomplete"])
+def test_previous_evidence_must_be_frozen_complete_and_matching(held_evidence, damage):
+    path = held_evidence["previous"] / "report.json"
+    value = json.loads(path.read_text())
+    if damage == "labels":
+        value["reference"]["sha256"] = "different labels"
+    elif damage == "windows":
+        value["windows"][0]["selection"]["at"] = .2
+    elif damage == "missing":
+        value["runs"].pop()
+    elif damage == "duplicate":
+        value["runs"].append(deepcopy(value["runs"][0]))
+    elif damage == "incomplete":
+        value["state"] = "running"
+    write(path, value)
+    frozen = json.loads(held_evidence["protocol"].read_text())
+    if damage == "unbound":
+        del frozen["input_sha256"][str(path)]
+    else:
+        frozen["input_sha256"][str(path)] = cli.digest(path)
+    write(held_evidence["protocol"], frozen)
+    with pytest.raises(SystemExit):
+        cli.main(held_evidence["args"])
+    assert not held_evidence["output"].exists()
+
+
+def test_old_policy_change_is_detected_even_if_final_phase_is_unchanged(passes):
+    previous = {(p, m, "unreviewed"): sample_run() for p in cli.POLICIES for m in cli.MODES}
+    for item in passes:
+        if item["policy"] == "motion":
+            item["windows"][0]["events"].append(dict(kind="recovery", at=.3, reason="changed"))
+    with pytest.raises(ValueError, match="legacy"):
+        cli.collect_runs(passes, {(m, "unreviewed"): sample_run() for m in cli.MODES}, {}, {},
+                         dict(window="reviewed", start=1., end=2.), previous=previous)
+
+
+@pytest.mark.parametrize("key,value", [("horizon_s", .6), ("uncertainty_rate_widths_per_s", 0.),
+    ("renewal", "any_candidate"), ("uncertainty_kind", "calibrated"), ("predicted_commands", True)])
+def test_held_policy_contract_cannot_be_silently_weakened(held_evidence, key, value):
+    protocol = json.loads(held_evidence["protocol"].read_text())
+    protocol["held_motion"][key] = value
+    write(held_evidence["protocol"], protocol)
+    with pytest.raises(SystemExit):
+        cli.main(held_evidence["args"])
+    assert not held_evidence["output"].exists()

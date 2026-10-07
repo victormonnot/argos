@@ -7,6 +7,7 @@ optional duplicate rule uses current geometry/appearance, never annotations.
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from itertools import combinations
 
 from argos.console.yaw_preview import FRAME_MAX_AGE, MIN_CONFIDENCE, YawPreview
@@ -14,12 +15,31 @@ from .appearance import similarity
 from .image_tracks import _iou
 
 
-POLICIES = ("motion", "motion_duplicates")
+POLICIES = ("motion", "motion_duplicates", "motion_held", "motion_held_duplicates")
+HELD_POLICIES = ("motion_held", "motion_held_duplicates")
+DUPLICATE_POLICIES = ("motion_duplicates", "motion_held_duplicates")
 HISTORY_MAX_AGE_S = .7
 PREDICTION_MAX_HORIZON_S = .5
 VELOCITY_MAX_X_PER_S = 1.
+# A conservative fixed allowance, not a fitted or statistical error bound.
+PREDICTION_UNCERTAINTY_X_PER_S = .1
 DUPLICATE_MIN_IOU = .85
 DUPLICATE_MIN_SIMILARITY = .95
+
+
+@dataclass(frozen=True)
+class _SelectedSample:
+    sequence: int
+    received_at: float
+    cx: float
+
+
+@dataclass(frozen=True)
+class _HeldMotion:
+    anchor: _SelectedSample
+    previous_sequence: int
+    previous_received_at: float
+    velocity_x: float
 
 
 class RecoveryPrototype(YawPreview):
@@ -45,6 +65,8 @@ class RecoveryPrototype(YawPreview):
         self.policy = policy
         self._on_policy = on_policy
         self._motion_history = []
+        self._held_last_selected = None
+        self._held_motion = None
         self._motion_epoch = self.selection_epoch
         self._policy_frame = None
         self._policy_indices = []
@@ -52,16 +74,23 @@ class RecoveryPrototype(YawPreview):
 
     @property
     def metadata(self):
-        return dict(policy=self.policy, offline_only=True, version=1,
+        metadata = dict(policy=self.policy, offline_only=True, version=1,
                     history_max_age_s=HISTORY_MAX_AGE_S,
                     prediction_max_horizon_s=PREDICTION_MAX_HORIZON_S,
                     velocity_max_x_per_s=VELOCITY_MAX_X_PER_S,
                     duplicate_min_iou=DUPLICATE_MIN_IOU,
                     duplicate_min_similarity=DUPLICATE_MIN_SIMILARITY,
-                    duplicate_filter=self.policy == "motion_duplicates",
+                    duplicate_filter=self.policy in DUPLICATE_POLICIES,
                     duplicate_priority="selected_id,pending_id,confidence,source_index",
                     command_geometry="current_measurement_only",
                     production_recovery_gates="unchanged_except_horizontal_reference")
+        if self.policy in HELD_POLICIES:
+            metadata.update(version=2, motion_estimate="held_selected_velocity",
+                estimate_history_age_at="anchor_receipt",
+                prediction_uncertainty_x_per_s=PREDICTION_UNCERTAINTY_X_PER_S,
+                prediction_uncertainty_kind="fixed_assumption_not_calibrated",
+                prediction_geometry_gate="absolute_residual_plus_margin")
+        return metadata
 
     @property
     def preview_detection_indices(self):
@@ -74,6 +103,8 @@ class RecoveryPrototype(YawPreview):
 
     def _reset_motion(self):
         self._motion_history.clear()
+        self._held_last_selected = None
+        self._held_motion = None
         self._motion_epoch = self.selection_epoch
 
     def _stop(self, detail):
@@ -87,7 +118,7 @@ class RecoveryPrototype(YawPreview):
 
     def _duplicate_indices(self, frame, now):
         indices = list(range(len(frame["detections"])))
-        if self.policy != "motion_duplicates":
+        if self.policy not in DUPLICATE_POLICIES:
             return indices, "disabled"
         if self.phase not in ("tracking", "paused"):
             return indices, "inactive_selection"
@@ -178,8 +209,31 @@ class RecoveryPrototype(YawPreview):
                     x, _, width, _ = target["box"]
                     self._motion_history.append(dict(sequence=frame["sequence"],
                         received_at=frame["received_at"], cx=x + width / 2))
+                if self.policy in HELD_POLICIES and target["confidence"] >= MIN_CONFIDENCE:
+                    self._remember_selected_motion(frame, target)
         finally:
             self._frame = frame
+
+    def _remember_selected_motion(self, frame, target):
+        """Freeze velocity at a selected measurement, before history can age out.
+
+        Rejected/paused candidates never call this method. Retaining the last
+        selected receipt separately also prevents polls or equal-time frames
+        from manufacturing fresh evidence after the rolling history is pruned.
+        """
+        previous = self._held_last_selected
+        if previous is not None and not (
+                frame["sequence"] > previous.sequence
+                and frame["received_at"] > previous.received_at):
+            return
+        x, _, width, _ = target["box"]
+        anchor = _SelectedSample(frame["sequence"], frame["received_at"], x + width / 2)
+        self._held_motion = None
+        if previous is not None and anchor.received_at - previous.received_at <= HISTORY_MAX_AGE_S:
+            velocity = (anchor.cx - previous.cx) / (anchor.received_at - previous.received_at)
+            self._held_motion = _HeldMotion(anchor, previous.sequence, previous.received_at,
+                max(-VELOCITY_MAX_X_PER_S, min(VELOCITY_MAX_X_PER_S, velocity)))
+        self._held_last_selected = anchor
 
     def _recovery_metrics(self, target, now):
         metrics = super()._recovery_metrics(target, now)
@@ -188,6 +242,8 @@ class RecoveryPrototype(YawPreview):
                        motion_anchor_sequence=None, motion_anchor_received_at=None,
                        motion_velocity_x=None, motion_horizon_s=None,
                        motion_predicted_cx=None)
+        if self.policy in HELD_POLICIES:
+            return self._held_recovery_metrics(target, metrics)
         if target is None or self._reference is None or self._frame is None:
             metrics["motion_reason"] = "missing_candidate_or_reference"
             return metrics
@@ -212,6 +268,41 @@ class RecoveryPrototype(YawPreview):
         metrics.update(dx=abs(x + width / 2 - predicted), motion_applied=True,
                        motion_reason="bounded_horizontal_prediction",
                        motion_predicted_cx=predicted)
+        return metrics
+
+    def _held_recovery_metrics(self, target, metrics):
+        metrics.update(motion_previous_sequence=None, motion_previous_received_at=None,
+                       motion_anchor_cx=None, motion_residual_x=None,
+                       motion_uncertainty_margin_x=None, motion_effective_dx=metrics["dx"])
+        if target is None or self._reference is None or self._frame is None:
+            metrics["motion_reason"] = "missing_candidate_or_reference"
+            return metrics
+        estimate = self._held_motion
+        if estimate is None:
+            return metrics
+        anchor = estimate.anchor
+        horizon = self._frame["received_at"] - anchor.received_at
+        metrics.update(motion_anchor_sequence=anchor.sequence,
+                       motion_anchor_received_at=anchor.received_at,
+                       motion_anchor_cx=anchor.cx,
+                       motion_previous_sequence=estimate.previous_sequence,
+                       motion_previous_received_at=estimate.previous_received_at,
+                       motion_velocity_x=estimate.velocity_x, motion_horizon_s=horizon)
+        if horizon <= 0 or self._frame["sequence"] <= anchor.sequence:
+            metrics["motion_reason"] = "candidate_not_newer_than_anchor"
+            return metrics
+        if horizon > PREDICTION_MAX_HORIZON_S:
+            metrics["motion_reason"] = "prediction_horizon_expired"
+            return metrics
+        predicted = anchor.cx + estimate.velocity_x * horizon
+        x, _, width, _ = target["box"]
+        residual = abs(x + width / 2 - predicted)
+        margin = PREDICTION_UNCERTAINTY_X_PER_S * horizon
+        effective_dx = residual + margin
+        metrics.update(dx=effective_dx, motion_applied=True,
+                       motion_reason="bounded_held_horizontal_prediction",
+                       motion_predicted_cx=predicted, motion_residual_x=residual,
+                       motion_uncertainty_margin_x=margin, motion_effective_dx=effective_dx)
         return metrics
 
 

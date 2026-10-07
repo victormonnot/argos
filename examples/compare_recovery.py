@@ -26,13 +26,14 @@ from argos.perception.continuity_reference import evaluate_replay, validate_judg
 from argos.perception.continuity_replay import replay
 
 POLICIES = ("current", "motion", "motion_duplicates")
+HELD_POLICIES = (*POLICIES, "motion_held", "motion_held_duplicates")
 MODES = ("recorded", "simulated")
 
 
 def worker(job_path):
     """One fresh subprocess, both original windows, and no reference labels."""
     job = read_json(job_path, 1024 * 1024)
-    if job["policy"] not in POLICIES or job["mode"] not in MODES:
+    if job["policy"] not in HELD_POLICIES or job["mode"] not in MODES:
         raise ValueError("unknown recovery policy or clock")
     started, cpu = time.perf_counter(), time.process_time()
     import cv2
@@ -75,26 +76,39 @@ def verify_protocol(protocol):
                                all_strong_pairwise_clique=True, annotations_available_to_policy=False,
                                priority=["selected ID", "pending recovery ID", "confidence", "source index"],
                                missing_appearance="no grouping")
+    version = protocol.get("version")
+    policies = HELD_POLICIES if version == 2 else POLICIES
     if (protocol.get("format") != "argos.recovery-prototype.protocol" or type(protocol.get("version")) is not int
-            or protocol["version"] != 1
-            or protocol.get("policies") != list(POLICIES) or protocol.get("clocks") != list(MODES)
+            or version not in (1, 2)
+            or protocol.get("policies") != list(policies) or protocol.get("clocks") != list(MODES)
             or protocol.get("trackers") != ["bytetrack"]
             or protocol.get("evaluation", {}).get("repeats") != 3
             or any(protocol.get("motion", {}).get(k) != v for k, v in expected_motion.items())
             or any(protocol.get("duplicates", {}).get(k) != v for k, v in expected_duplicates.items())):
         raise ValueError("protocol does not describe the fixed recovery experiment")
+    if version == 2:
+        expected_held = dict(estimate_history_reference="anchor_receipt", sample_span_s=.7,
+            horizon_s=.5, velocity_max_widths_per_s=1., uncertainty_rate_widths_per_s=.1,
+            uncertainty_kind="fixed_assumption_not_calibrated", gate="absolute_residual_plus_margin",
+            renewal="selected_strong_measurement_advancing_sequence_and_receipt_only",
+            fallback="unchanged_static_geometry_when_estimate_unavailable_or_expired",
+            predicted_commands=False, legacy_policies_unchanged=True)
+        if protocol.get("held_motion") != expected_held:
+            raise ValueError("protocol does not describe the fixed held-motion experiment")
     bindings = protocol.get("input_sha256")
     if not isinstance(bindings, dict) or not bindings:
         raise ValueError("protocol must bind its input evidence")
     for path, sha in bindings.items():
         if digest(Path(path)) != sha:
             raise ValueError(f"frozen protocol input changed: {path}")
+    return policies
 
 
-def collect_runs(passes, originals, reference, judgments, reference_input):
+def collect_runs(passes, originals, reference, judgments, reference_input, *,
+                 policies=POLICIES, previous=None):
     """Verify repeats/upstream/defaults before computing any reviewed metrics."""
     rows, costs = [], []
-    for policy in POLICIES:
+    for policy in policies:
         for mode in MODES:
             group = [item for item in passes if item["policy"] == policy and item["mode"] == mode]
             if len(group) != 3:
@@ -110,11 +124,15 @@ def collect_runs(passes, originals, reference, judgments, reference_input):
                     raise ValueError("recovery policy changed association, selection or scheduling")
                 if policy == "current" and semantic_digest(run) != semantic_digest(old):
                     raise ValueError("default recovery no longer reproduces the source comparison")
+                if previous is not None and policy in POLICIES:
+                    if semantic_digest(run) != semantic_digest(previous[policy, mode, name]):
+                        raise ValueError("legacy recovery policy no longer reproduces the previous comparison")
                 evaluation = (evaluate_replay(run, reference, judgments, start=reference_input["start"],
                                              end=reference_input["end"])
                               if name == reference_input["window"] else None)
                 rows.append(dict(policy=policy, mode=mode, window=name, run=run, evaluation=evaluation,
                                  semantic_repeatable=True, upstream_unchanged=True,
+                                 previous_semantic_parity=(True if previous is not None and policy in POLICIES else None),
                                  semantic_sha256=semantic_digest(run)))
             costs.append(dict(policy=policy, mode=mode,
                 process={key: distribution([item["cost"][key] for item in group])
@@ -151,6 +169,8 @@ def main(argv=None):
     parser.add_argument("--reference", type=Path)
     parser.add_argument("--candidate-review", type=Path)
     parser.add_argument("--protocol", type=Path)
+    parser.add_argument("--previous-comparison", type=Path,
+                        help="completed prior recovery comparison, required for protocol version 2")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--worker", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -169,7 +189,11 @@ def main(argv=None):
         if base.get("format") != "argos.tracker-comparison" or base.get("state") != "complete" or base.get("version") != 1:
             raise ValueError("a completed tracker comparison is required")
         protocol = read_json(args.protocol, 1024 * 1024)
-        verify_protocol(protocol)
+        policies = verify_protocol(protocol)
+        if protocol["version"] == 2 and args.previous_comparison is None:
+            raise ValueError("held motion requires a previous comparison for legacy parity")
+        if protocol["version"] == 1 and args.previous_comparison is not None:
+            raise ValueError("previous comparison is only used by protocol version 2")
         frozen = {path.resolve(): digest(path) for path in (base_path, args.reference, args.candidate_review, args.protocol)}
         for path in (base_path, args.reference, args.candidate_review, source / "inference.jsonl"):
             if not any(Path(name).resolve() == path.resolve() and sha == digest(path)
@@ -184,6 +208,33 @@ def main(argv=None):
         reference = validate_reference(ref_input, frames, windows[0])
         judgments = validate_judgments(review, frames, reference, reference_sha256=digest(args.reference),
                                        cache_sha256=base["cache"]["sha256"])
+        previous = None
+        if args.previous_comparison is not None:
+            previous_path = args.previous_comparison.expanduser().resolve() / "report.json"
+            previous_sha = digest(previous_path)
+            if not any(Path(name).resolve() == previous_path and sha == previous_sha
+                       for name, sha in protocol["input_sha256"].items()):
+                raise ValueError("previous comparison must be bound by the frozen protocol")
+            prior = read_json(previous_path, 64 * 1024 * 1024)
+            if (prior.get("format") != "argos.recovery-prototype-comparison" or prior.get("state") != "complete"
+                    or prior.get("version") != 1 or prior.get("cache_sha256") != base["cache"]["sha256"]
+                    or prior.get("windows") != base["windows"]
+                    or prior.get("reference", {}).get("sha256") != digest(args.reference)
+                    or prior.get("candidate_review_sha256") != digest(args.candidate_review)):
+                raise ValueError("previous comparison must use the same completed evidence")
+            previous = {}
+            for item in prior["runs"]:
+                key = item["policy"], item["mode"], item["window"]
+                if key in previous:
+                    raise ValueError("previous comparison has duplicated conditions")
+                previous[key] = item["run"]
+            required = {(policy, mode, window["name"]) for policy in POLICIES
+                        for mode in MODES for window in base["windows"]}
+            if not required <= previous.keys():
+                raise ValueError("previous comparison lacks legacy policy conditions")
+            frozen[previous_path] = previous_sha
+            report["previous_comparison"] = dict(path=str(previous_path), sha256=previous_sha,
+                                                   required_legacy_policies=list(POLICIES))
         sources = dict(base["provenance"]["source_sha256"])
         for name, sha in sources.items():
             if name != "argos/perception/continuity_replay.py" and digest(REPO / name) != sha:
@@ -205,7 +256,7 @@ def main(argv=None):
                       protocol=dict(path=str(args.protocol.resolve()), sha256=digest(args.protocol), contents=protocol),
                       reference={**{k: ref_input[k] for k in ("window", "start", "end", "review_status", "human_validated")},
                                  "sha256": digest(args.reference)}, candidate_review_sha256=digest(args.candidate_review),
-                      windows=base["windows"], configuration=dict(policies=list(POLICIES), modes=list(MODES),
+                      windows=base["windows"], configuration=dict(policies=list(policies), modes=list(MODES),
                         measured_repeats=3, warmup_processes_per_variant=1, threads=base["configuration"]["threads"],
                         max_hz=base["configuration"]["max_hz"], process_order="rotate policies each repeat; recorded then simulated"))
         write_json(output / "report.json", report)
@@ -214,7 +265,7 @@ def main(argv=None):
         for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
             environment[name] = str(base["configuration"]["threads"])
         for repeat in range(4):
-            order = POLICIES[repeat % len(POLICIES):] + POLICIES[:repeat % len(POLICIES)]
+            order = policies[repeat % len(policies):] + policies[:repeat % len(policies)]
             for mode in MODES:
                 for policy in order:
                     prefix = f"{'warmup' if repeat == 0 else 'repeat-' + str(repeat)}-{policy}-{mode}"
@@ -233,13 +284,15 @@ def main(argv=None):
                     if repeat:
                         passes.append(result)
                     print(f"Completed {prefix}", flush=True)
-        report["runs"], report["costs"] = collect_runs(passes, originals, reference, judgments, ref_input)
+        report["runs"], report["costs"] = collect_runs(passes, originals, reference, judgments, ref_input,
+                                                     policies=policies, previous=previous)
         report["limits"] = [
             "Offline prototype on previously examined windows; no independent scene or dense human ground truth.",
             "Labels are used only for evaluation, never provided to the replay worker or policy.",
             "Dense reviewed identity-class agreement covers only the stated reference span; other times are software states only.",
             "Similar-looking overlapping people remain an unresolved identity risk; synthetic controls cannot prove person identity.",
             "Predictions only gate actual measurements; unchanged freshness, deadline and dry consumer still apply.",
+            "Held motion uses a fixed assumed error margin, not calibrated probabilistic uncertainty or proof of identity.",
             "CPU/RSS are desktop replay costs, excluding detector and IPC; owner costs do not delay the simulated clock.",
             "No active model, production tracker/preview, service, radio or flight behavior changed."]
         verify_protocol(protocol)
