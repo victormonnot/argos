@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARGOS · Continuity diagnosis</title>
+<style>
+:root{color-scheme:dark;font:15px/1.5 system-ui,sans-serif;background:#10151c;color:#e7edf4}*{box-sizing:border-box}body{margin:0 auto;max-width:1500px;padding:24px}h1{font-size:28px;margin:4px 0}h2{font-size:18px;margin:12px 0}p{margin:8px 0}.eyebrow{color:#6ee7c0;font-size:12px;letter-spacing:.12em}small,.muted{color:#adb9c9}.notice{background:#292416;border-left:3px solid #edbe5b;padding:10px 14px;margin:16px 0}select,button,input{font:inherit}select,button{border:1px solid #435065;border-radius:6px;background:#1d2836;color:inherit;padding:8px}button{cursor:pointer}button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid #6ee7c0}.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:12px 0}main{display:grid;grid-template-columns:minmax(0,2fr) minmax(300px,1fr);gap:20px}.panel{background:#171f29;border:1px solid #2f3c4e;border-radius:10px;padding:14px;min-width:0}canvas{width:100%;height:auto;background:#080b0f;border-radius:6px;display:block}input[type=range]{width:100%;accent-color:#6ee7c0}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,monospace;max-height:380px;overflow:auto}#events{height:410px;overflow:auto}#events button{display:block;width:100%;text-align:left;font-size:12px;margin:5px 0}.meta{font-variant-numeric:tabular-nums}.legend{display:flex;gap:18px;font-size:13px}.green{color:#6ee7c0}.amber{color:#ffc55b}details{margin-top:16px}summary{cursor:pointer}a{color:#91d6ff}#summary{font-size:13px}@media(max-width:850px){body{padding:14px}main{grid-template-columns:1fr}#events{height:230px}}
+</style>
+<header><div class="eyebrow">ARGOS / OFFLINE EVIDENCE</div><h1>Selected-person continuity</h1><p class="muted">Original camera images, recorded observations and a replay of the current selection rules.</p></header>
+<div class="notice">Human identity labels are not included. Boxes are predictions. A valid dry demand means software admission only; no commands were sent.</div>
+<div class="toolbar"><label>Passage <select id="window"></select></label><label>Replay <select id="mode"><option value="recorded">Recorded observation schedule</option><option value="simulated">Desktop scheduling model</option></select></label><button id="previous" aria-label="Previous image">← Previous</button><button id="play">Play</button><button id="next" aria-label="Next image">Next →</button><label><input id="historic" type="checkbox" checked> Recorded boxes</label><label><input id="detector" type="checkbox" checked> Recomputed boxes</label></div>
+<main><section class="panel"><canvas id="image" width="640" height="480" aria-label="Original frame and predicted boxes"></canvas><input id="cursor" aria-label="Camera image" type="range" min="0" value="0"><p id="position" class="meta"></p><div class="legend"><span class="green">Recomputed detector</span><span class="amber">Recorded detector / local ID</span></div><p id="frameStatus" class="muted"></p><details><summary>Selected image evidence</summary><pre id="frameDetail"></pre></details></section><aside class="panel"><h2>Replay events</h2><label>Show <select id="eventFilter"><option value="states">Selection and pauses</option><option value="recovery">Recovery attempts</option><option value="association">Associations</option><option value="all">All evidence</option></select></label><p class="muted" id="modeNote"></p><div id="events"></div><details open><summary>Event details</summary><pre id="eventDetail">Select an event.</pre></details></aside></main>
+<section class="panel" style="margin-top:20px"><h2>Diagnostic summary</h2><pre id="summary"></pre><details><summary>Limits and provenance</summary><pre id="provenance"></pre></details><p><a href="report.json">Full JSON report</a> · <a href="inference.jsonl">Saved detector and appearance evidence</a></p></section>
+<script id="data" type="application/json">__REPLAY_DATA__</script>
+<script>
+"use strict";
+const data=JSON.parse(document.getElementById("data").textContent);
+const $=id=>document.getElementById(id),canvas=$("image"),ctx=canvas.getContext("2d");
+let frames=[],index=0,timer=null,drawToken=0;
+for(const w of data.windows){const o=document.createElement("option");o.textContent=w.name;$("window").append(o);}
+const windowData=()=>data.windows[$("window").selectedIndex];
+const runData=()=>windowData().runs[$("mode").value];
+const pretty=v=>JSON.stringify(v,null,2);
+function eventTime(e){return e.at??e.now??e.available_at??e.received_at??e.captured_at??null;}
+function stop(){clearTimeout(timer);timer=null;$("play").textContent="Play";}
+function show(){
+ index=Math.max(0,Math.min(frames.length-1,index));const f=frames[index];if(!f)return;
+ $("cursor").value=index;const logged=f.historical;
+ $("position").textContent=`${index+1} / ${frames.length} · receipt +${f.received_at.toFixed(3)} s · source sequence ${f.sequence}`;
+ const decision=runData().frame_decisions.find(d=>d.sequence===f.sequence);
+ $("frameStatus").textContent=(logged?`Historical result observed at +${f.available_at.toFixed(3)} s · ${logged.yaw_preview.phase}. `:"No historical vision result for this camera frame. ")+`Replay: ${decision?.status??"unknown"} · ${decision?.preview?.phase??decision?.reason??""} · dry demand ${decision?.consumer?.valid===true?"valid":decision?.consumer?"invalid":"unavailable"}.`;
+ $("frameDetail").textContent=pretty({sha256:f.sha256,received_at:f.received_at,recorded_observation_at:f.available_at,detections:f.detections,replay:decision,historical_preview:logged?.yaw_preview,timings:f.timings});
+ const token=++drawToken,img=new Image();img.onload=()=>{if(token!==drawToken)return;canvas.width=f.width;canvas.height=f.height;ctx.drawImage(img,0,0);
+  const draw=(boxes,color,prefix)=>{ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=2;ctx.font="13px system-ui";for(const d of boxes){const [x,y,w,h]=d.box.map((v,i)=>v*(i%2?f.height:f.width));ctx.strokeRect(x,y,w,h);const label=`${prefix}${d.track_id??""} ${d.confidence.toFixed(3)}`;const width=ctx.measureText(label).width+8,top=Math.max(0,y-20);ctx.fillStyle="#080b0fee";ctx.fillRect(x,top,width,20);ctx.fillStyle=color;ctx.fillText(label,x+4,top+15);}};
+  if($("historic").checked&&logged)draw(logged.result.detections,"#ffc55b","hist ");
+  if($("detector").checked)draw(decision?.detections??f.detections,"#6ee7c0",decision?.detections?"replay ":"det ");};img.src=`frames/${f.sequence}.jpg`;
+}
+function advance(){if(index>=frames.length-1){stop();return;}const delay=Math.max(15,1000*(frames[index+1].received_at-frames[index].received_at));timer=setTimeout(()=>{index++;show();advance();},delay);}
+function refresh(){stop();const w=windowData(),r=runData();frames=data.frames.filter(f=>f.received_at>=w.start&&f.received_at<=w.end);index=0;$("cursor").max=frames.length-1;
+ $("modeNote").textContent=$("mode").value==="recorded"?"Uses recorded result observation times as availability proxies. Intermediate reads are simulated.":"Uses production VisionService scheduling with cached desktop processing times. IPC and owner contention are excluded.";
+ $("summary").textContent=pretty({window:w.name,selection:w.selection,software_summary:r.summary,execution_cost:r.execution_cost,detector_agreement:data.detection_parity,desktop_cost:data.cost});
+ $("provenance").textContent=pretty({limits:data.limits,model:data.model,configuration:data.configuration,provenance:data.provenance});
+ $("events").replaceChildren();const filter=$("eventFilter").value;const events=(r.events??[]).filter(e=>filter==="all"||(filter==="states"?["selection","preview_transition","consumer_transition"].includes(e.kind):e.kind===filter));
+ for(const e of events){const button=document.createElement("button"),at=eventTime(e);button.textContent=`${at==null?"":`+${Number(at).toFixed(3)}s · `}${e.kind??e.event??e.type??"event"} · ${e.reason??e.phase??e.preview?.phase??e.detail??""}`;button.addEventListener("click",()=>{stop();$("eventDetail").textContent=pretty(e);const seq=e.sequence??e.frame_sequence,receipt=e.frame_received_at??e.captured_at;let match=frames.findIndex(f=>f.sequence===seq||(receipt!=null&&Math.abs(f.received_at-receipt)<1e-8));if(match<0&&at!=null){for(let i=0;i<frames.length;i++){if(frames[i].received_at<=at)match=i;}}if(match>=0){index=match;show();}});$("events").append(button);}
+ $("eventDetail").textContent="Select an event.";show();
+}
+$("window").addEventListener("change",refresh);$("mode").addEventListener("change",refresh);$("eventFilter").addEventListener("change",refresh);
+$("cursor").addEventListener("input",e=>{stop();index=Number(e.target.value);show();});
+$("previous").addEventListener("click",()=>{stop();index--;show();});$("next").addEventListener("click",()=>{stop();index++;show();});
+$("historic").addEventListener("change",show);$("detector").addEventListener("change",show);
+$("play").addEventListener("click",()=>{if(timer){stop();return;}if(index>=frames.length-1)index=0;$("play").textContent="Pause";show();advance();});
+document.addEventListener("keydown",e=>{if(e.target.matches("input,select"))return;if(e.key==="ArrowLeft"||e.key==="ArrowRight"){stop();index+=e.key==="ArrowRight"?1:-1;show();}});refresh();
+</script>
+</html>

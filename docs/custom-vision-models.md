@@ -117,6 +117,11 @@ it does not reproduce live scheduling, target-laptop throughput or aircraft
 behavior. The existing Tiny/S HTML exporter uses a different report format and
 does not consume these custom-comparison reports.
 
+For selected-target loss diagnosis with the current official Nano baseline,
+see [offline continuity diagnostics](continuity-diagnostics.md). That separate
+tool replays selection/recovery and dry yaw admission, with recorded-observation
+and controlled scheduling modes; it does not compare alternative trackers.
+
 ## View the saved before/after images
 
 Export an already completed frames-manifest comparison without executing either
