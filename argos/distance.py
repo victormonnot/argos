@@ -14,10 +14,11 @@ import sys
 
 from argos.console.config import ConsoleConfig
 from argos.perception.yolox import default_model_path, get_model_spec, read_verified_model
+from argos.perception.model_bundle import read_model_bundle
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIELDS = {"camera_device", "radio_port", "profile", "vision_model", "port"}
+FIELDS = {"camera_device", "radio_port", "profile", "vision_model", "vision_bundle", "port"}
 
 
 def _digest(path):
@@ -54,16 +55,25 @@ def load_settings(args):
         value = getattr(args, field, None)
         if value is not None:
             values[field] = str(value) if isinstance(value, Path) else value
+    # Explicit CLI selection also replaces a saved selection of the other kind.
+    if getattr(args, "vision_bundle", None) is not None:
+        values.pop("vision_model", None)
+    elif getattr(args, "vision_model", None) is not None:
+        values.pop("vision_bundle", None)
     for field in ("camera_device", "radio_port", "profile"):
         if not isinstance(values.get(field), str) or not values[field].strip():
             raise ValueError(f"Specify {field} in --config or on the command line")
-    values.setdefault("vision_model", str(default_model_path("nano")))
+    if "vision_bundle" in values and "vision_model" in values:
+        raise ValueError("choose an official vision model or a custom bundle, not both")
+    model_field = "vision_bundle" if "vision_bundle" in values else "vision_model"
+    if model_field == "vision_model":
+        values.setdefault("vision_model", str(default_model_path("nano")))
     values.setdefault("port", 8080)
     if type(values["port"]) is not int or not 1 <= values["port"] <= 65535:
         raise ValueError("HTTP port must be in 1..65535")
-    if not isinstance(values["vision_model"], str):
-        raise ValueError("vision_model must be a file path")
-    for field in ("camera_device", "radio_port", "profile", "vision_model"):
+    if not isinstance(values[model_field], str) or not values[model_field].strip():
+        raise ValueError(f"{model_field} must be a file path")
+    for field in ("camera_device", "radio_port", "profile", model_field):
         values[field] = str(Path(values[field]).expanduser().absolute())
     return values
 
@@ -77,17 +87,25 @@ def prepare(values, *, root=ROOT):
     if not values["radio_port"].startswith("/dev/"):
         raise ValueError("Pocket must be an explicit /dev/ serial device")
     profile = validate_profile(Path(values["profile"]).read_bytes())
-    read_verified_model(values["vision_model"], variant="nano")
+    if values.get("vision_bundle") is not None:
+        if values.get("vision_model") is not None:
+            raise ValueError("choose an official vision model or a custom bundle, not both")
+        detector = read_model_bundle(values["vision_bundle"]).identity()
+    else:
+        read_verified_model(values["vision_model"], variant="nano")
+        detector = {"variant": "nano", "sha256": get_model_spec("nano").sha256}
+    detector.update(threads=4, max_hz=10)
     identity = software_identity(root)
     manifest = {"schema_version": 1, "created_at": datetime.now(timezone.utc).isoformat(),
                 "software": identity, "settings": dict(values), "resolved_camera": camera,
-                "detector": {"variant": "nano", "sha256": get_model_spec("nano").sha256,
-                             "threads": 4, "max_hz": 10},
+                "detector": detector,
                 "radio_profile": profile, "radio_protocol": HELLO.decode(),
                 "radio_script_sha256": _digest(Path(root) / "scripts/edgetx/ArgDst.lua"),
                 "radio_installation": "Local artifact verified; SD readback and receiver bench pending"}
     config = ConsoleConfig(environment="real", video_source="device", video_endpoint=camera,
-                           vision_model=Path(values["vision_model"]), vision_variant="nano",
+                           vision_model=Path(values["vision_model"]) if values.get("vision_model") else None,
+                           vision_bundle=Path(values["vision_bundle"]) if values.get("vision_bundle") else None,
+                           vision_variant="nano",
                            vision_threads=4, vision_hz=10, yaw_assist=True)
     return config, manifest
 
@@ -115,7 +133,9 @@ def main(argv=None):
     parser.add_argument("--camera-device", help="capture node or /dev/v4l/by-id/ link")
     parser.add_argument("--radio-port", help="Pocket /dev/serial/by-id/ link")
     parser.add_argument("--profile", type=Path, help="verified local ARGOS DST model YAML")
-    parser.add_argument("--vision-model", type=Path, help="verified YOLOX-Nano ONNX (default: cache)")
+    models = parser.add_mutually_exclusive_group()
+    models.add_argument("--vision-model", type=Path, help="verified YOLOX-Nano ONNX (default: cache)")
+    models.add_argument("--vision-bundle", type=Path, help="explicit custom YOLOX-Nano bundle")
     parser.add_argument("--port", type=int)
     parser.add_argument("--check", action="store_true", help="verify files and print identity; open no device")
     parser.add_argument("--save-config", type=Path, help="save settings for the next one-command launch")

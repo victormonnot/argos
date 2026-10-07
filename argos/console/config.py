@@ -48,19 +48,24 @@ class ConsoleConfig:
     vision_threads: int = 2
     vision_hz: int = 5
     yaw_assist: bool = False
+    vision_bundle: Path | None = None
 
     def __post_init__(self):
         get_model_spec(self.vision_variant)
         validate_inference_threads(self.vision_threads)
         validate_vision_hz(self.vision_hz)
+        if self.vision_model is not None and self.vision_bundle is not None:
+            raise ValueError("choose an official vision model or a custom bundle, not both")
+        if self.vision_bundle is not None:
+            object.__setattr__(self, "vision_bundle", Path(self.vision_bundle).expanduser().resolve())
         if not isinstance(self.yaw_assist, bool):
             raise ValueError("yaw_assist must be a boolean")
         if self.yaw_assist and (self.environment != "real" or self.video_source != "device"
-                                or self.vision_model is None or self.sim_control):
+                                or not self.has_vision or self.sim_control):
             raise ValueError("yaw assistance requires a physical camera and person detector")
         if not isinstance(self.sim_framing, bool):
             raise ValueError("sim_framing must be a boolean")
-        if self.sim_framing and (not self.sim_control or self.vision_model is None
+        if self.sim_framing and (not self.sim_control or not self.has_vision
                 or self.video_source != "gazebo"
                 or self.video_endpoint != "/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image"):
             raise ValueError("framing requires simulation control, a vision model and the validated person-scene camera")
@@ -123,6 +128,10 @@ class ConsoleConfig:
             raise ValueError("sequence scope requires a MAVLink source")
         # Reuse admission configuration without importing the MAVLink codec.
         TelemetryCache(system=self.system, component=self.component, limits=self.limits)
+
+    @property
+    def has_vision(self):
+        return self.vision_model is not None or self.vision_bundle is not None
 
     @property
     def has_telemetry(self):

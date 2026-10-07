@@ -6,6 +6,11 @@ It produces a readable table and per-image results. A separate export makes
 those results viewable on the original images in a local browser. No camera,
 simulator, radio, web service or flight-control connection is needed.
 
+For a trained model, use the separate
+[Nano versus custom bundle comparison](custom-vision-models.md#compare-before-selecting-a-model).
+It also accepts explicit frame manifests and reports reference quality only on
+human-validated boxes, separately from unannotated continuity observations.
+
 This compares two detector variants. A later tracker change can be evaluated
 again on the same capture, retaining each run's code hashes and results. The
 current command always runs the current tracker with each detector; it does

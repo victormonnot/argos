@@ -77,6 +77,10 @@ remove an obsolete compiled **ArgDst** cache if present. Do not replace ArgFly,
 the model index, calibration or RADIO settings. Eject, restart and read back
 the installed model/script before use.
 
+The launcher also accepts an explicit [custom YOLOX-Nano bundle](custom-vision-models.md)
+through `--vision-bundle`, with the same files-only `--check` and official-model
+rollback as FLY. This changes detector selection, not the radio profile or laws.
+
 Prepare a **separate** JSON configuration with the same camera, radio and Nano
 model paths as FLY, but the verified distance profile path. Both services must
 not own the camera/serial port at once. The experiment defaults to its own state

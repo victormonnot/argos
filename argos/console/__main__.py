@@ -36,8 +36,11 @@ def main():
                         help="enable experimental framing on the fixed-camera GPS-free person scenario")
     parser.add_argument("--sim-control", action="store_true",
                         help="enable manual web controls for the verified GPS-free loopback SITL profile")
-    parser.add_argument("--vision-model", type=Path,
+    models = parser.add_mutually_exclusive_group()
+    models.add_argument("--vision-model", type=Path,
                         help="local verified ONNX model matching --vision-variant; enables person detection")
+    models.add_argument("--vision-bundle", type=Path,
+                        help="explicit custom YOLOX-Nano bundle directory or manifest.json")
     parser.add_argument("--vision-variant", choices=tuple(MODEL_CATALOG), default="tiny",
                         help="pinned model variant: tiny (416px, default), nano (416px) or s (640px)")
     parser.add_argument("--vision-threads", type=int, choices=range(1, 7), default=2,
@@ -68,6 +71,7 @@ def main():
             raise ValueError("HTTP port must be in 1..65535")
         config = ConsoleConfig(
             sim_control=args.sim_control, sim_framing=args.sim_framing, vision_model=args.vision_model,
+            vision_bundle=args.vision_bundle,
             vision_variant=args.vision_variant,
             vision_threads=args.vision_threads,
             vision_hz=args.vision_hz,

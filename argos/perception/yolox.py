@@ -1,8 +1,9 @@
 """Pinned YOLOX person inference on camera JPEGs, without model downloads.
 
 The upstream ONNX example defines BGR 0..255 input, top-left letterboxing and
-the stride-grid output encoding used here. Only COCO's ``person`` class is
-published. A box is a visual measurement, not a person's identity or distance.
+the stride-grid output encoding used here. Only the explicit ``person`` class is
+published. Custom bundles are an opt-in path, separate from official model pins.
+A box is a visual measurement, not a person's identity or distance.
 See https://github.com/Megvii-BaseDetection/YOLOX/tree/main/demo/ONNXRuntime.
 """
 from __future__ import annotations
@@ -98,11 +99,27 @@ class YoloXPersonDetector:
     ``inference_ms`` measures network inference, excluding JPEG decode and NMS.
     """
 
-    def __init__(self, model_path: str | Path, *, variant: str = "tiny", threads: int = 2):
+    def __init__(self, model_path: str | Path | None = None, *, variant: str = "tiny",
+                 threads: int = 2, bundle_path: str | Path | None = None):
         self.threads = validate_inference_threads(threads)
         self.model = get_model_spec(variant)
+        self.bundle = None
+        self._class_count, self._person_index = 80, 0
+        if bundle_path is not None:
+            if model_path is not None:
+                raise ValueError("choose an official vision model or a custom bundle, not both")
+            from .model_bundle import read_model_bundle
+            self.bundle = read_model_bundle(bundle_path)
+            entry = self.bundle.manifest["model"]
+            self.model = ModelSpec("custom", "Custom YOLOX-Nano", entry["path"], "",
+                                   entry["sha256"], entry["size_bytes"], 416)
+            self._class_count, self._person_index = self.bundle.class_count, self.bundle.person_index
+            data = self.bundle.data
+        else:
+            if model_path is None:
+                raise ValueError("an official vision model path is required")
+            data = read_verified_model(model_path, variant=variant)
         self._input_size = self.model.input_size
-        data = read_verified_model(model_path, variant=variant)
         try:
             import cv2
             import numpy as np
@@ -121,6 +138,11 @@ class YoloXPersonDetector:
             strides.append(np.full((xx.size, 1), stride))
         self._grid = np.concatenate(grids)
         self._strides = np.concatenate(strides)
+        if self.bundle is not None:
+            # Validate the actual graph with the declared input before admitting
+            # a custom worker. No dummy detections enter the tracker or timings.
+            self._net.setInput(np.full((1, 3, 416, 416), 114, dtype=np.float32), "images")
+            self._decode(self._net.forward("output"), 1., 416, 416)
 
     def detect(self, jpeg: bytes) -> dict:
         return self.detect_bgr(self.decode_jpeg(jpeg))
@@ -158,8 +180,12 @@ class YoloXPersonDetector:
         padded[:scaled_height, :scaled_width] = resized
         blob = np.ascontiguousarray(padded.transpose(2, 0, 1)[None], dtype=np.float32)
         started = time.perf_counter()
-        self._net.setInput(blob)
-        output = self._net.forward()
+        if self.bundle is None:
+            self._net.setInput(blob)
+            output = self._net.forward()
+        else:
+            self._net.setInput(blob, "images")
+            output = self._net.forward("output")
         inference_ms = (time.perf_counter() - started) * 1000
         detections = self._decode(output, ratio, width, height)
         return {
@@ -169,10 +195,14 @@ class YoloXPersonDetector:
 
     def _decode(self, output, ratio: float, width: int, height: int) -> list[dict]:
         np = self._np
-        if output.shape != (1, len(self._grid), 85) or not np.isfinite(output).all():
+        if (not isinstance(output, np.ndarray)
+                or output.shape != (1, len(self._grid), 5 + self._class_count)
+                or not np.issubdtype(output.dtype, np.floating) or not np.isfinite(output).all()):
             raise RuntimeError("vision model returned an invalid output tensor")
         rows = output[0]
-        scores = rows[:, 4] * rows[:, 5]
+        if self.bundle is not None and ((rows[:, 4:] < 0).any() or (rows[:, 4:] > 1).any()):
+            raise RuntimeError("vision model returned invalid objectness or class probabilities")
+        scores = rows[:, 4] * rows[:, 5 + self._person_index]
         indices = np.flatnonzero((scores >= CONFIDENCE_THRESHOLD) & (scores <= 1))
         if not len(indices):
             return []

@@ -24,6 +24,10 @@ Retain the verified official YOLOX-Nano file in
 verifies its pinned hash; it does not silently download or replace weights. The
 initial portable settings are Nano, four inference threads and ten analyses/s.
 
+An explicitly selected [custom YOLOX-Nano bundle](custom-vision-models.md) is also
+supported through `--vision-bundle` or the saved `vision_bundle` field. Compare
+it offline first; official Nano remains the default and explicit rollback path.
+
 Prepare the **single final ARGOS FLY model** using the
 [profile workflow](edgetx-fly-profile.md). Keep its generated YAML on the laptop
 as the launcher's `--profile` input, and install its matching `ArgFly.lua` and

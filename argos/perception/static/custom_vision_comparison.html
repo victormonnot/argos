@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'sha256-__SCRIPT_HASH__'; base-uri 'none'; form-action 'none'">
+<title>ARGOS · Saved model comparison</title>
+<style>
+:root{color-scheme:dark;--bg:#141817;--panel:#1d2422;--line:#39443d;--text:#e9ece7;--muted:#a8b4ac;--before:#8ccccc;--after:#efb08e;--gold:#d9bd78}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,sans-serif}main{max-width:1240px;margin:auto;padding:28px}h1{font-size:28px;font-weight:600;margin:6px 0}h2{font-size:18px;margin:0 0 16px}p{margin:8px 0}.muted{color:var(--muted)}.eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--gold)}header{margin-bottom:22px}.notice{padding:12px 16px;border-left:3px solid var(--gold);background:#262a23}.panel{margin:18px 0;padding:18px;background:var(--panel);border:1px solid var(--line);border-radius:12px}.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}button,select{font:inherit;padding:8px 12px;background:#29332d;color:var(--text);border:1px solid #4a5b4e;border-radius:6px}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}label{display:flex;gap:7px;align-items:center}input[type=range]{accent-color:var(--gold)}.grow{flex:1;min-width:180px}#position{width:100%;margin:12px 0}.readout{font-variant-numeric:tabular-nums;font-size:13px;overflow-wrap:anywhere}.canvas{position:relative;width:100%;aspect-ratio:4/3;overflow:hidden;background:#222824;margin:16px auto;border:1px solid var(--line);border-radius:8px}.canvas img,.canvas svg,.layer{position:absolute;inset:0;width:100%;height:100%}.canvas img{object-fit:fill}.canvas svg{pointer-events:none}.candidate{clip-path:inset(0 0 0 50%)}.divider{position:absolute;top:0;bottom:0;left:50%;width:2px;background:#fff9;pointer-events:none}.tag{position:absolute;top:12px;padding:5px 10px;border-radius:4px;background:#17201ee6;font-size:13px;pointer-events:none}.tag.before{left:12px;color:var(--before)}.tag.after{right:12px;color:var(--after)}.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px}.legend span{display:inline-flex;align-items:center;gap:6px}.dot{width:9px;height:9px;border-radius:50%;background:currentColor}.counts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}.count{padding:10px;background:#151c18;border-radius:6px}.count strong{display:block;font-size:14px}.count span{font-size:13px}.metrics{overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px;text-align:right}th,td{padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}th:first-child,td:first-child{text-align:left}th{color:var(--muted);font-weight:500}.split-title{margin:16px 0 8px;font-weight:600;color:var(--gold)}details{margin-top:16px}summary{cursor:pointer}pre{font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted)}#error{color:#ffc4b4}.footer{font-size:12px;color:var(--muted);margin-top:24px}
+@media(max-width:650px){main{padding:14px}h1{font-size:23px}.panel{padding:12px}.toolbar{gap:8px}.counts{grid-template-columns:1fr}.tag{font-size:11px}.canvas{max-height:none}th,td{padding:8px}}
+</style>
+</head>
+<body>
+<main>
+<header><div class="eyebrow">ARGOS · Offline evidence</div><h1>Official Nano / custom model</h1><p class="muted">Saved predictions on identical original images. This page runs no model and needs no server.</p></header>
+<p class="notice">Track numbers are local display IDs, not persistent person identities. An empty detection frame is not proof that the target was lost. Only human-validated boxes contribute accuracy scores.</p>
+<section class="panel" aria-label="Original-image comparison">
+<div class="toolbar"><label class="grow">Sequence <select id="clip" class="grow" aria-label="Sequence"></select></label><button id="previous" aria-label="Previous frame">←</button><button id="play">Play</button><button id="next" aria-label="Next frame">→</button><label>Speed <select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label></div>
+<input id="position" type="range" min="0" max="0" value="0" aria-label="Frame position">
+<div id="frame-title" class="readout"></div><div id="timing" class="readout muted"></div>
+<div class="canvas" id="canvas"><div class="layer"><img id="before-image" alt="Original camera image, baseline predictions"><svg id="before-boxes" aria-hidden="true"></svg></div><div class="layer candidate" id="candidate"><img id="after-image" alt="Same original image, candidate predictions"><svg id="after-boxes" aria-hidden="true"></svg></div><div id="divider" class="divider"></div><div class="tag before">Official Nano</div><div class="tag after">Custom candidate</div></div>
+<div class="toolbar"><label class="grow">Compare <input id="wipe" class="grow" type="range" min="0" max="100" value="50" aria-label="Before and after divider"></label><label><input type="checkbox" id="show-boxes" checked> Predictions</label><label><input type="checkbox" id="show-reference"> Human reference</label></div>
+<div class="legend"><span style="color:var(--before)"><i class="dot"></i>Baseline boxes</span><span style="color:var(--after)"><i class="dot"></i>Candidate boxes</span><span style="color:var(--gold)"><i class="dot"></i>Human boxes, where available</span></div>
+<div class="counts"><div class="count"><strong>Official Nano</strong><span id="before-count"></span></div><div class="count"><strong>Custom candidate</strong><span id="after-count"></span></div></div>
+<p id="reference" class="readout muted"></p><p id="error" role="alert"></p>
+</section>
+<section class="panel"><h2>Saved comparison results</h2><p class="muted">These totals cover every compared frame, separately for each split. This viewer contains every saved comparison image without resizing or re-encoding.</p><div id="metrics" class="metrics"></div><p class="muted">Latency describes this comparison host and serial run; it is not camera latency, live throughput or a flight result. More detections or fewer local IDs alone do not establish improvement.</p></section>
+<details class="panel"><summary>Provenance and interpretation limits</summary><pre id="provenance"></pre></details>
+<p class="footer">Playback follows the recorded receipt-time intervals within each clip. Isolated reference photos are a slideshow and provide no temporal tracking measurement. Playback stops at the end of the selected sequence.</p>
+</main>
+<script type="application/json" id="comparison-data">__COMPARISON_DATA__</script>
+<script id="viewer-script">
+"use strict";
+(() => {
+  const data = JSON.parse(document.getElementById("comparison-data").textContent);
+  const el = id => document.getElementById(id);
+  const groups = new Map();
+  for (const frame of data.frames) {
+    const key = frame.clip_id ? `${frame.segment}:${frame.clip_id}` : `references:${frame.split}`;
+    if (!groups.has(key)) groups.set(key, {name: frame.clip_id || `Isolated references · ${frame.split}`, frames: [], temporal: Boolean(frame.clip_id)});
+    groups.get(key).frames.push(frame);
+  }
+  for (const [key, group] of groups) {
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = `${group.name} · ${group.frames.length} frames · ${group.frames[0].split}`;
+    el("clip").append(option);
+  }
+  let group = groups.values().next().value, position = 0, timer = null, playing = false;
+  const ns = "http://www.w3.org/2000/svg";
+  const pct = value => value === null ? "—" : `${(100 * value).toFixed(1)}%`;
+  function box(svg, coords, color, label, dashed = false) {
+    const [x, y, width, height] = coords;
+    const rectangle = document.createElementNS(ns, "rect");
+    for (const [key, value] of Object.entries({x, y, width, height, fill: "none", stroke: color, "stroke-width": 2, "vector-effect": "non-scaling-stroke"})) rectangle.setAttribute(key, String(value));
+    if (dashed) rectangle.setAttribute("stroke-dasharray", "6 4");
+    const text = document.createElementNS(ns, "text");
+    for (const [key, value] of Object.entries({x: Math.max(2, x), y: Math.max(15, y - 5), fill: color, "font-size": 14, "font-family": "system-ui,sans-serif", "paint-order": "stroke", stroke: "#15201c", "stroke-width": 3, "stroke-linejoin": "round"})) text.setAttribute(key, String(value));
+    text.textContent = label;
+    svg.append(rectangle, text);
+  }
+  function overlays(id, frame, model, color) {
+    const svg = el(id);
+    svg.replaceChildren();
+    svg.setAttribute("viewBox", `0 0 ${frame.width} ${frame.height}`);
+    if (el("show-boxes").checked) for (const detection of frame.models[model].detections) {
+      const [x, y, w, h] = detection.box;
+      box(svg, [x * frame.width, y * frame.height, w * frame.width, h * frame.height], color, `#${detection.track_id} · ${(100 * detection.confidence).toFixed(0)}%`);
+    }
+    if (el("show-reference").checked && frame.boxes) for (const reference of frame.boxes) {
+      const [x, y, right, bottom] = reference.box;
+      box(svg, [x, y, right - x, bottom - y], "#d9bd78", `Reference · ${reference.label}`, true);
+    }
+  }
+  function render() {
+    const frame = group.frames[position], source = data.images[frame.sha256];
+    el("position").max = String(group.frames.length - 1);
+    el("position").value = String(position);
+    el("frame-title").textContent = `${position + 1} / ${group.frames.length} · ${frame.split} · ${frame.id}`;
+    const offset = frame.captured_at - group.frames[0].captured_at;
+    el("timing").textContent = group.temporal ? `Recorded receipt +${offset.toFixed(3)} s · source time ${frame.captured_at.toFixed(6)} s · ${frame.width} × ${frame.height}` : `Isolated reference photo · ${frame.width} × ${frame.height} · no continuous tracking claim`;
+    el("canvas").style.aspectRatio = `${frame.width} / ${frame.height}`;
+    el("canvas").style.maxWidth = `min(100%, ${70 * frame.width / frame.height}vh)`;
+    el("before-image").src = source;
+    el("after-image").src = source;
+    overlays("before-boxes", frame, "baseline", "#8ccccc");
+    overlays("after-boxes", frame, "candidate", "#efb08e");
+    for (const [name, id] of [["baseline", "before-count"], ["candidate", "after-count"]]) {
+      const result = frame.models[name], count = result.detections.length;
+      el(id).textContent = `${count} detection${count === 1 ? "" : "s"} · inference ${result.inference_ms.toFixed(2)} ms · processing ${result.processing_ms.toFixed(2)} ms${count ? "" : " · no detected person in this output"}`;
+    }
+    el("reference").textContent = frame.boxes === null ? "Unannotated frame: detection quality and target identity are unknown." : `Human-validated reference: ${frame.boxes.length} box${frame.boxes.length === 1 ? "" : "es"}. No persistent identity annotations.`;
+    el("previous").disabled = position === 0;
+    el("next").disabled = position === group.frames.length - 1;
+    el("play").disabled = group.frames.length < 2;
+  }
+  function stop() { playing = false; clearTimeout(timer); timer = null; el("play").textContent = "Play"; }
+  function schedule() {
+    if (!playing || position >= group.frames.length - 1) { stop(); return; }
+    const delay = group.temporal ? 1000 * (group.frames[position + 1].captured_at - group.frames[position].captured_at) : 1000;
+    timer = setTimeout(() => { position += 1; render(); schedule(); }, Math.max(1, delay / Number(el("speed").value)));
+  }
+  el("play").addEventListener("click", () => { if (playing) { stop(); return; } if (position === group.frames.length - 1) position = 0; playing = true; el("play").textContent = "Pause"; render(); schedule(); });
+  el("previous").addEventListener("click", () => { stop(); position = Math.max(0, position - 1); render(); });
+  el("next").addEventListener("click", () => { stop(); position = Math.min(group.frames.length - 1, position + 1); render(); });
+  el("position").addEventListener("input", () => { stop(); position = Number(el("position").value); render(); });
+  el("clip").addEventListener("change", () => { stop(); group = groups.get(el("clip").value); position = 0; render(); });
+  el("speed").addEventListener("change", () => { if (playing) { clearTimeout(timer); schedule(); } });
+  el("wipe").addEventListener("input", () => { const value = Number(el("wipe").value); el("candidate").style.clipPath = `inset(0 0 0 ${value}%)`; el("divider").style.left = `${value}%`; });
+  el("show-boxes").addEventListener("change", render);
+  el("show-reference").addEventListener("change", render);
+  document.addEventListener("keydown", event => { if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName)) return; if (event.key === "ArrowRight") el("next").click(); if (event.key === "ArrowLeft") el("previous").click(); });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) stop(); });
+  function cell(row, content, header = false) { const node = document.createElement(header ? "th" : "td"); node.textContent = content; row.append(node); }
+  for (const [split, models] of Object.entries(data.summary)) {
+    const title = document.createElement("div"); title.className = "split-title"; title.textContent = `${split} · ${models.baseline.frames} compared frames · ${models.baseline.reference.labeled_frames} human-annotated`;
+    const table = document.createElement("table"), head = document.createElement("tr");
+    for (const label of ["Model", "Detections", "TP", "FP", "FN", "Precision", "Recall", "Median inference"]) cell(head, label, true);
+    table.append(head);
+    for (const [name, label] of [["baseline", "Official Nano"], ["candidate", "Custom candidate"]]) {
+      const model = models[name], ref = model.reference, row = document.createElement("tr"), annotated = ref.labeled_frames > 0;
+      for (const value of [label, model.detections, annotated ? ref.tp : "—", annotated ? ref.fp : "—", annotated ? ref.fn : "—", pct(ref.precision), pct(ref.recall), `${model.latency_ms.inference_ms.median.toFixed(2)} ms`]) cell(row, String(value));
+      table.append(row);
+    }
+    el("metrics").append(title, table);
+  }
+  el("provenance").textContent = JSON.stringify({models: data.models, source_manifest_sha256: data.source_sha256, limits: data.limits}, null, 2);
+  for (const id of ["before-image", "after-image"]) el(id).addEventListener("error", () => { stop(); el("error").textContent = "An embedded original image could not be displayed."; });
+  render();
+})();
+</script>
+</body>
+</html>

@@ -60,7 +60,7 @@ class ConsoleSession:
                                      component=config.component)
         self.yaw_recovery_sink = None
         self.yaw_preview = YawPreview(enabled=(config.environment == "real"
-            and config.video_source == "device" and config.vision_model is not None),
+            and config.video_source == "device" and config.has_vision),
             continuous=config.yaw_assist, on_recovery=self._record_yaw_recovery)
         self._yaw_requests = {}
 

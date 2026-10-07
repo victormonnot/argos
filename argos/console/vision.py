@@ -17,7 +17,7 @@ import time
 
 from argos.perception.image_tracks import ImageTracker
 from argos.perception.appearance import validate_appearances
-from argos.perception.yolox import get_model_spec, validate_inference_threads
+from argos.perception.yolox import ModelSpec, get_model_spec, validate_inference_threads
 from .config import validate_vision_hz
 from .video import VideoSample
 
@@ -27,11 +27,17 @@ START_TIMEOUT = 20.
 INFERENCE_TIMEOUT = 5.
 
 
-def _worker(model_path, incoming, outgoing, variant="tiny", threads=2):
+def _worker(model_path, incoming, outgoing, variant="tiny", threads=2,
+            bundle_path=None, bundle_sha256=None):
     try:
         from argos.perception.appearance import AppearanceEncoder
         from argos.perception.yolox import YoloXPersonDetector
-        detector = YoloXPersonDetector(model_path, variant=variant, threads=threads)
+        if bundle_path is None:
+            detector = YoloXPersonDetector(model_path, variant=variant, threads=threads)
+        else:
+            detector = YoloXPersonDetector(bundle_path=bundle_path, threads=threads)
+            if detector.bundle.manifest_sha256 != bundle_sha256:
+                raise ValueError("vision bundle changed before worker startup")
         encoder = AppearanceEncoder()
         outgoing.put(("ready", None))
         while True:
@@ -67,9 +73,21 @@ class VisionService:
     """
 
     def __init__(self, model_path: Path | None, *, variant="tiny", threads=2, max_hz=MAX_HZ, wall_clock=time.monotonic,
-                 process_context=None):
+                 process_context=None, bundle_path=None):
         self.model_path = model_path
         self.model = get_model_spec(variant)
+        self.bundle_path = None
+        self.bundle_identity = None
+        if bundle_path is not None:
+            if model_path is not None:
+                raise ValueError("choose an official vision model or a custom bundle, not both")
+            from argos.perception.model_bundle import read_model_bundle
+            bundle = read_model_bundle(bundle_path)
+            self.bundle_path = self.model_path = bundle.path
+            self.bundle_identity = bundle.identity()
+            entry = bundle.manifest["model"]
+            self.model = ModelSpec("custom", "Custom YOLOX-Nano", entry["path"], "",
+                                   entry["sha256"], entry["size_bytes"], 416)
         self.threads = validate_inference_threads(threads)
         self.max_hz = validate_vision_hz(max_hz)
         self.wall_clock = wall_clock
@@ -99,8 +117,11 @@ class VisionService:
         try:
             ctx = self._mp or multiprocessing.get_context("spawn")
             self._incoming, self._outgoing = ctx.Queue(maxsize=1), ctx.Queue(maxsize=1)
-            self._process = ctx.Process(target=_worker,
-                args=(str(self.model_path), self._incoming, self._outgoing, self.model.variant, self.threads), daemon=True)
+            args = (str(self.model_path), self._incoming, self._outgoing, self.model.variant, self.threads)
+            if self.bundle_path is not None:
+                args = (None, self._incoming, self._outgoing, "nano", self.threads,
+                        str(self.bundle_path), self.bundle_identity["bundle_sha256"])
+            self._process = ctx.Process(target=_worker, args=args, daemon=True)
             self._started_at = self.wall_clock()
             self._process.start()
         except Exception as exc:
@@ -298,7 +319,8 @@ class VisionService:
             state, detail = "stale", "No recent analyzed image"
         else:
             state, detail = "waiting", "Waiting for a recent camera image"
-        return {"configured": self.model_path is not None, "state": state, "detail": detail,
+        return {**({"bundle": self.bundle_identity} if self.bundle_identity is not None else {}),
+                "configured": self.model_path is not None, "state": state, "detail": detail,
                 "model": self.model.label, "variant": self.model.variant, "input_size": self.model.input_size,
                 "threads": self.threads,
                 "max_hz": self.max_hz, "age_limit_s": self._age_limit(session),

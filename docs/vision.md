@@ -9,6 +9,10 @@ The [offline vision comparison](vision-comparison.md) reruns Tiny and S on the
 same native recording images with the current tracker. It reports new detections
 and processing costs without changing the live configuration.
 
+[Custom YOLOX-Nano bundles](custom-vision-models.md) provide an explicit model
+loading path and a separate pinned-Nano versus custom offline comparison. Official
+model hashes and defaults remain unchanged.
+
 Detection alone supplies visual observations. The separately enabled
 [visual framing controller](framing.md) can use an explicitly selected detection
 for centering and apparent-size assistance in simulated AltHold. For a physical

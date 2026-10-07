@@ -40,6 +40,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
     archive = RecordingArchive(session.recorder.directory)
     visual_archive = VisualArchive(session.recorder.directory)
     vision = vision or VisionService(session.config.vision_model, variant=session.config.vision_variant,
+                                     bundle_path=session.config.vision_bundle,
                                      threads=session.config.vision_threads,
                                      max_hz=session.config.vision_hz)
     session.vision = vision
