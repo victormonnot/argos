@@ -1,0 +1,61 @@
+{
+  "bytetrack": {
+    "repository": "https://github.com/FoundationVision/ByteTrack",
+    "commit": "d1bf0191adff59bc8fcfeaa0b33d3d1642552a99",
+    "license": "MIT",
+    "files": {
+      "basetrack.py": {
+        "path": "yolox/tracker/basetrack.py",
+        "upstream_sha256": "c938afcf7c516bba4a77155c2499fcae6f926df7a2faa6f73a4be1b073f9bb2d",
+        "vendored_sha256": "c938afcf7c516bba4a77155c2499fcae6f926df7a2faa6f73a4be1b073f9bb2d"
+      },
+      "byte_tracker.py": {
+        "path": "yolox/tracker/byte_tracker.py",
+        "upstream_sha256": "7cecdcdd7998103969a4ba1772f4c9fb5560fd5eef05ca03e0d2df28346ca50b",
+        "vendored_sha256": "5c4d3278e65af7f407da16567e3f1d6c7f9be533db319b8f23feaa29b7d6b80e"
+      },
+      "kalman_filter.py": {
+        "path": "yolox/tracker/kalman_filter.py",
+        "upstream_sha256": "9842d0dd9957c97e312d42e5789441add55082066d87cc051ac768143a46eb39",
+        "vendored_sha256": "9842d0dd9957c97e312d42e5789441add55082066d87cc051ac768143a46eb39"
+      },
+      "matching.py": {
+        "path": "yolox/tracker/matching.py",
+        "upstream_sha256": "2f54bf0c183f577087391901562ae2bcd3c01633a3e077bd5d4168fafbd899a6",
+        "vendored_sha256": "2044c1dfa8ef442b873949af876493a5764062bf4bf7e1cc935c1f52569fb5ac"
+      }
+    }
+  },
+  "botsort": {
+    "repository": "https://github.com/NirAharon/BoT-SORT",
+    "commit": "251985436d6712aaf682aaaf5f71edb4987224bd",
+    "license": "MIT",
+    "files": {
+      "basetrack.py": {
+        "path": "tracker/basetrack.py",
+        "upstream_sha256": "a0f717a5059ebfa626a63cea5b040a649acd7720072f503cabfa24d749f082f6",
+        "vendored_sha256": "a0f717a5059ebfa626a63cea5b040a649acd7720072f503cabfa24d749f082f6"
+      },
+      "bot_sort.py": {
+        "path": "tracker/bot_sort.py",
+        "upstream_sha256": "ba6dd32ad4b96ee49d6f70654159269bd45ce15fd0fe5007f3a1b81bc257edf0",
+        "vendored_sha256": "b31ed297b25793eeeb9366f256b5dbbc371a266fed13fb196c6dc30841c74fcd"
+      },
+      "gmc.py": {
+        "path": "tracker/gmc.py",
+        "upstream_sha256": "508c3a4ea0e9a72478ce2d1d29aa1eb8892b3804c76b524a16a34dca23dba9ba",
+        "vendored_sha256": "c3fbbf7caea17031c6def88aa56eff2b879c3ee8220f05db1dcfa7c939823026"
+      },
+      "kalman_filter.py": {
+        "path": "tracker/kalman_filter.py",
+        "upstream_sha256": "c1a4c0acc71b9a91c0cdbe7b689f88712d68e7e8be4d7e54fb437f33fdbc9e5a",
+        "vendored_sha256": "c1a4c0acc71b9a91c0cdbe7b689f88712d68e7e8be4d7e54fb437f33fdbc9e5a"
+      },
+      "matching.py": {
+        "path": "tracker/matching.py",
+        "upstream_sha256": "020b2215c20467b31f7d8a977a2f557b8d1838f8baa5a5be54c0b8d14bbee4e1",
+        "vendored_sha256": "bfa0f6d712157e753884e1d7c165649f8d16d90d29236224cad71c243eb6442d"
+      }
+    }
+  }
+}

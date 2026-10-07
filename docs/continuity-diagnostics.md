@@ -6,6 +6,10 @@ native `.flight` recordings. It opens no camera, console server, radio or flight
 transport and changes no runtime settings. This is a diagnostic baseline, not
 a comparison of alternative trackers or a closed-loop flight evaluation.
 
+The separate [tracker comparison](tracker-comparison.md) reuses this replay
+boundary with one frozen custom-detector cache and offline ByteTrack/BoT-SORT
+adapters. It leaves the production tracker selection unchanged.
+
 Run in the existing ARGOS vision environment with locally provisioned official
 YOLOX-Nano weights:
 

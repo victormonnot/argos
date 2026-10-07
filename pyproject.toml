@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "Local drone observation console, passive MAVLink diagnostics and recorded-session analysis."
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE", "argos/console/static/fonts/*-OFL.txt"]
+license-files = ["LICENSE", "argos/console/static/fonts/*-OFL.txt",
+                 "argos/perception/_vendor/*/LICENSE"]
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.26"]
 
@@ -18,6 +19,8 @@ console = ["fastapi==0.141.1", "uvicorn==0.52.4", "pillow==12.3.0"]
 console-test = ["httpx==0.28.1"]
 camera = ["opencv-python-headless==5.0.0.93"]
 vision = ["opencv-python-headless==5.0.0.93"]
+tracking = ["opencv-python-headless==5.0.0.93", "scipy==1.17.1",
+            "lap==0.5.12", "cython_bbox==0.1.5"]
 
 [build-system]
 requires = ["setuptools>=77"]
@@ -30,6 +33,9 @@ include = ["argos*"]
 "argos.console" = ["static/*.html", "static/*.css", "static/*.js",
                    "static/fonts/*.woff2", "static/fonts/*-OFL.txt", "static/fonts/README.md"]
 "argos.perception" = ["static/*.html"]
+"argos.perception._vendor" = ["README.md", "provenance.json"]
+"argos.perception._vendor.bytetrack" = ["LICENSE", "adaptations.patch"]
+"argos.perception._vendor.botsort" = ["LICENSE", "adaptations.patch"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

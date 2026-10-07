@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARGOS · Comparaison des trackers</title>
+<style>
+:root{color-scheme:dark;font:15px/1.5 system-ui,sans-serif;background:#0c121b;color:#e9eff7;--line:#2c3b4d;--muted:#aab9cb;--green:#73e4bd;--gold:#ffc76a;--blue:#8ebdff}*{box-sizing:border-box}body{max-width:1700px;margin:0 auto;padding:28px}h1{font-size:clamp(26px,4vw,38px);line-height:1.2;margin:8px 0}h2{font-size:19px;margin:0 0 10px}p{margin:8px 0}a{color:var(--blue)}.eyebrow{color:var(--green);font-size:12px;letter-spacing:.13em}.muted,small{color:var(--muted)}.notice{border:1px solid #675235;background:#282219;border-radius:9px;padding:13px 16px;margin:20px 0}.notice strong{color:var(--gold)}.toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:18px 0 12px}.toolbar label{display:flex;align-items:center;gap:8px}select,button,input{font:inherit}select,button{color:inherit;background:#1b293b;border:1px solid #485c77;border-radius:7px;padding:8px 12px;max-width:100%}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}button:hover:not(:disabled){background:#293f59}button:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible,a:focus-visible{outline:3px solid var(--green);outline-offset:3px}input[type=range]{width:100%;accent-color:var(--green);margin:14px 0 2px}.position{font-variant-numeric:tabular-nums;margin:0 0 12px}.legend{display:flex;flex-wrap:wrap;gap:16px;font-size:12px;margin:14px 0}.legend span::before{content:"";display:inline-block;width:12px;height:9px;border:2px solid currentColor;margin-right:6px}.target{color:var(--gold)}.native{color:var(--green)}.ephemeral{color:#afbdcf}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.panel{background:#131e2d;border:1px solid var(--line);border-radius:11px;padding:15px;min-width:0}.panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}.panel-head h2{margin:0}.badge{font-size:12px;border-radius:30px;padding:3px 9px;background:#243347;white-space:nowrap}.badge.tracking{background:#143f34;color:var(--green)}.badge.paused{background:#44351e;color:var(--gold)}.badge.stopped{background:#472732;color:#ffb5b5}canvas{display:block;width:100%;height:auto;aspect-ratio:4/3;background:#070b12;border-radius:6px}.status{min-height:70px;font-size:13px;margin:11px 0}.metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}.metric{padding:8px;background:#19283a;border-radius:6px}.metric dt{font-size:11px;color:var(--muted)}.metric dd{margin:2px 0 0;font-variant-numeric:tabular-nums;font-size:14px}.micro{font-size:12px}.section{margin-top:22px}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums;text-align:left}th,td{padding:11px 12px;border-bottom:1px solid var(--line);white-space:nowrap}th{color:var(--muted);font-weight:500}th:first-child,td:first-child{padding-left:0}td:first-child{font-weight:650}summary{cursor:pointer;color:#c8d7e9;padding:9px 0}details{border-top:1px solid var(--line);margin-top:13px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 ui-monospace,monospace;max-height:360px;overflow:auto}.events{max-height:280px;overflow:auto}.events button{font-size:12px;width:100%;text-align:left;margin:4px 0;padding:7px}.limits{font-size:13px;padding-left:20px;color:#c1cede}.limits li{margin:7px 0}.two{display:grid;grid-template-columns:1fr 1fr;gap:20px}.error{color:#ffb5b5}.footer{font-size:12px;margin:20px 0;color:var(--muted)}@media(max-width:1100px){body{padding:18px}.grid{gap:9px}.panel{padding:11px}.panel-head{display:block}.badge{display:inline-block;margin-top:5px}.metrics{grid-template-columns:1fr}.status{min-height:105px}}@media(max-width:760px){body{padding:14px}.grid,.two{grid-template-columns:1fr}.panel{padding:14px}.panel-head{display:flex}.badge{margin:0}.metrics{grid-template-columns:1fr 1fr}.status{min-height:0}.toolbar{gap:9px}.toolbar label{width:100%;justify-content:space-between}.toolbar select{max-width:72%}}
+</style>
+</head>
+<body>
+<header><div class="eyebrow">ARGOS / CONTINUITÉ · BRIQUE 2</div><h1>Une personne, trois trackers</h1><p class="muted">Mêmes images originales, même détecteur IRIS, mêmes règles de sélection. Comparaison hors ligne, sans ReID appris.</p></header>
+<div class="notice"><strong>Diagnostic, pas classement de fiabilité.</strong> Ces deux passages ont seulement quelques identités vérifiées. Un état « suivi » et une demande admise à blanc ne prouvent pas que la bonne personne est suivie entre ces points. Aucune commande n’est envoyée.</div>
+<div class="toolbar"><label for="window">Passage <select id="window"></select></label><label for="mode">Horloge <select id="mode"><option value="recorded">Cadence commune des logs</option><option value="simulated">Ordonnancement simulé du fixe</option></select></label><button id="previous" aria-label="Image précédente">← Précédente</button><button id="play">Lire</button><button id="next" aria-label="Image suivante">Suivante →</button></div>
+<p id="modeNote" class="micro muted"></p>
+<label class="micro" for="cursor">Image source commune aux trois méthodes · flèches ← / → pour avancer</label><input id="cursor" type="range" min="0" value="0" step="1"><p id="position" class="position"></p>
+<div class="legend"><span class="target">Cible sélectionnée présente</span><span class="native">ID associé par le tracker</span><span class="ephemeral">Détection sans association persistante</span></div>
+<main id="panels" class="grid"></main>
+<section class="panel section"><h2>Comparaison sur le passage entier</h2><p class="micro muted">Durées d’états logiciels sur une sélection unique. « Admis à blanc » applique les règles du consommateur yaw sans transport ni action physique.</p><div class="table-wrap"><table><thead><tr><th scope="col">Méthode</th><th scope="col">Images analysées</th><th scope="col">Suivi</th><th scope="col">Pause</th><th scope="col">Admis à blanc</th><th scope="col">État final</th><th scope="col">Âge p95 / max</th><th scope="col">Association p50 / p95</th><th scope="col">CPU assoc. p50</th><th scope="col">Pic mémoire</th></tr></thead><tbody id="comparison"></tbody></table></div><p class="micro muted">Mémoire : pic du processus de rejeu, imports, cache JPEG et traces inclus ; poids du détecteur exclus. Ce n’est pas la mémoire du service de vol. Les temps d’association incluent le GMC de BoT-SORT, mais son décodage JPEG supplémentaire est affiché séparément.</p></section>
+<section class="panel section"><div class="two"><div><h2>Coût commun du détecteur</h2><p id="commonCost" class="micro"></p><p class="micro muted">Une passe mesurée sur le fixe, après préchauffage. Les répétitions des trackers réutilisent exactement le même cache de résultats.</p></div><div><h2>Limites à garder visibles</h2><ul class="limits"><li>Le rejeu temporel exclut le blocage du thread propriétaire par l’association/GMC. Son coût est mesuré séparément, sans être ajouté artificiellement au worker.</li><li>La date du log est un repère de disponibilité ; l’âge depuis réception ne mesure ni l’exposition caméra ni la réponse de l’aéronef.</li><li>Le seuil commun 0,35 retire les détections plus faibles. Les associations natives ne peuvent pas exploiter les scores 0,10–0,35.</li><li>Les détections omises par un tracker restent visibles comme candidats éphémères ; aucune boîte prédite ne compte comme observation actuelle.</li></ul></div></div><details><summary>Paramètres, limites détaillées et provenance</summary><pre id="provenance"></pre></details><p class="micro"><a href="report.json">Rapport JSON complet</a> · <a href="inference.jsonl">Cache commun des mesures</a></p></section>
+<p class="footer">Les identifiants sont locaux à chaque méthode. Le vert n’est pas une annotation humaine. Aucun modèle actif, service, réglage de vol ou équipement n’est modifié.</p>
+<script id="data" type="application/json">__COMPARISON_DATA__</script>
+<script>
+"use strict";
+const data=JSON.parse(document.getElementById("data").textContent),$=id=>document.getElementById(id);
+const names={image:"ImageTracker actuel",bytetrack:"ByteTrack",botsort:"BoT-SORT"},trackers=Object.keys(names),phaseNames={idle:"Sans sélection",tracking:"Suivi",paused:"Pause",stopped:"Arrêt"};
+const pretty=value=>JSON.stringify(value,null,2),num=(value,digits=2)=>Number.isFinite(value)?value.toFixed(digits):"—",ms=value=>Number.isFinite(value)?`${num(value,1)} ms`:"—",seconds=value=>`${num(value??0)} s`;
+let frames=[],index=0,timer=null,drawToken=0,currentRuns={},panelElements={};
+function element(tag,text,className){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(className)e.className=className;return e;}
+for(const window of data.windows){const option=element("option",window.name);option.value=window.name;$("window").append(option);}
+for(const tracker of trackers){
+ const panel=element("section",undefined,"panel"),head=element("div",undefined,"panel-head"),title=element("h2",names[tracker]),badge=element("span","", "badge");head.append(title,badge);panel.append(head);
+ const canvas=element("canvas");canvas.width=640;canvas.height=480;canvas.setAttribute("role","img");canvas.setAttribute("aria-label",`Image originale et détections ${names[tracker]}`);panel.append(canvas);
+ const status=element("p","","status"),metrics=element("dl",undefined,"metrics"),state=element("p","","micro muted");panel.append(status,metrics,state);
+ const evidence=element("details"),evidenceSummary=element("summary","Mesures de cette image"),detail=element("pre");evidence.append(evidenceSummary,detail);panel.append(evidence);
+ const events=element("details"),eventsSummary=element("summary","Sélection, pauses et arrêts"),list=element("div",undefined,"events"),eventDetail=element("pre","Choisir un événement pour afficher ses mesures.");events.append(eventsSummary,list,eventDetail);panel.append(events);
+ $("panels").append(panel);panelElements[tracker]={canvas,badge,status,metrics,state,detail,list,eventDetail};
+}
+function stop(){clearTimeout(timer);timer=null;$("play").textContent="Lire";}
+function windowData(){return data.windows.find(window=>window.name===$("window").value);}
+function metric(list,label,value){const group=element("div",undefined,"metric");group.append(element("dt",label),element("dd",value));list.append(group);}
+function lastState(run,at){let latest=null;for(const event of run.events??[]){if(event.kind==="preview_transition"&&event.at<=at&&(!latest||event.at>=latest.at))latest=event;}return latest;}
+function imageBoxes(ctx,frame,decision,tracker){
+ if(decision?.status!=="accepted")return;
+ const ephemeral=new Set((decision.association?.ephemeral_detections??[]).map(item=>item.detection_index));
+ if(tracker==="image")for(const [nativeIndex,confirmed] of (decision.association?.native_output_confirmed??[]).entries()){if(confirmed===false)ephemeral.add(decision.association.native_detection_indices[nativeIndex]);}
+ for(const [index,detection] of (decision.detections??[]).entries()){
+  const selected=decision.preview?.phase==="tracking"&&detection.track_id===decision.preview?.target_id&&detection.confidence>=.5;
+  const isEphemeral=ephemeral.has(index),color=selected?"#ffc76a":isEphemeral?"#afbdcf":"#73e4bd";
+  const [x,y,w,h]=detection.box.map((v,i)=>v*(i%2?frame.height:frame.width));
+  ctx.strokeStyle=color;ctx.lineWidth=selected?3:2;ctx.setLineDash(isEphemeral?[5,4]:[]);ctx.strokeRect(x,y,w,h);ctx.setLineDash([]);
+  const label=`${selected?"Cible · ":""}${isEphemeral?`éphémère ${index+1}`:`ID ${detection.track_id}`} · ${num(detection.confidence,3)}`;
+  ctx.font="13px system-ui";const labelWidth=ctx.measureText(label).width+10,labelX=Math.max(0,Math.min(x,frame.width-labelWidth)),top=Math.max(0,y-22);
+  ctx.fillStyle="#080c13ee";ctx.fillRect(labelX,top,labelWidth,21);ctx.fillStyle=color;ctx.fillText(label,labelX+5,top+15);
+ }
+}
+function show(){
+ index=Math.max(0,Math.min(frames.length-1,index));const frame=frames[index];if(!frame)return;
+ $("cursor").value=index;$("cursor").setAttribute("aria-valuetext",`Image ${index+1} sur ${frames.length}, séquence ${frame.sequence}`);
+ $("position").textContent=`${index+1} / ${frames.length} · réception ${num(frame.received_at,3)} s · séquence source ${frame.sequence}`;
+ $("previous").disabled=index===0;$("next").disabled=index===frames.length-1;
+ const token=++drawToken,image=new Image();
+ for(const tracker of trackers){
+  const run=currentRuns[tracker],panel=panelElements[tracker],decision=run?.frame_decisions.find(item=>item.sequence===frame.sequence),accepted=decision?.status==="accepted",phase=accepted?decision.preview?.phase:null;
+  panel.badge.className=`badge ${phase??""}`;panel.badge.textContent=accepted?(phaseNames[phase]??phase):"Sans résultat";
+  panel.status.textContent=accepted?`Résultat remis à ${num(decision.delivered_at,3)} s · ${decision.detections.length} détection(s). ${decision.preview?.detail??""}`:`${decision?.status==="rejected"?"Résultat rejeté":"Image non analysée dans cette variante"}. Aucune boîte de suivi reportée sur cette image. ${decision?.reason??""}`;
+  panel.metrics.replaceChildren();metric(panel.metrics,"Âge à la remise",accepted?ms(decision.image_age_s*1000):"—");metric(panel.metrics,"Demande à blanc",accepted?(decision.consumer?.valid?"Admise":"Non admise"):"Sans nouveau résultat");
+  metric(panel.metrics,"Association · mur / CPU",accepted?`${ms(decision.association?.tracker_wall_ms)} / ${ms(decision.association?.tracker_cpu_ms)}`:"—");
+  metric(panel.metrics,"Décodage JPEG pour GMC",accepted?ms(decision.association?.image_provider_wall_ms):"—");
+  const previous=lastState(run??{},frame.received_at);
+  panel.state.textContent=accepted?`État ci-dessus : à la remise du résultat. Motif consommateur : ${decision.consumer?.reason??"—"}.`:`Dernier état connu à la réception : ${previous?(phaseNames[previous.phase]??previous.phase):"aucun"}${previous?` (${num(previous.at,3)} s)`:""}. Cet état ne constitue pas une observation sur l’image affichée.`;
+  panel.detail.textContent=pretty({sequence:frame.sequence,received_at:frame.received_at,frozen_detector_detections:frame.detections,replay:decision??null});
+  const ctx=panel.canvas.getContext("2d");panel.canvas.width=frame.width;panel.canvas.height=frame.height;ctx.fillStyle="#070b12";ctx.fillRect(0,0,frame.width,frame.height);
+ }
+ image.onload=()=>{if(token!==drawToken)return;for(const tracker of trackers){const panel=panelElements[tracker],ctx=panel.canvas.getContext("2d"),decision=currentRuns[tracker]?.frame_decisions.find(item=>item.sequence===frame.sequence);ctx.drawImage(image,0,0,panel.canvas.width,panel.canvas.height);imageBoxes(ctx,frame,decision,tracker);}};
+ image.onerror=()=>{if(token!==drawToken)return;for(const tracker of trackers){panelElements[tracker].status.textContent=`Image originale indisponible : frames/${frame.sequence}.jpg`;}};
+ image.src=`frames/${frame.sequence}.jpg`;
+}
+function jump(event){stop();const sequence=event.sequence??event.frame_sequence;let matched=frames.findIndex(frame=>frame.sequence===sequence);const received=event.frame_received_at??event.captured_at;if(matched<0&&received!=null)matched=frames.findIndex(frame=>Math.abs(frame.received_at-received)<1e-7);if(matched<0&&event.at!=null){for(let i=0;i<frames.length;i++){if(frames[i].received_at<=event.at)matched=i;}}if(matched>=0){index=matched;show();}}
+function refresh(){
+ stop();const window=windowData(),mode=$("mode").value;frames=data.frames.filter(frame=>window.start<=frame.received_at&&frame.received_at<=window.end);index=0;$("cursor").max=Math.max(0,frames.length-1);currentRuns={};
+ $("modeNote").textContent=mode==="recorded"?"Mêmes images analysées et mêmes horaires pour les trois méthodes, d’après les observations enregistrées. Les lectures entre résultats sont simulées.":"VisionService choisit la dernière image avec les mêmes durées worker mesurées. Le blocage lié à l’association/GMC, l’IPC et la contention ne sont pas simulés.";
+ $("comparison").replaceChildren();
+ for(const tracker of trackers){
+  const run=data.runs.find(item=>item.tracker===tracker&&item.mode===mode)?.windows.find(item=>item.name===window.name);currentRuns[tracker]=run;
+  const summary=run?.summary??{},aggregate=data.comparison?.[tracker]?.[mode],association=summary.association_cost??{},row=element("tr");
+  const values=[names[tracker],`${summary.accepted_frames??0} / ${frames.length}`,seconds(summary.phase_seconds?.tracking),seconds(summary.phase_seconds?.paused),seconds(summary.dry_consumer_valid_seconds),phaseNames[summary.final_preview?.phase]??"—",`${ms(summary.delivered_image_age_s?.p95*1000)} / ${ms(summary.delivered_image_age_s?.max*1000)}`,`${ms(association.tracker_wall_ms?.p50)} / ${ms(association.tracker_wall_ms?.p95)}`,ms(association.tracker_cpu_ms?.p50),aggregate?.cost?.peak_rss_bytes?.max!=null?`${num(aggregate.cost.peak_rss_bytes.max/1048576,1)} Mio`:"—"];
+  for(const value of values)row.append(element("td",value));$("comparison").append(row);
+  const panel=panelElements[tracker];panel.list.replaceChildren();panel.eventDetail.textContent="Choisir un événement pour afficher ses mesures.";
+  for(const event of (run?.events??[]).filter(item=>["selection","preview_transition","consumer_transition"].includes(item.kind))){const label=event.kind==="selection"?"Sélection":event.kind==="preview_transition"?(phaseNames[event.phase]??event.phase):"Consommateur";const button=element("button",`${num(event.at,3)} s · ${label} · ${event.reason??event.detail??(event.accepted?"acceptée":"")}`);button.addEventListener("click",()=>{panel.eventDetail.textContent=pretty(event);jump(event);});panel.list.append(button);}
+ }
+ show();
+}
+function advance(){if(index>=frames.length-1){stop();return;}timer=setTimeout(()=>{index++;show();advance();},Math.max(20,(frames[index+1].received_at-frames[index].received_at)*1000));}
+$("window").addEventListener("change",refresh);$("mode").addEventListener("change",refresh);$("cursor").addEventListener("input",event=>{stop();index=Number(event.target.value);show();});
+$("previous").addEventListener("click",()=>{stop();index--;show();});$("next").addEventListener("click",()=>{stop();index++;show();});
+$("play").addEventListener("click",()=>{if(timer){stop();return;}if(index>=frames.length-1)index=0;$("play").textContent="Pause";show();advance();});
+document.addEventListener("keydown",event=>{if(event.target.matches("input,select,textarea")||event.altKey||event.ctrlKey||event.metaKey)return;if(event.key==="ArrowLeft"||event.key==="ArrowRight"){event.preventDefault();stop();index+=event.key==="ArrowRight"?1:-1;show();}});
+const worker=data.common_worker_cost??{};$("commonCost").textContent=`Décodage + détection + apparence : médiane ${ms(worker.wall_ms?.median??worker.wall_ms?.p50)}, p95 ${ms(worker.wall_ms?.p95)}. `+Object.entries(worker.stages??{}).map(([stage,cost])=>`${({decode:"Décodage",detect:"Détection",appearance:"Apparence heuristique"})[stage]??stage} : ${ms(cost.wall_ms?.median??cost.wall_ms?.p50)} mur / ${ms(cost.cpu_ms?.median??cost.cpu_ms?.p50)} CPU`).join(" · ");
+$("provenance").textContent=pretty({model:data.model,configuration:data.configuration,cache:data.cache,limits:data.limits,provenance:data.provenance});refresh();
+</script>
+</body>
+</html>

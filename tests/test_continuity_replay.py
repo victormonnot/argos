@@ -5,6 +5,7 @@ import json
 import pytest
 
 from argos.perception.continuity_replay import replay
+from argos.perception.image_tracks import ImageTracker
 
 
 APPEARANCE = [1.] + [0.] * 207
@@ -137,3 +138,134 @@ def test_invalid_or_pretracked_input_is_rejected(mutation, pattern):
 def test_recorded_mode_does_not_invent_an_extra_worker_time():
     with pytest.raises(ValueError, match="simulated-worker"):
         run([frame(1, 0.)], extra_worker_ms=1)
+
+
+class CurrentAdapter:
+    metadata = {"name": "current-test-adapter"}
+
+    def __init__(self, *, on_diagnostic):
+        self.tracker = ImageTracker(on_diagnostic=on_diagnostic)
+
+    def reset(self):
+        self.tracker.reset()
+
+    def update(self, detections, captured_at, *, appearances, image, width, height):
+        self.last_detection_indices = list(range(len(detections)))
+        return self.tracker.update(detections, captured_at, appearances=appearances)
+
+
+@pytest.mark.parametrize("mode", ["recorded", "simulated"])
+def test_current_comparison_adapter_preserves_entire_default_replay(mode):
+    frames = [frame(1, 0.), frame(2, .1, box=[.6, .2, .05, .5]),
+              frame(3, .2, box=[.6, .2, .05, .5]), frame(4, .3)]
+    baseline = run(frames, mode=mode)
+    comparison = run(frames, mode=mode, tracker_factory=CurrentAdapter)
+    assert comparison["summary"].pop("tracker") == CurrentAdapter.metadata
+    costs = comparison["summary"].pop("association_cost")
+    assert costs["tracker_wall_ms"]["count"] == 4
+    assert costs["tracker_cpu_ms"]["p50"] >= 0
+    comparison["summary"]["limits"] = comparison["summary"]["limits"][:-3]
+    for decision in comparison["frame_decisions"]:
+        if decision["status"] == "accepted":
+            details = decision.pop("association")
+            assert details["ephemeral_detections"] == []
+    assert comparison == baseline
+
+
+class PartialAdapter:
+    """Native tracker hides box zero, returns box one with a predicted position."""
+
+    def __init__(self, *, on_diagnostic):
+        pass
+
+    def reset(self):
+        pass
+
+    def update(self, detections, captured_at, *, appearances, image, width, height):
+        assert (width, height) == (640, 480)
+        assert image == (captured_at, "pixels")
+        self.last_detection_indices = [1]
+        self.last_unassigned = [{"detection_index": 0, "reason": "unconfirmed"}]
+        self.last_output_confirmed = [True]
+        return [{"track_id": 7, "box": [.1, .1, .1, .1], "confidence": .1}]
+
+
+@pytest.mark.parametrize("mode", ["recorded", "simulated"])
+def test_partial_adapter_keeps_all_measured_boxes_appearances_and_ambiguity(mode):
+    frames = [frame(1, 0.), frame(2, .1)]
+    for item in frames:
+        item["detections"].append({"box": [.8, .2, .05, .5], "confidence": .85})
+        item["appearances"] = [None, APPEARANCE]
+    before = deepcopy(frames)
+    result = run(frames, mode=mode, tracker_factory=PartialAdapter,
+                 image_provider=lambda item: (item["received_at"], "pixels"))
+    assert result["summary"]["selection"]["accepted"]
+    decisions = result["frame_decisions"]
+    for original, decision in zip(frames, decisions):
+        assert decision["status"] == "accepted"
+        measured = [{key: detection[key] for key in ("box", "confidence")}
+                    for detection in decision["detections"]]
+        assert measured == original["detections"]
+        assert decision["appearance_available"] == [False, True]
+        assert decision["detections"][1]["track_id"] == 7
+        assert decision["association"]["native_detection_indices"] == [1]
+        assert decision["association"]["native_output_confirmed"] == [True]
+        assert decision["association"]["unassigned"][0]["reason"] == "unconfirmed"
+    assert decisions[0]["detections"][0]["track_id"] != decisions[1]["detections"][0]["track_id"]
+    assert decisions[1]["preview"]["phase"] == "stopped"
+    assert "ambiguous" in decisions[1]["preview"]["detail"].lower()
+    assert frames == before
+
+
+def test_comparison_adapter_reordered_assignments_restore_source_alignment():
+    class Reversed(CurrentAdapter):
+        def update(self, detections, captured_at, **kwargs):
+            self.last_detection_indices = [1, 0]
+            return [{"track_id": 70}, {"track_id": 80}]
+
+    first = frame(1, 0.)
+    first["detections"].append({"box": [.8, .2, .05, .5], "confidence": .8})
+    first["appearances"].append(None)
+    result = run([first], tracker_factory=Reversed)
+    decision = result["frame_decisions"][0]
+    assert [item["track_id"] for item in decision["detections"]] == [80, 70]
+    assert decision["appearance_available"] == [True, False]
+    assert result["summary"]["selection"]["track_id"] == 80
+
+
+@pytest.mark.parametrize("indices,outputs,pattern", [
+    ([0, 0], [{"track_id": 1}, {"track_id": 2}], "map uniquely"),
+    ([1], [{"track_id": 1}], "map uniquely"),
+    ([0], [], "map uniquely"),
+    ([0], [{"track_id": 2**52}], "unique positive"),
+])
+def test_comparison_adapter_rejects_invalid_native_mapping(indices, outputs, pattern):
+    class Invalid(CurrentAdapter):
+        def update(self, detections, captured_at, **kwargs):
+            self.last_detection_indices = indices
+            return outputs
+
+    with pytest.raises(RuntimeError, match=pattern):
+        run([frame(1, 0.)], tracker_factory=Invalid)
+
+
+def test_comparison_rejects_image_provider_without_an_adapter():
+    with pytest.raises(ValueError, match="requires a custom tracker"):
+        run([frame(1, 0.)], image_provider=lambda item: None)
+
+
+@pytest.mark.parametrize("mode", ["recorded", "simulated"])
+@pytest.mark.parametrize("failed_component", ["tracker", "image_provider"])
+def test_comparison_adapter_failures_abort_instead_of_becoming_target_losses(mode, failed_component):
+    class Broken(CurrentAdapter):
+        def update(self, *args, **kwargs):
+            raise ValueError("broken association")
+
+    def broken_pixels(frame):
+        raise TypeError("broken pixels")
+
+    with pytest.raises(RuntimeError, match="offline comparison tracker failed at frame 1") as caught:
+        run([frame(1, 0.)], mode=mode,
+            tracker_factory=Broken if failed_component == "tracker" else CurrentAdapter,
+            image_provider=broken_pixels if failed_component == "image_provider" else None)
+    assert isinstance(caught.value.__cause__, (ValueError, TypeError))

@@ -14,6 +14,7 @@ import heapq
 import math
 from pathlib import Path
 from queue import Empty, Queue
+import time
 from types import SimpleNamespace
 
 from argos.backends.vision_bench_source import PreviewError
@@ -127,6 +128,87 @@ class _Process:
         self.alive = False
 
 
+class _ComparisonTracker:
+    """Adapt an offline association result to the unchanged selection contract.
+
+    Alternative trackers may hide unconfirmed detections or return predicted
+    boxes. Selection must still see *every* current detector candidate, including
+    a strong candidate which could make recovery ambiguous. Use only the native
+    association IDs and their input indices; all other measurements come from the
+    frozen detector input. Omitted rows receive unique display-only IDs.
+    """
+
+    def __init__(self, tracker, frames, image_provider):
+        self.tracker = tracker
+        self.frames = {frame["received_at"]: frame for frame in frames}
+        self.image_provider = image_provider
+        self.records = {}
+        self.failure = None
+        self._ephemeral_id = 2**53 - 1
+
+    def reset(self):
+        self.tracker.reset()
+
+    def update(self, detections, captured_at, *, appearances):
+        try:
+            return self._update(detections, captured_at, appearances=appearances)
+        except Exception as exc:
+            # VisionService deliberately turns malformed production results
+            # into an unavailable frame. A benchmark adapter failure must abort
+            # the experiment instead of masquerading as a selected-target loss.
+            sequence = self.frames.get(captured_at, {}).get("sequence", "unknown")
+            self.failure = RuntimeError(f"offline comparison tracker failed at frame {sequence}: {exc}")
+            raise self.failure from exc
+
+    def _update(self, detections, captured_at, *, appearances):
+        frame = self.frames[captured_at]
+        image, image_wall, image_cpu = None, 0., 0.
+        if self.image_provider is not None:
+            wall, cpu = time.perf_counter(), time.process_time()
+            image = self.image_provider(deepcopy(frame))
+            image_wall = (time.perf_counter() - wall) * 1000
+            image_cpu = (time.process_time() - cpu) * 1000
+        wall, cpu = time.perf_counter(), time.process_time()
+        output = self.tracker.update(deepcopy(detections), captured_at,
+            appearances=deepcopy(appearances), image=image,
+            width=frame["width"], height=frame["height"])
+        tracker_wall = (time.perf_counter() - wall) * 1000
+        tracker_cpu = (time.process_time() - cpu) * 1000
+        indices = self.tracker.last_detection_indices
+        if (not isinstance(output, list) or not isinstance(indices, list)
+                or len(output) != len(indices)
+                or any(type(index) is not int or not 0 <= index < len(detections) for index in indices)
+                or len(set(indices)) != len(indices)):
+            raise ValueError("offline tracker output must map uniquely to current detections")
+        assigned, native_ids = {}, set()
+        for index, item in zip(indices, output):
+            identity = item.get("track_id") if isinstance(item, dict) else None
+            if (type(identity) is not int or not 1 <= identity < 2**52
+                    or identity in native_ids):
+                raise ValueError("offline tracker IDs must be unique positive integers below 2**52")
+            native_ids.add(identity)
+            assigned[index] = identity
+        unassigned = []
+        observed = []
+        for index, detection in enumerate(detections):
+            identity = assigned.get(index)
+            if identity is None:
+                identity = self._ephemeral_id
+                self._ephemeral_id -= 1
+                unassigned.append({"detection_index": index, "track_id": identity})
+            observed.append(dict(deepcopy(detection), track_id=identity))
+        self.records[frame["sequence"]] = {
+            "native_detection_indices": list(indices),
+            "native_track_ids": [item["track_id"] for item in output],
+            "ephemeral_detections": unassigned,
+            "unassigned": deepcopy(getattr(self.tracker, "last_unassigned", [])),
+            "native_output_confirmed": deepcopy(getattr(self.tracker, "last_output_confirmed", None)),
+            "tracker_wall_ms": tracker_wall, "tracker_cpu_ms": tracker_cpu,
+            "image_provider_wall_ms": image_wall, "image_provider_cpu_ms": image_cpu,
+        }
+        return observed
+
+
 def _snapshot(now, camera, candidate, preview):
     _, sample = camera.read_current()
     received = None if sample is None else sample.received_at
@@ -147,7 +229,8 @@ def _snapshot(now, camera, candidate, preview):
 
 
 def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
-           tick_seconds=.01, extra_worker_ms=0):
+           tick_seconds=.01, extra_worker_ms=0, tracker_factory=None,
+           image_provider=None):
     """Return scalar diagnostics, per-source-frame decisions and software durations.
 
     ``frames`` contain sequence/receipt, normalized detections, aligned appearance
@@ -156,9 +239,21 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
     ``selection`` makes one controlled attempt (at, box, optional min_iou=.5).
     Overlap resolves a current local ID; historical numeric IDs are never restored.
     Source frames must cover only [start, end]. A fresh tracker starts at start.
+
+    ``tracker_factory(on_diagnostic=callback)`` optionally supplies an offline
+    comparison adapter with update/reset and aligned last_detection_indices.
+    ``image_provider(frame)`` supplies pixels for an adapter that needs them.
+    Adapter CPU/wall and image-provider costs are measured separately, but do
+    not alter the synthetic scheduler clock or worker duration. They execute at
+    the owner-side association boundary, not in the detector worker. Default
+    replay remains the original ImageTracker path without benchmark overhead.
     """
     frames, start, end, selection, max_hz, tick_seconds, extra_worker_ms = _inputs(
         frames, start, end, selection, mode, max_hz, tick_seconds, extra_worker_ms)
+    if tracker_factory is not None and not callable(tracker_factory):
+        raise ValueError("tracker_factory must be callable")
+    if image_provider is not None and (tracker_factory is None or not callable(image_provider)):
+        raise ValueError("image_provider requires a custom tracker and must be callable")
     now = start
     events, pending, decisions = [], [], {}
     counter = 0
@@ -175,7 +270,14 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
     def recovery(record):
         events.append({"kind": "recovery", **record})
 
-    tracker = ImageTracker(on_diagnostic=association)
+    comparison = None
+    if tracker_factory is None:
+        tracker = ImageTracker(on_diagnostic=association)
+    else:
+        adapter = tracker_factory(on_diagnostic=association)
+        if not callable(getattr(adapter, "update", None)) or not callable(getattr(adapter, "reset", None)):
+            raise ValueError("tracker_factory must return an update/reset adapter")
+        comparison = tracker = _ComparisonTracker(adapter, frames, image_provider)
     preview = YawPreview(True, continuous=True, on_recovery=recovery)
     validator = YawValidator()
     camera = _Camera(lambda: now)
@@ -263,6 +365,11 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
         else:
             previous_pending = service._pending
             service.tick(session)
+            if comparison is not None:
+                if comparison.failure is not None:
+                    raise comparison.failure
+                if service._error:
+                    raise RuntimeError(f"offline comparison vision failed: {service._error}")
             if service._error and service._error != last_service_error:
                 events.append({"kind": "vision_error", "at": now, "reason": service._error})
                 last_service_error = service._error
@@ -309,6 +416,8 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
             decision.update(status="accepted", reason="analyzed", delivered_at=now, image_age_s=age,
                 detections=deepcopy(candidate.result["detections"]),
                 appearance_available=[item is not None for item in candidate.appearances])
+            if comparison is not None:
+                decision["association"] = deepcopy(comparison.records[sequence])
         if has_selection:
             matches = [] if candidate is None else [(item, _iou(selection["box"], item["box"]))
                 for item in candidate.result["detections"] if item["confidence"] >= .5]
@@ -356,7 +465,7 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
         return {"count": len(ordered), "p50": ordered[math.ceil(len(ordered) * .5) - 1],
                 "p95": ordered[math.ceil(len(ordered) * .95) - 1], "max": ordered[-1]}
 
-    return {"events": events, "frame_decisions": list(decisions.values()), "summary": {
+    report = {"events": events, "frame_decisions": list(decisions.values()), "summary": {
         "mode": mode, "start": start, "end": end, "tick_seconds": tick_seconds, "max_hz": max_hz,
         "extra_worker_ms": extra_worker_ms, "selection": selection_result,
         "source_frames": len(frames), "accepted_frames": len(accepted_sequences),
@@ -375,3 +484,14 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
                    "Frames missing from the vision log are omitted in recorded mode; this does not prove they were skipped live.",
                    "Snapshot validation uses zero local read overhead; worker cache timing is not a measured live workload."],
     }}
+    if comparison is not None:
+        report["summary"]["tracker"] = deepcopy(getattr(comparison.tracker, "metadata", {}))
+        report["summary"]["association_cost"] = {
+            key: distribution([record[key] for record in comparison.records.values()])
+            for key in ("tracker_wall_ms", "tracker_cpu_ms", "image_provider_wall_ms", "image_provider_cpu_ms")}
+        report["summary"]["limits"].extend([
+            "Tracker and optional image-provider costs are measured on the owner side; they do not delay this synthetic clock.",
+            "All current detector candidates remain visible to selection; unassigned boxes have one-image ephemeral IDs.",
+            "Native association indices supply IDs only; selection uses original detector boxes, confidence and appearance.",
+        ])
+    return report
