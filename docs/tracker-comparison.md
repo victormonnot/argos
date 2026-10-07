@@ -6,6 +6,9 @@ recording, custom YOLOX bundle and explicit selections. It extends the
 [continuity diagnostic](continuity-diagnostics.md); no production tracker
 selector, active model, flight configuration or service is changed.
 
+For a short fully reviewed span and selection-only candidate interventions,
+see [dense continuity validation](continuity-validation.md).
+
 Provision optional dependencies in a separate environment:
 
 ```sh

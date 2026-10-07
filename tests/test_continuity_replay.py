@@ -1,5 +1,6 @@
 """Offline chronology must preserve production receipt, recovery and admission rules."""
 from copy import deepcopy
+import hashlib
 import json
 
 import pytest
@@ -269,3 +270,170 @@ def test_comparison_adapter_failures_abort_instead_of_becoming_target_losses(mod
             tracker_factory=Broken if failed_component == "tracker" else CurrentAdapter,
             image_provider=broken_pixels if failed_component == "image_provider" else None)
     assert isinstance(caught.value.__cause__, (ValueError, TypeError))
+
+
+def annotated_frames(*, extra_unknown=False):
+    frames = [frame(1, 0.), frame(2, .1, box=[.6, .2, .05, .5]),
+              frame(3, .2, box=[.6, .2, .05, .5]), frame(4, .3, box=[.6, .2, .05, .5])]
+    frames[1]["detections"].append({"box": [.1, .2, .05, .5], "confidence": .85})
+    frames[1]["appearances"].append(None)
+    if extra_unknown:
+        frames[1]["detections"].append({"box": [.85, .2, .05, .5], "confidence": .8})
+        frames[1]["appearances"].append(None)
+    for item in frames:
+        item["jpeg"] = f"original image {item['sequence']}".encode()
+        item["sha256"] = hashlib.sha256(item["jpeg"]).hexdigest()
+    return frames
+
+
+def suppression(frame, index=1, *, reason="reviewed_false_positive"):
+    return {"sequence": frame["sequence"], "frame_sha256": frame["sha256"],
+            "detection_index": index, "expected_box": list(frame["detections"][index]["box"]),
+            "expected_confidence": frame["detections"][index]["confidence"],
+            "reason": reason, "evidence_id": "review:source-sequence:exact-detection"}
+
+
+@pytest.mark.parametrize("mode", ["recorded", "simulated"])
+def test_preview_counterfactual_none_and_empty_do_not_change_existing_replay(mode):
+    frames = annotated_frames()
+    baseline = run(frames, mode=mode)
+    assert run(frames, mode=mode, preview_suppressions=None) == baseline
+    empty = run(frames, mode=mode, preview_suppressions=[])
+    empty["summary"].pop("preview_counterfactual")
+    empty["summary"]["limits"] = empty["summary"]["limits"][:-3]
+    for decision in empty["frame_decisions"]:
+        for key in ("preview_suppression", "preview_detections", "preview_detection_indices",
+                    "preview_appearance_available"):
+            decision.pop(key, None)
+    assert empty == baseline
+
+
+@pytest.mark.parametrize("mode", ["recorded", "simulated"])
+def test_preview_suppression_changes_only_selection_observation_not_association_or_clock(mode):
+    frames = annotated_frames()
+    before = deepcopy(frames)
+    records = [suppression(frames[1])]
+    baseline = run(frames, mode=mode, tracker_factory=CurrentAdapter)
+    filtered = run(frames, mode=mode, tracker_factory=CurrentAdapter, preview_suppressions=records)
+    assert baseline["summary"]["final_preview"]["phase"] == "stopped"
+    assert filtered["summary"]["final_preview"]["phase"] == "tracking"
+    assert filtered["summary"]["selection"] == baseline["summary"]["selection"]
+    assert transitions(filtered, "association") == transitions(baseline, "association")
+    assert transitions(filtered, "worker_submitted") == transitions(baseline, "worker_submitted")
+    for original, revised in zip(baseline["frame_decisions"], filtered["frame_decisions"]):
+        for key in ("sequence", "status", "reason", "detections", "image_age_s", "delivered_at",
+                    "submitted_at", "worker_completed_at", "appearance_available"):
+            assert original.get(key) == revised.get(key)
+        for key in ("native_track_ids", "native_detection_indices", "ephemeral_detections"):
+            assert original["association"][key] == revised["association"][key]
+    filtered_frame = filtered["frame_decisions"][1]
+    assert filtered_frame["preview_detection_indices"] == [0]
+    assert filtered_frame["preview_detections"] == filtered_frame["detections"][:1]
+    assert filtered_frame["preview_appearance_available"] == [True]
+    assert filtered_frame["preview_suppression"]["suppressed_detection_indices"] == [1]
+    assert filtered_frame["preview_suppression"]["status"] == "applied"
+    assert len(transitions(filtered, "preview_suppression")) == 1
+    assert filtered["summary"]["preview_counterfactual"]["suppressed_detections"] == 1
+    assert not filtered["summary"]["preview_counterfactual"]["deployable_policy"]
+    assert frames == before
+    assert records == [suppression(frames[1])]
+
+
+def test_preview_suppression_keeps_unannotated_unknown_candidates_and_terminal_latch():
+    frames = annotated_frames(extra_unknown=True)
+    result = run(frames, preview_suppressions=[suppression(frames[1]), suppression(frames[3], 0)])
+    second = result["frame_decisions"][1]
+    assert second["preview_detection_indices"] == [0, 2]
+    assert second["preview_appearance_available"] == [True, False]
+    assert second["preview"]["phase"] == "stopped"
+    assert "ambiguous" in second["preview"]["detail"].lower()
+    assert result["summary"]["final_preview"]["phase"] == "stopped"
+    assert result["frame_decisions"][3]["preview_detections"] == []
+
+
+@pytest.mark.parametrize("mutation,pattern", [
+    (lambda record: record.update(sequence=200), "exact source frame"),
+    (lambda record: record.update(sequence=True), "exact source frame"),
+    (lambda record: record.update(frame_sha256="f" * 64), "hash"),
+    (lambda record: record.update(frame_sha256="not-a-hash"), "hash"),
+    (lambda record: record.update(detection_index=2), "exact source detection"),
+    (lambda record: record.update(detection_index=True), "exact source detection"),
+    (lambda record: record.update(expected_box=[.2, .2, .05, .5]), "box/confidence"),
+    (lambda record: record.update(expected_confidence=.8), "box/confidence"),
+    (lambda record: record.update(reason="unknown"), "reviewed duplicate"),
+    (lambda record: record.update(evidence_id="   "), "evidence_id"),
+    (lambda record: record.update(evidence_id="x" * 513), "evidence_id"),
+    (lambda record: record.update(track_id=1), "exact annotation record fields"),
+])
+def test_preview_suppression_rejects_unbound_or_unknown_records(mutation, pattern):
+    frames = annotated_frames()
+    record = suppression(frames[1])
+    mutation(record)
+    with pytest.raises(ValueError, match=pattern):
+        run(frames, preview_suppressions=[record])
+
+
+def test_preview_suppression_rejects_duplicate_and_preselection_records():
+    frames = annotated_frames()
+    record = suppression(frames[1])
+    with pytest.raises(ValueError, match="duplicate preview suppression"):
+        run(frames, preview_suppressions=[record, deepcopy(record)])
+    with pytest.raises(ValueError, match="before or at initial selection"):
+        run(frames, preview_suppressions=[suppression(frames[0], 0)])
+    with pytest.raises(ValueError, match="before or at initial selection"):
+        run(frames, at=.1, preview_suppressions=[record])
+
+
+def test_preview_suppression_checks_jpeg_bytes_when_available():
+    frames = annotated_frames()
+    record = suppression(frames[1])
+    frames[1]["jpeg"] = b"different original image"
+    with pytest.raises(ValueError, match="source JPEG"):
+        run(frames, preview_suppressions=[record])
+
+
+def test_preview_suppression_never_repairs_failed_initial_selection():
+    frames = annotated_frames()
+    frames[0]["detections"] = []
+    frames[0]["appearances"] = []
+    result = run(frames, preview_suppressions=[suppression(frames[1])])
+    assert not result["summary"]["selection"]["accepted"]
+    assert result["summary"]["final_preview"]["phase"] == "idle"
+    second = result["frame_decisions"][1]
+    assert second["preview_detection_indices"] == [0, 1]
+    assert second["preview_suppression"]["status"] == "selection_not_accepted"
+    assert result["summary"]["preview_counterfactual"]["suppressed_detections"] == 0
+
+
+def test_preview_suppression_does_not_move_annotations_to_nearby_admitted_frames():
+    frames = annotated_frames()
+    frames[1]["received_at"] = .04
+    frames[1]["available_at"] = .05
+    frames[2]["received_at"] = .08
+    frames[2]["available_at"] = .09
+    result = run(frames, mode="simulated", preview_suppressions=[suppression(frames[1])])
+    assert result["frame_decisions"][1]["status"] == "not_analyzed"
+    assert result["frame_decisions"][1]["preview_suppression"]["status"] == "not_delivered"
+    assert result["frame_decisions"][2]["preview_detection_indices"] == [0]
+    assert not transitions(result, "preview_suppression")
+    assert result["summary"]["preview_counterfactual"]["suppressed_detections"] == 0
+
+
+def test_avoiding_immediate_ambiguity_can_still_end_at_the_unchanged_recovery_deadline():
+    frames = annotated_frames()
+    # The unique surviving candidate's appearance contradicts the selection.
+    different = [0., 1.] + [0.] * 206
+    for item in frames[1:]:
+        item["appearances"][0] = different
+    for i in range(4, 34):
+        frames.append(frame(i + 1, i * .1, box=[.6, .2, .05, .5]))
+        frames[-1]["appearances"][0] = different
+    result = run(frames, end=3.4, preview_suppressions=[suppression(frames[1])])
+    assert result["frame_decisions"][1]["preview"]["phase"] == "paused"
+    assert result["summary"]["final_preview"]["phase"] == "stopped"
+    recoveries = transitions(result, "recovery")
+    assert any(item["reason"] == "appearance_similarity" for item in recoveries)
+    stopped = next(item for item in transitions(result, "preview_transition") if item["phase"] == "stopped")
+    assert stopped["at"] == pytest.approx(3.)
+    assert stopped["detail"] == "Selected person was lost; select a person again"
+    assert not any(item["reason"] == "ambiguous_candidates" for item in recoveries)

@@ -10,7 +10,9 @@ from __future__ import annotations
 from collections import Counter
 from copy import copy, deepcopy
 from dataclasses import asdict
+import hashlib
 import heapq
+import json
 import math
 from pathlib import Path
 from queue import Empty, Queue
@@ -102,6 +104,61 @@ def _inputs(frames, start, end, selection, mode, max_hz, tick_seconds, extra_wor
         cleaned.append(frame)
         previous_at, previous_sequence = received, sequence
     return cleaned, start, end, selected, max_hz, tick_seconds, extra_worker_ms
+
+
+def _preview_suppressions(entries, frames, selection):
+    """Validate an exact, image-bound annotation intervention before replay.
+
+    An image hash alone does not bind a detector index: expected box/confidence
+    also protect against applying annotations to another detector's output.
+    Review truth is supplied by the caller, not inferred by this harness.
+    """
+    if entries is None:
+        return None
+    if not isinstance(entries, list):
+        raise ValueError("preview_suppressions must be a list of annotation records")
+    by_sequence = {frame["sequence"]: frame for frame in frames}
+    required = {"sequence", "frame_sha256", "detection_index", "expected_box",
+                "expected_confidence", "reason", "evidence_id"}
+    validated, seen = {}, set()
+    for incoming in entries:
+        if not isinstance(incoming, dict) or set(incoming) != required:
+            raise ValueError("preview suppression requires the exact annotation record fields")
+        record = deepcopy(incoming)
+        sequence, index = record["sequence"], record["detection_index"]
+        if type(sequence) is not int or sequence not in by_sequence:
+            raise ValueError("preview suppression sequence must identify an exact source frame")
+        frame = by_sequence[sequence]
+        if type(index) is not int or not 0 <= index < len(frame["detections"]):
+            raise ValueError("preview suppression index must identify an exact source detection")
+        if (sequence, index) in seen:
+            raise ValueError("duplicate preview suppression for one source detection")
+        seen.add((sequence, index))
+        sha = record["frame_sha256"]
+        if (not isinstance(sha, str) or len(sha) != 64
+                or any(character not in "0123456789abcdef" for character in sha)
+                or frame.get("sha256") != sha):
+            raise ValueError("preview suppression frame hash does not match the exact source image")
+        if "jpeg" in frame:
+            jpeg = frame["jpeg"]
+            if not isinstance(jpeg, bytes) or hashlib.sha256(jpeg).hexdigest() != sha:
+                raise ValueError("preview suppression source JPEG does not match its hash")
+        expected = {"box": record["expected_box"], "confidence": record["expected_confidence"]}
+        VisionService._validate_result(dict(width=frame["width"], height=frame["height"],
+                                             inference_ms=0., detections=[expected]))
+        if expected != frame["detections"][index]:
+            raise ValueError("preview suppression expected box/confidence does not match its source index")
+        if record["reason"] not in ("reviewed_duplicate", "reviewed_false_positive"):
+            raise ValueError("preview suppression reason must identify a reviewed duplicate or false positive")
+        evidence = record["evidence_id"]
+        if not isinstance(evidence, str) or not evidence.strip() or len(evidence) > 512:
+            raise ValueError("preview suppression evidence_id must contain 1..512 characters")
+        if frame["received_at"] <= selection["at"]:
+            raise ValueError("preview suppression cannot affect frames received before or at initial selection")
+        validated.setdefault(sequence, []).append(record)
+    for records in validated.values():
+        records.sort(key=lambda record: record["detection_index"])
+    return validated
 
 
 class _Camera:
@@ -230,7 +287,7 @@ def _snapshot(now, camera, candidate, preview):
 
 def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
            tick_seconds=.01, extra_worker_ms=0, tracker_factory=None,
-           image_provider=None):
+           image_provider=None, preview_suppressions=None):
     """Return scalar diagnostics, per-source-frame decisions and software durations.
 
     ``frames`` contain sequence/receipt, normalized detections, aligned appearance
@@ -247,6 +304,13 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
     not alter the synthetic scheduler clock or worker duration. They execute at
     the owner-side association boundary, not in the detector worker. Default
     replay remains the original ImageTracker path without benchmark overhead.
+
+    ``preview_suppressions`` is an optional list of exact sequence/image-hash/
+    source-detection annotation records. It removes only those measurements from
+    the observation passed to YawPreview after association and after an accepted
+    initial selection. Raw detections, tracker state, schedules and thresholds
+    are unchanged. This annotation-assisted counterfactual is not a deployable
+    policy; annotations and their identity judgments are external evidence.
     """
     frames, start, end, selection, max_hz, tick_seconds, extra_worker_ms = _inputs(
         frames, start, end, selection, mode, max_hz, tick_seconds, extra_worker_ms)
@@ -254,6 +318,7 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
         raise ValueError("tracker_factory must be callable")
     if image_provider is not None and (tracker_factory is None or not callable(image_provider)):
         raise ValueError("image_provider requires a custom tracker and must be callable")
+    suppressions = _preview_suppressions(preview_suppressions, frames, selection)
     now = start
     events, pending, decisions = [], [], {}
     counter = 0
@@ -298,6 +363,11 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
             "status": "not_replayed" if mode == "recorded" else "not_analyzed",
             "reason": ("not_in_recorded_observations" if mode == "recorded"
                                                    else "superseded_before_admission")}
+        if suppressions is not None:
+            requested = suppressions.get(sequence, [])
+            decisions[sequence]["preview_suppression"] = {
+                "status": "not_delivered" if requested else "not_requested",
+                "requests": deepcopy(requested), "suppressed_detection_indices": []}
         schedule(frame["received_at"], "camera", frame)
         if mode == "recorded" and frame.get("available_at") is not None:
             if frame["available_at"] > end:
@@ -319,6 +389,7 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
     last_consumer = {"valid": False, "reason": "selection_required", "value": 0}
     delivered_ages, worker_delays = [], []
     accepted_sequences = set()
+    filtered_sequence = filtered_observation = None
 
     while pending:
         now = pending[0][0]
@@ -403,6 +474,29 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
             "height": candidate.result["height"], "detections": candidate.result["detections"],
             "appearances": list(candidate.appearances),
         }
+        if suppressions is not None and observation is not None:
+            sequence = candidate.sample.sequence
+            if sequence != filtered_sequence:
+                requested = suppressions.get(sequence, [])
+                can_suppress = bool(selection_result and selection_result["accepted"])
+                removed = {record["detection_index"] for record in requested} if can_suppress else set()
+                retained = [index for index in range(len(observation["detections"])) if index not in removed]
+                filtered_sequence = sequence
+                filtered_observation = dict(observation,
+                    detections=[deepcopy(observation["detections"][index]) for index in retained],
+                    appearances=[observation["appearances"][index] for index in retained])
+                status = ("applied" if removed else "selection_not_accepted" if requested else "not_requested")
+                info = decisions[sequence]["preview_suppression"]
+                info.update(status=status, suppressed_detection_indices=sorted(removed))
+                decisions[sequence].update(preview_detection_indices=retained,
+                    preview_detections=deepcopy(filtered_observation["detections"]),
+                    preview_appearance_available=[value is not None for value in filtered_observation["appearances"]])
+                if requested:
+                    events.append({"kind": "preview_suppression", "at": now, "sequence": sequence,
+                                   "counterfactual": "annotation_assisted", **deepcopy(info)})
+            # Repeated owner ticks must supply the identical observation for a
+            # sequence, including a frame first delivered before selection.
+            observation = filtered_observation
         # New results arrive before expiry evaluation at this same instant.
         preview.observe(observation, now)
         for sequence in delivered:
@@ -419,8 +513,8 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
             if comparison is not None:
                 decision["association"] = deepcopy(comparison.records[sequence])
         if has_selection:
-            matches = [] if candidate is None else [(item, _iou(selection["box"], item["box"]))
-                for item in candidate.result["detections"] if item["confidence"] >= .5]
+            matches = [] if observation is None else [(item, _iou(selection["box"], item["box"]))
+                for item in observation["detections"] if item["confidence"] >= .5]
             matches = [(item, overlap) for item, overlap in matches if overlap >= selection["min_iou"]]
             selection_result = {"at": now, "box": selection["box"], "min_iou": selection["min_iou"],
                                 "identity_status": "human_unvalidated", "accepted": False}
@@ -491,7 +585,26 @@ def replay(frames, *, start, end, selection, mode="recorded", max_hz=10,
             for key in ("tracker_wall_ms", "tracker_cpu_ms", "image_provider_wall_ms", "image_provider_cpu_ms")}
         report["summary"]["limits"].extend([
             "Tracker and optional image-provider costs are measured on the owner side; they do not delay this synthetic clock.",
-            "All current detector candidates remain visible to selection; unassigned boxes have one-image ephemeral IDs.",
+            ("All current detector candidates remain visible to selection; unassigned boxes have one-image ephemeral IDs."
+             if suppressions is None else
+             "All current detector candidates remain in raw association output; only explicit annotation counterfactuals may suppress selection inputs."),
             "Native association indices supply IDs only; selection uses original detector boxes, confidence and appearance.",
+        ])
+    if suppressions is not None:
+        ordered = [record for sequence in sorted(suppressions) for record in suppressions[sequence]]
+        statuses = [decision["preview_suppression"] for decision in decisions.values()
+                    if decision["preview_suppression"]["requests"]]
+        report["summary"]["preview_counterfactual"] = {
+            "kind": "annotation_assisted_suppression", "deployable_policy": False,
+            "manifest_sha256": hashlib.sha256(json.dumps(ordered, sort_keys=True,
+                separators=(",", ":"), allow_nan=False).encode()).hexdigest(),
+            "requested_detections": len(ordered),
+            "suppressed_detections": sum(len(item["suppressed_detection_indices"]) for item in statuses),
+            "requested_frame_status_counts": dict(Counter(item["status"] for item in statuses)),
+        }
+        report["summary"]["limits"].extend([
+            "Annotation-assisted counterfactual, not a deployable policy; only exact reviewed detection indices are suppressed before selection recovery.",
+            "Annotations do not alter association, source receipts, worker schedules, thresholds or initial selection; unknown and unannotated candidates remain.",
+            "Avoiding one ambiguity stop does not establish recovery or correct identity later in the window.",
         ])
     return report
