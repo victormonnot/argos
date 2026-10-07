@@ -279,3 +279,71 @@ def test_held_policy_contract_cannot_be_silently_weakened(held_evidence, key, va
     with pytest.raises(SystemExit):
         cli.main(held_evidence["args"])
     assert not held_evidence["output"].exists()
+
+
+@pytest.fixture
+def candidate_evidence(held_evidence):
+    path = held_evidence["previous"] / "report.json"
+    prior = json.loads(path.read_text())
+    prior["runs"].extend(dict(policy=p, mode=m, window="unreviewed", run=sample_run())
+                         for p in cli.HELD_POLICIES if p not in cli.POLICIES for m in cli.MODES)
+    write(path, prior)
+    frozen = json.loads(held_evidence["protocol"].read_text())
+    frozen.update(version=3, policies=list(cli.CANDIDATE_POLICIES),
+                  candidate_recovery=deepcopy(cli.CANDIDATE_CONTRACT))
+    frozen["input_sha256"][str(path)] = cli.digest(path)
+    write(held_evidence["protocol"], frozen)
+    return held_evidence
+
+
+def test_candidate_cli_requires_all_five_previous_policies_and_keeps_labels_out(candidate_evidence):
+    assert cli.main(candidate_evidence["args"]) == 0
+    report = json.loads((candidate_evidence["output"] / "report.json").read_text())
+    assert report["configuration"]["policies"] == list(cli.CANDIDATE_POLICIES)
+    assert report["previous_comparison"]["required_legacy_policies"] == list(cli.HELD_POLICIES)
+    assert len(candidate_evidence["jobs"]) == 48
+    assert len(report["runs"]) == 12
+    for row in report["runs"]:
+        assert row["previous_semantic_parity"] == (True if row["policy"] in cli.HELD_POLICIES else None)
+    assert "argos/perception/candidate_recovery.py" in report["source_sha256"]
+    assert all(set(job) == {"source", "cache_sha256", "windows", "policy", "mode", "result", "threads", "max_hz"}
+               for job in candidate_evidence["jobs"])
+
+
+@pytest.mark.parametrize("policy", ["motion_held", "motion_held_duplicates"])
+@pytest.mark.parametrize("damage", ["missing", "changed"])
+def test_candidate_previous_held_evidence_cannot_be_missing_or_changed(candidate_evidence, policy, damage):
+    path = candidate_evidence["previous"] / "report.json"
+    prior = json.loads(path.read_text())
+    item = next(row for row in prior["runs"] if row["policy"] == policy)
+    if damage == "missing":
+        prior["runs"].remove(item)
+    else:
+        item["run"]["events"].append(dict(kind="recovery", at=.3, reason="changed"))
+    write(path, prior)
+    frozen = json.loads(candidate_evidence["protocol"].read_text())
+    frozen["input_sha256"][str(path)] = cli.digest(path)
+    write(candidate_evidence["protocol"], frozen)
+    with pytest.raises(SystemExit):
+        cli.main(candidate_evidence["args"])
+
+
+@pytest.mark.parametrize("key,value", [
+    ("scope", "all_paused"), ("competitor_similarity_margin", 0.),
+    ("persist_after_competitor_disappears", False), ("clear_pending_on_episode_entry", False),
+    ("annotations_available_to_policy", True), ("raw_detections_preserved", False),
+    ("multiple_eligible", "highest_score"), ("plausible_unknown_competitor", "ignore"),
+    ("confirmation", "one_image"), ("unchanged_deadline_and_consumer", False)])
+def test_candidate_contract_is_fixed_before_outcomes(candidate_evidence, key, value):
+    frozen = json.loads(candidate_evidence["protocol"].read_text())
+    frozen["candidate_recovery"][key] = value
+    write(candidate_evidence["protocol"], frozen)
+    with pytest.raises(SystemExit):
+        cli.main(candidate_evidence["args"])
+    assert not candidate_evidence["output"].exists()
+
+
+def test_candidate_protocol_requires_previous_comparison(candidate_evidence):
+    with pytest.raises(SystemExit):
+        cli.main(candidate_evidence["args"][:-2])
+    assert not candidate_evidence["output"].exists()

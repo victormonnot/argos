@@ -23,6 +23,8 @@ not inputs to the policy. They must not be silently relabeled to suit an outcome
 Protocol version 2 requires `--previous-comparison` to verify the unchanged
 legacy policies against the completed version 1 experiment. Protocol version 1
 retains its three original policies and can still run without this argument.
+Version 3 adds candidate qualification and binds a completed version 2 report;
+all five previous policies must reproduce their complete semantic results.
 
 ## Compared policies
 
@@ -37,11 +39,14 @@ and replay clocks. No learned ReID network is added. The runner compares:
 | `motion_duplicates` | Recalculated motion and strict duplicate grouping before recovery |
 | `motion_held` | A bounded motion estimate retained from an actual selected measurement (version 2) |
 | `motion_held_duplicates` | Retained motion and the same strict duplicate grouping (version 2) |
+| `motion_held_candidates` | Retained motion and explicit qualification during a lost/paused multi-candidate episode (version 3) |
 
-Version 1 compares the first three policies. Version 2 compares all five;
+Version 1 compares the first three policies. Version 2 compares the first five;
 `current`, `motion` and `motion_duplicates` are legacy parity controls. The
 viewer derives its selector and tables from the report's actual policy list,
 including when displaying a version 1 report.
+Version 3 compares all six. Construct experiments through `make_preview`, which
+selects the appropriate implementation.
 
 In `motion` and `motion_duplicates`, history contains only recent, measured, strong observations of the
 selected target. Every retained sample must be at most 0.7 seconds old relative to the candidate
@@ -55,7 +60,7 @@ of that prediction. Insufficient motion evidence retains the existing behavior.
 Motion remains an association aid: it never manufactures a detector observation
 or a fresh measurement for a skipped image.
 
-The two `motion_held` policies calculate and retain a scalar horizontal velocity
+The `motion_held` policies calculate and retain a scalar horizontal velocity
 when an actual strong selected measurement arrives. Its two measurements must
 have distinct, increasing sequence numbers and receipts no more than 0.7 seconds
 apart. The latest measurement becomes the estimate's anchor. Velocity is capped
@@ -95,6 +100,39 @@ identity guarantee. Nearby distinct people can look similar. Tests with competin
 people, unavailable evidence and delayed observations establish limited software
 contracts; they do not establish a real-world wrong-person rate.
 
+## Candidate qualification
+
+The version 3 candidate variant retains every raw box. It starts a competition
+episode only when the selected target is lost or paused and more than one strong
+detection is present. Outside that episode, the held-motion behavior remains
+unchanged, including trust in a returning solo native ID. An intact selected ID
+can continue beside another person, as it already does in production.
+
+During an episode, every candidate, including the old selected ID, must pass
+appearance, geometry and receipt gates. Recovery requires exactly one eligible
+candidate. A geometrically plausible competitor with unknown appearance blocks
+recovery; a known competitor less than 0.05 below the winner also blocks it,
+even if that competitor is just below the 0.88 eligibility threshold. Multiple
+eligible candidates remain ambiguous regardless of score separation. The margin
+is a fixed assumption, with a 1e-12 numeric tolerance, not calibrated identity
+confidence. Weak detections do not vote; geometrically incompatible candidates
+remain visible but do not block recovery.
+
+Entering an episode or encountering any refusal clears pending confirmation.
+The episode persists when a competitor disappears: two newly qualified images
+with increasing sequences and receipts are still required. Ambiguity holds zero
+correction until the existing deadline; it cannot renew the last selected
+measurement, appearance reference or motion estimate. Confirmed recovery ends
+the episode, while the unchanged dry consumer still applies its own admission
+checks. Stops and authority resets clear the episode.
+
+Two identical-looking people can pass the same gates, and a different person
+inheriting an active native ID can remain selected. Compatible duplicate boxes
+also remain ambiguous in this variant. The
+[synthetic multi-person qualification](multi-person-qualification.md) exposes
+these limits with evaluator-only symbolic truth. It does not supply real video
+identity validation or change the production multi-candidate stop.
+
 ## Reproducibility and resource scope
 
 The runner retains each complete source window, including history before the
@@ -105,6 +143,8 @@ A changed result must be attributable to selection/recovery: detector outputs,
 raw associations and the delivery schedule must remain unchanged.
 Version 2 additionally binds the previous completed recovery report and requires
 semantic parity for all three legacy policies, independently of execution costs.
+Version 3 requires parity for all five preceding policies and binds the new
+candidate policy source as part of its implementation provenance.
 
 CPU, wall time and process memory concern this cached replay on the desktop.
 They do not include fresh detector inference or establish laptop or physical

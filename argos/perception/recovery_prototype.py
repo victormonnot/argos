@@ -15,8 +15,9 @@ from .appearance import similarity
 from .image_tracks import _iou
 
 
-POLICIES = ("motion", "motion_duplicates", "motion_held", "motion_held_duplicates")
-HELD_POLICIES = ("motion_held", "motion_held_duplicates")
+POLICIES = ("motion", "motion_duplicates", "motion_held", "motion_held_duplicates",
+            "motion_held_candidates")
+HELD_POLICIES = ("motion_held", "motion_held_duplicates", "motion_held_candidates")
 DUPLICATE_POLICIES = ("motion_duplicates", "motion_held_duplicates")
 HISTORY_MAX_AGE_S = .7
 PREDICTION_MAX_HORIZON_S = .5
@@ -190,14 +191,14 @@ class RecoveryPrototype(YawPreview):
         if frame is None:
             self._policy_indices = []
             self._policy_detections = []
-            return super()._update(now)
+            return self._update_preview(now)
         self._motion_history = [sample for sample in self._motion_history
                                 if 0 <= frame["received_at"] - sample["received_at"]
                                 <= HISTORY_MAX_AGE_S]
         effective = self._effective_frame(frame, now)
         self._frame = effective
         try:
-            super()._update(now)
+            self._update_preview(now)
             if self.phase == "tracking":
                 target = next(item for item in effective["detections"]
                               if item["track_id"] == self._target_id)
@@ -213,6 +214,10 @@ class RecoveryPrototype(YawPreview):
                     self._remember_selected_motion(frame, target)
         finally:
             self._frame = frame
+
+    def _update_preview(self, now):
+        """Keep legacy lifecycle behavior separate from offline experiments."""
+        return super()._update(now)
 
     def _remember_selected_motion(self, frame, target):
         """Freeze velocity at a selected measurement, before history can age out.
@@ -308,4 +313,7 @@ class RecoveryPrototype(YawPreview):
 
 def make_preview(policy, *, on_recovery=None, on_policy=None):
     """Construct a fixed policy; importing it never installs a runtime hook."""
+    if policy == "motion_held_candidates":
+        from .candidate_recovery import CandidateRecoveryPrototype
+        return CandidateRecoveryPrototype(on_recovery=on_recovery, on_policy=on_policy)
     return RecoveryPrototype(policy, on_recovery=on_recovery, on_policy=on_policy)
