@@ -26,7 +26,7 @@ from examples.compare_vision import create_output, provenance, write_json
 from argos.console.config import validate_vision_hz
 from argos.console.vision import VisionService
 from argos.perception.appearance import AppearanceEncoder
-from argos.perception.continuity_replay import replay
+from argos.harness.continuity_replay import replay
 from argos.perception.yolox import YoloXPersonDetector, default_model_path, validate_inference_threads
 
 
@@ -353,7 +353,7 @@ def main(argv=None):
                 stream.write(json.dumps({k: v for k, v in result.items() if k != "jpeg"}, allow_nan=False) + "\n")
                 if len(frames) % 50 == 0:
                     print(f"Inferred {len(frames)}/{len(raw_frames)} original images", flush=True)
-        source_code = [Path(__file__), REPO / "argos/perception/continuity_replay.py",
+        source_code = [Path(__file__), REPO / "argos/harness/continuity_replay.py",
                        REPO / "argos/console/vision.py", REPO / "argos/console/yaw_preview.py",
                        REPO / "argos/backends/yaw_stream_source.py", REPO / "argos/backends/vision_bench_source.py"]
         origin = provenance()

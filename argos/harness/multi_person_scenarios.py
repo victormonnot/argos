@@ -300,6 +300,6 @@ def qualify(manifest):
 
 
 def write_viewer(path, report, manifest):
-    template = Path(__file__).with_name("static").joinpath("multi_person_qualification.html").read_text()
+    template = Path(__file__).resolve().parents[1].joinpath("perception/static/multi_person_qualification.html").read_text()
     payload = json.dumps(dict(report=report, manifest=manifest), allow_nan=False).replace("<", "\\u003c")
     Path(path).write_text(template.replace("/*__DATA__*/null", payload))

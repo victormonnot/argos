@@ -11,7 +11,7 @@ import time
 
 from argos.backends.edgetx_yaw_stream import SelectionResult, SourceSample
 from argos.backends.vision_bench_source import HTTP_TIMEOUT, PreviewError, _number
-from argos.backends.distance_source import DistanceValidator
+from argos.console.distance_validation import DistanceValidator
 
 
 class LocalDistanceSource:

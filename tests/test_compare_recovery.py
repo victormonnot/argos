@@ -149,6 +149,35 @@ def test_cli_workers_receive_no_review_or_oracle_paths(evidence):
     assert len(report["runs"]) == 6
 
 
+@pytest.mark.parametrize("historical", [False, True])
+def test_cli_rebinds_relocated_sources_and_preserves_frozen_comparison(evidence, historical):
+    import hashlib
+
+    path = evidence["source"] / "report.json"
+    base = json.loads(path.read_text())
+    replay = "argos/harness/continuity_replay.py"
+    sources = {replay.replace("harness", "perception") if historical else replay: cli.digest(cli.REPO / replay)}
+    for name in ("examples/compare_trackers.py", "examples/diagnose_continuity.py"):
+        content = (cli.REPO / name).read_bytes()
+        if historical:
+            content = content.replace(b"argos.harness.continuity_replay", b"argos.perception.continuity_replay")
+            content = content.replace(replay.encode(), replay.replace("harness", "perception").encode())
+        sources[name] = hashlib.sha256(content).hexdigest()
+    base["provenance"]["source_sha256"] = sources
+    write(path, base)
+    frozen = path.read_bytes()
+    protocol_value = json.loads(evidence["protocol"].read_text())
+    protocol_value["input_sha256"][str(path)] = cli.digest(path)
+    write(evidence["protocol"], protocol_value)
+    assert cli.main(evidence["args"]) == 0
+    report = json.loads((evidence["output"] / "report.json").read_text())
+    assert report["source_report_sha256"] == hashlib.sha256(frozen).hexdigest()
+    assert report["source_sha256"][replay] == cli.digest(cli.REPO / replay)
+    assert replay.replace("harness", "perception") not in report["source_sha256"]
+    assert all(cli.digest(cli.REPO / name) == digest for name, digest in report["source_sha256"].items())
+    assert path.read_bytes() == frozen
+
+
 def test_protocol_bound_evidence_cannot_change(evidence):
     evidence["ref"].write_text("{}")
     with pytest.raises(SystemExit):

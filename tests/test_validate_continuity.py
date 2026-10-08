@@ -53,6 +53,30 @@ def test_upstream_projection_excludes_only_downstream_intervention_and_cost():
     assert cli.upstream_projection(changed) == cli.upstream_projection(baseline)
 
 
+@pytest.mark.parametrize("historical", [False, True])
+def test_cli_rebinds_relocated_sources_without_changing_original_report(evidence, historical):
+    path = evidence.source / "report.json"
+    base = json.loads(path.read_text())
+    name = "argos/harness/continuity_replay.py"
+    base["provenance"]["source_sha256"][name.replace("harness", "perception") if historical else name] = (
+        cli.digest(evidence.repo / name))
+    runner = evidence.repo / "examples/diagnose_continuity.py"
+    runner.write_text('from argos.harness.continuity_replay import replay\n')
+    content = runner.read_bytes()
+    if historical:
+        content = content.replace(b"argos.harness", b"argos.perception")
+    base["provenance"]["source_sha256"]["examples/diagnose_continuity.py"] = hashlib.sha256(content).hexdigest()
+    write(path, base)
+    frozen = path.read_bytes()
+    assert cli.main(evidence.args) == 0
+    report = json.loads((evidence.output / "report.json").read_text())
+    assert report["source"]["report_sha256"] == hashlib.sha256(frozen).hexdigest()
+    assert report["source_sha256"][name] == cli.digest(evidence.repo / name)
+    assert name.replace("harness", "perception") not in report["source_sha256"]
+    assert report["source_sha256"]["examples/diagnose_continuity.py"] == cli.digest(runner)
+    assert path.read_bytes() == frozen
+
+
 @pytest.mark.parametrize("damage", ["identity", "detection", "receipt", "availability", "admission", "initial_selection"])
 def test_upstream_projection_keeps_every_causal_input(damage):
     baseline = native_run()
@@ -91,7 +115,8 @@ def test_removed_selected_id_uses_preceding_delivery_not_current_recovery():
 def evidence(tmp_path, monkeypatch):
     source, output, repo = tmp_path / "comparison", tmp_path / "validation", tmp_path / "repo"
     paths = ["examples/validate_continuity.py", "argos/perception/continuity_reference.py",
-             "argos/perception/continuity_replay.py", "argos/perception/tracker_comparison.py",
+             "argos/harness/continuity_replay.py", "argos/perception/tracker_comparison.py",
+             "argos/harness/continuity_provenance.py",
              "argos/perception/static/continuity_validation.html", "argos/perception/image_tracks.py"]
     for path in paths:
         destination = repo / path

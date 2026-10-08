@@ -5,7 +5,7 @@ import json
 import pytest
 
 from argos.console.yaw_preview import YawPreview
-from argos.perception.multi_person_scenarios import (
+from argos.harness.multi_person_scenarios import (
     POLICIES, build_manifest, canonical, evaluate_trace, freeze_manifest, qualify,
     read_manifest, run_scenario, semantic, validate_manifest, write_viewer,
 )
@@ -163,6 +163,8 @@ def test_cli_records_source_freeze_and_refuses_output_reuse(tmp_path, capsys):
     assert report["implementation_sha256"] == freeze["implementation_sha256"]
     assert report["manifest_file_sha256"] == freeze["manifest_file_sha256"]
     assert report["implementation_unchanged_after_execution"] is True
+    assert "argos/harness/multi_person_scenarios.py" in report["implementation_sha256"]
+    assert "argos/perception/multi_person_scenarios.py" not in report["implementation_sha256"]
     assert "argos/perception/candidate_recovery.py" in report["implementation_sha256"]
     assert "argos/backends/yaw_stream_source.py" in report["implementation_sha256"]
     assert "argos/perception/static/multi_person_qualification.html" in report["implementation_sha256"]

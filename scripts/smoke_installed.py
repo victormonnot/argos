@@ -10,6 +10,9 @@ from fastapi.testclient import TestClient
 import argos
 from argos.console.app import create_app
 from argos.console.config import ConsoleConfig
+from argos.console.distance_validation import DistanceValidator
+from argos.harness.continuity_replay import replay
+from argos.harness.multi_person_scenarios import qualify
 
 
 def main():

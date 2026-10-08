@@ -22,7 +22,8 @@ from examples.diagnose_continuity import digest, read_json
 from argos.perception.continuity_reference import (
     CONDITIONS, evaluate_replay, make_suppressions, validate_judgments, validate_reference,
 )
-from argos.perception.continuity_replay import replay
+from argos.harness.continuity_replay import replay
+from argos.harness.continuity_provenance import current_source_hashes
 from argos.perception.tracker_comparison import make_tracker
 
 
@@ -109,17 +110,17 @@ def main(argv=None):
         output = create_output(args.output_dir, source)
         write_json(output / "report.json", report)
         code = [Path(__file__), REPO / "argos/perception/continuity_reference.py",
-                REPO / "argos/perception/continuity_replay.py", REPO / "argos/perception/tracker_comparison.py",
+                REPO / "argos/harness/continuity_replay.py", REPO / "argos/perception/tracker_comparison.py",
+                REPO / "argos/harness/continuity_provenance.py",
                 REPO / "argos/perception/static/continuity_validation.html"]
         # Retain actual production dependency hashes, allowing only the replay
         # extension and benchmark view/runner to differ from the preceding brick.
-        allowed_changes = {"argos/perception/continuity_replay.py",
+        allowed_changes = {"argos/harness/continuity_replay.py",
                            "argos/perception/static/tracker_comparison.html", "examples/compare_trackers.py"}
-        for name, sha in base["provenance"]["source_sha256"].items():
-            if name not in allowed_changes and digest(REPO / name) != sha:
-                raise ValueError(f"source comparison dependency changed: {name}")
+        dependencies = current_source_hashes(REPO, base["provenance"]["source_sha256"],
+                                             allowed_changes=allowed_changes)
         source_hashes = {str(path.relative_to(REPO)): digest(path) for path in code}
-        source_hashes.update({name: digest(REPO / name) for name in base["provenance"]["source_sha256"]})
+        source_hashes.update(dependencies)
         report.update(source={"comparison": str(source), "report_sha256": baseline_hash,
                               "cache_sha256": base["cache"]["sha256"], "model": base["model"]},
                       reference={"path": str(args.reference.resolve()), "sha256": reference_hash,

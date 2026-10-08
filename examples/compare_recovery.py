@@ -23,7 +23,8 @@ from examples.compare_vision import create_output, write_json
 from examples.diagnose_continuity import digest, distribution, read_json
 from examples.validate_continuity import upstream_projection
 from argos.perception.continuity_reference import evaluate_replay, validate_judgments, validate_reference
-from argos.perception.continuity_replay import replay
+from argos.harness.continuity_replay import replay
+from argos.harness.continuity_provenance import current_source_hashes
 
 POLICIES = ("current", "motion", "motion_duplicates")
 HELD_POLICIES = (*POLICIES, "motion_held", "motion_held_duplicates")
@@ -254,12 +255,11 @@ def main(argv=None):
             frozen[previous_path] = previous_sha
             report["previous_comparison"] = dict(path=str(previous_path), sha256=previous_sha,
                                                    required_legacy_policies=list(previous_policies))
-        sources = dict(base["provenance"]["source_sha256"])
-        for name, sha in sources.items():
-            if name != "argos/perception/continuity_replay.py" and digest(REPO / name) != sha:
-                raise ValueError(f"production/comparison dependency changed: {name}")
+        sources = current_source_hashes(REPO, base["provenance"]["source_sha256"],
+                                        allowed_changes={"argos/harness/continuity_replay.py"})
         for name in ("examples/compare_recovery.py", "examples/validate_continuity.py",
-                     "argos/perception/continuity_reference.py", "argos/perception/continuity_replay.py",
+                     "argos/perception/continuity_reference.py", "argos/harness/continuity_replay.py",
+                     "argos/harness/continuity_provenance.py",
                      "argos/perception/recovery_prototype.py", "argos/perception/static/recovery_prototype.html"):
             sources[name] = digest(REPO / name)
         if protocol["version"] == 3:

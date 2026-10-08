@@ -19,6 +19,14 @@ are checked before/after execution. Default replays must reproduce the saved
 outcomes, excluding execution costs. ImageTracker and ByteTrack run under both
 clocks; every condition repeats twice to check semantic reproducibility.
 
+The replay orchestration lives in `argos.harness.continuity_replay`. Comparisons
+recorded before its move from `argos.perception` remain usable: the source check
+resolves that exact old path and verifies the two comparison/diagnostic runners
+with only their import and source-path substitutions reversed. Other dependency
+changes still fail the existing checks. New reports record actual current paths
+and hashes; the original comparison report and its hash remain unchanged. The
+[recovery comparison](recovery-prototype.md) uses the same relocation check.
+
 ## Two annotation passes
 
 Inspect every original image in the declared span first, drawing approximate

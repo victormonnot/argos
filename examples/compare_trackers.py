@@ -25,7 +25,7 @@ from examples.compare_vision import create_output, provenance, write_json
 from examples.diagnose_continuity import NativeFlight, digest, distribution, infer, read_windows
 from argos.console.config import validate_vision_hz
 from argos.perception.appearance import AppearanceEncoder
-from argos.perception.continuity_replay import replay
+from argos.harness.continuity_replay import replay
 from argos.perception.yolox import YoloXPersonDetector, validate_inference_threads
 
 TRACKERS = ("image", "bytetrack", "botsort")
@@ -231,7 +231,7 @@ def main(argv=None):
         (output / "inference.jsonl.partial").rename(output / "inference.jsonl")
         cache_hash = digest(output / "inference.jsonl")
         code = [Path(__file__), REPO / "examples/diagnose_continuity.py",
-                REPO / "argos/perception/continuity_replay.py",
+                REPO / "argos/harness/continuity_replay.py",
                 REPO / "argos/perception/tracker_comparison.py", REPO / "argos/perception/static/tracker_comparison.html",
                 REPO / "argos/console/vision.py", REPO / "argos/console/yaw_preview.py",
                 REPO / "argos/backends/yaw_stream_source.py", REPO / "argos/backends/vision_bench_source.py"]

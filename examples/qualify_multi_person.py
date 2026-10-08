@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from argos.perception.multi_person_scenarios import freeze_manifest, qualify, read_manifest, write_viewer
+from argos.harness.multi_person_scenarios import freeze_manifest, qualify, read_manifest, write_viewer
 
 
 def main(argv=None):
@@ -28,7 +28,7 @@ def main(argv=None):
     manifest, sha = read_manifest(args.scenario_manifest)
     args.output_dir.mkdir(parents=True, exist_ok=False)
     source_paths = (
-        "argos/perception/multi_person_scenarios.py", "examples/qualify_multi_person.py",
+        "argos/harness/multi_person_scenarios.py", "examples/qualify_multi_person.py",
         "argos/perception/candidate_recovery.py", "argos/perception/recovery_prototype.py",
         "argos/console/yaw_preview.py", "argos/backends/yaw_stream_source.py",
         "argos/backends/vision_bench_source.py", "argos/perception/appearance.py",

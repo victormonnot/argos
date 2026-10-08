@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from argos.perception.continuity_replay import replay
+from argos.harness.continuity_replay import replay
 from argos.perception.image_tracks import ImageTracker
 
 

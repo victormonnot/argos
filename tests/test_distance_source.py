@@ -1,7 +1,7 @@
 from copy import deepcopy
 import pytest
 
-from argos.backends.distance_source import DistanceValidator
+from argos.console.distance_validation import DistanceValidator
 from argos.backends.vision_bench_source import PreviewError
 from test_yaw_stream_source import snapshot, pause
 from test_apparent_distance import box
