@@ -1,208 +1,137 @@
 # ARGOS
 
-**A local console for drone observation, MAVLink diagnostics, recorded-session analysis and manual simulation flight.**
+I’m building ARGOS so an operator can give a drone a mission and let the drone
+do it by itself.
 
-ARGOS brings camera images, received measurements and reception incidents into
-one operator interface. **Live MAVLink** exposes protocol
-details; **Sessions** lets you replay captured video, matched detections and
-sampled flight state alongside telemetry, or inspect MAVLink messages and reception gaps.
-**Flight controls** adds mouse, touch and optional keyboard controls for a dedicated
-GPS-free Gazebo/ArduPilot SITL session.
+I’m starting with one drone and simple missions. The goal is mission autonomy
+with either a single drone or a swarm, depending on what’s needed.
 
-![ARGOS console showing the Gazebo camera and ArduPilot SITL telemetry](docs/images/observation.png)
+[![Outdoor ARGOS test showing the drone, my laptop and radio, and the person detected in the drone’s camera](docs/images/outdoor-yaw-demo.jpg)](https://victormonnot.com/projects/argos/)
 
-The console remains passive by default. Web manual flight requires the explicit
-`--sim-control` option and the [isolated simulation profile](docs/web-control.md).
-It is not enabled for physical hardware. Neutral controls do not hold horizontal
-position: the simulated drone can drift without GPS.
-Optional [person detection](docs/vision.md) and [visual framing](docs/framing.md)
-add image observations, Full framing in AltHold and framing with pilot-controlled
-throttle in Stabilize.
-For a physical camera, [Yaw preview](docs/vision.md#physical-camera-yaw-preview)
-shows a bounded horizontal correction for a selected person without sending
-commands to a drone or radio.
-The separate experimental [ARGOS FLY workflow](docs/argos-fly.md) prepares a
-continuous Pocket yaw-assist stream, a final radio profile and target selection
-from SC. It preserves manual pilot channels and still requires the grouped
-receiver and flight checks described in the guide.
-Other experimental perception, guidance and simulation modules are tested
-separately. Onboard autonomy and swarm coordination are research directions,
-not capabilities delivered by this interface.
+*One step so far: ARGOS turns the drone to keep me centered in its camera image.
+I still control the rest of the flight.*
 
-The interface is in English. This documentation uses its on-screen labels
-when describing navigation.
+**[Watch the demo and see the project timeline →](https://victormonnot.com/projects/argos/)**
 
-## Try the console
+## Where it is now
 
-Verified environment: **Ubuntu 24.04, Python 3.12**. The package declares Python
-3.11 or newer; other OS/version combinations have not all been validated.
-Physical camera input uses Linux/V4L2 and still needs testing on the chosen
-hardware. Gazebo is required for live simulation; recorded-flight replay does not use it.
+The first task is keeping a person in view. The drone sends its camera feed to
+a computer on the ground, where ARGOS detects the person and works out the
+correction to send through the radio. The pilot can take over with the sticks.
 
-From a source checkout, install the console and MAVLink reader:
+- **Real flights:** I’ve tested yaw assistance indoors and outdoors with a small
+  FPV drone. Distance control didn’t work in the outdoor test, so I’m still
+  working on it.
+- **Simulation:** I use Gazebo and ArduPilot to test flight controls and visual
+  framing. A person can be selected in the camera image, then the drone tries
+  to keep them centered and at the same size in the image.
+- **The interface:** I built a local web console to see the camera, detections,
+  pilot inputs and radio status, inspect autopilot data (MAVLink), and record flights
+  to replay and debug afterward.
+
+Current work includes improving person detection, keeping track of the same
+person when detections drop out, and making distance control work reliably.
+Moving the compute onboard and autonomous missions come later; the setup above
+still uses the ground computer and a pilot.
+
+## Try a recorded flight
+
+You can explore the interface without a drone or simulator. This repository
+includes a **36-second Gazebo/ArduPilot flight recording**, with camera images,
+detections, flight events and telemetry.
+
+![ARGOS replaying the included simulated flight, with camera, timeline and recorded flight data](docs/images/replay-demo.png)
+
+Clone the repository and install the replay dependencies. These commands are
+verified on **Ubuntu 24.04 with Python 3.12**; the package requires Python 3.11+.
 
 ```sh
+git clone https://github.com/victormonnot/argos.git
+cd argos
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e '.[console,mavlink]'
-```
-
-### Explore a recorded flight without a simulator
-
-Start with the [provided inspection-yard flight](examples/demo-flight/README.md):
-36 seconds of actual Gazebo/ArduPilot SITL flight, captured by ARGOS. It includes
-the camera images, matched detections, sampled flight state, request events and
-received telemetry. The two recording files are included in this source checkout.
-
-```sh
-python examples/verify_demo_flight.py
 python -m argos.console --recordings-dir examples/demo-flight --port 8082
 ```
 
-Open **http://127.0.0.1:8082 → Sessions → Recording 05aa147d**. **Flight replay**
-opens automatically for that recording. Try **Play**, drag the time cursor, or
-select a flight event to jump to it. The [guided timeline](examples/demo-flight/README.md)
-points to target selection, Engage, Closer, Farther, manual takeover and landing.
-Open **Measurements**, **MAVLink messages** and **Analysis** to inspect the
-received data behind the flight.
+Open **http://127.0.0.1:8082 → Sessions → Recording 05aa147d**, then press **Play**.
+Scrub the timeline to see target selection, closer/farther requests and the
+return to manual control. Open **Measurements**, **MAVLink messages** or
+**Analysis** to inspect the recorded data. Stop the server with **Ctrl-C**.
 
-This is the actual ARGOS console reading a completed recording. Playback is
-interactive; the historical flight cannot be steered or changed. Gazebo, SITL,
-camera hardware, an ONNX model and OpenCV are not needed for this replay. No live
-source is configured, and flight control is disabled in this invocation. Port
-8082 keeps it separate from the manual simulation on 8081.
+This plays a completed simulation recording. It does not connect to hardware,
+and playback does not rerun the detector. The [demo guide](examples/demo-flight/README.md)
+has a short walkthrough, capture details and file verification instructions.
 
-![ARGOS Flight replay showing an archived inspection-yard flight](docs/images/replay-demo.png)
+## Hardware and simulation
 
-The original [58-frame ground telemetry extract](examples/demo/README.md) remains
-available as a smaller protocol-analysis example.
+For your own sources, start an empty console with `python -m argos.console`
+and open **http://127.0.0.1:8080**. Live camera input uses Linux/V4L2; the
+simulator and radio workflows have their own dependencies and setup steps.
 
-To start an empty console for your own sources, run `python -m argos.console`
-and open **http://127.0.0.1:8080**. Configure sources at startup or in **Sources**;
-a missing camera is never replaced with the prerecorded flight. The server
-listens on localhost only. For personal captures, use the normal recording
-directory rather than the distributed example directory.
+| What you want to do | Guide |
+| --- | --- |
+| Connect camera and telemetry, inspect messages, record and replay sessions | [Console](docs/console.md) · [MAVLink](docs/mavlink-transport.md) |
+| Run Gazebo/ArduPilot and fly from the browser | [Simulator setup](docs/sitl-observation.md) · [Flight controls](docs/web-control.md) · [Visual framing](docs/framing.md) |
+| Use physical-camera yaw assistance through a Pocket radio | [ARGOS FLY](docs/argos-fly.md) |
+| Experiment with pitch assistance based on a person’s size in the image | [ARGOS DST](docs/argos-distance.md) |
+| Capture real-flight video and pilot/radio observations | [Filming](docs/filming.md) · [Demo view](docs/demo-view.md) |
+| Compare person detectors or load a custom model | [Detector comparison](docs/vision-comparison.md) · [Custom models](docs/custom-vision-models.md) |
+| Investigate tracking and target loss on saved recordings | [Tracker comparison](docs/tracker-comparison.md) · [Target loss](docs/continuity-diagnostics.md) |
 
-### Receive the SITL camera and telemetry
+The physical workflows are experiments with specific radio profiles and receiver
+checks. Apparent size is not a distance measurement in metres. Follow the
+relevant guide for setup, pilot takeover and current limits.
 
-The [SITL + Gazebo guide](docs/sitl-observation.md) specifies the repositories,
-revisions, model preparation and three processes needed to reproduce ground
-observation with Gazebo Harmonic and ArduPilot SITL. The [session guide](docs/running.md)
-covers shutdown, restart, tmux and access from another computer over SSH.
+<details>
+<summary>Earlier hardware benches and other technical guides</summary>
 
-### Fly the simulation with mouse or touch
+- [Betaflight USB readout](docs/betaflight-probe.md)
+- [EdgeTX USB display](docs/edgetx-usb-display.md), [mixer bench](docs/edgetx-usb-mixer-bench.md) and [native guard](docs/edgetx-native-guard-bench.md)
+- [Vision-to-channel bench](docs/edgetx-vision-bench.md) and [disarmed RF yaw bench](docs/edgetx-rf-yaw-bench.md)
+- [Virtual-radio simulation bench](docs/radio-bench.md)
+- [Person detection](docs/vision.md) and [Gazebo scenes](examples/gazebo/README.md)
+- [Session lifecycle and SSH access](docs/running.md)
+- [Small telemetry-only example](examples/demo/README.md)
 
-One supported Linux PC can run the simulator, console and browser together.
-A second computer and SSH tunnel are optional; the commands below are local.
+</details>
 
-After installing the pinned simulator dependencies from the SITL guide, start
-the separate web-control session from the ARGOS repository root:
+## Development
+
+[![CI](https://github.com/victormonnot/argos/actions/workflows/ci.yml/badge.svg)](https://github.com/victormonnot/argos/actions/workflows/ci.yml)
+
+The core is Python, with a plain HTML/CSS/JavaScript interface and EdgeTX Lua
+scripts for the radio. Browser assets are served locally; using the console
+does not require Node.js or a frontend build.
+
+| Directory | Contents |
+| --- | --- |
+| `argos/console/` | Web API, interface, camera/telemetry state, recording and replay |
+| `argos/backends/` | MAVLink, radio links and simulation adapters |
+| `argos/core/`, `argos/perception/`, `argos/guidance/`, `argos/safety/` | Shared contracts, detection/tracking, control laws and validation |
+| `argos/harness/`, `examples/` | Offline experiments, simulator launchers and bundled recordings |
+| `scripts/edgetx/` | Lua scripts for the Pocket radio |
+| `tests/` | Python and browser checks |
+
+See the [architecture guide](docs/architecture.md) for the component boundaries
+and the [validation notes](docs/validation.md) for dated test reports.
+
+### Verify a change
+
+From the checkout, with the Python environment activated, run the same Python
+checks as CI. Lua and FFmpeg enable the corresponding integration tests;
+the `tracking` extra includes the optional vision/tracker dependencies.
 
 ```sh
-.venv/bin/python examples/run_web_control.py \
-  --ardupilot-dir ../ardupilot \
-  --gazebo-dir ../ardupilot_gazebo
+sudo apt-get update
+sudo apt-get install -y lua5.4 ffmpeg
+python -m pip install -e '.[dev,mavlink,plot,console,console-test,radio-profile,tracking]'
+python -m pytest -q -ra
+python examples/verify_demo.py
+python examples/verify_demo_flight.py
 ```
 
-Open **http://127.0.0.1:8081** and choose **Flight controls**. Take control, select
-AltHold or Stabilize on the ground, prepare and arm. AltHold uses held
-climb/descent buttons; Stabilize uses a slider and +/− buttons for manual
-throttle. Direction buttons work while held; touch supports simultaneous axes.
-Once airborne, select the other flight mode and use **Switch mode**. The service
-confirms the change from the autopilot and transfers the vertical input; entering
-Stabilize resumes manual throttle. Keyboard shortcuts are optional. The [web-control guide](docs/web-control.md)
-explains the flight sequence, input release, GPS-free profile and current limits.
-
-For the compact hangar scene, use `--scene inspection` with the person assets
-and vision options documented in the [Gazebo scene guide](examples/gazebo/README.md).
-
-The launcher uses its own model copy, Gazebo partition, ports and SITL files;
-**Ctrl-C** stops its three child processes. It does not modify the installed
-models or an existing observation session.
-
-For an automated flight with an independent virtual pilot, see the
-[virtual-radio and assistance bench](docs/radio-bench.md). It checks selective
-pitch/yaw assistance, pilot-owned throttle, takeover and simulated source loss,
-with a passive console, recordings and a per-run report. It requires no radio
-hardware and does not enable physical flight control.
-
-To compare the available person detectors on identical saved images, use the
-[offline vision comparison](docs/vision-comparison.md). It reruns Tiny and S with
-the same tracker and reports detections, display-ID observations and processing
-time without starting a camera or simulator. Its [visual export](docs/vision-comparison.md#view-tiny-and-s-on-the-same-image)
-shows the recomputed Tiny/S boxes on matching images in a portable local browser
-viewer, without running inference again.
-
-## Available features
-
-| View | Purpose |
-| --- | --- |
-| Observation | Camera image, reported mode, battery, attitude and NED position; each reception has its own freshness limit. |
-| Flight controls | Opt-in manual Gazebo/SITL flight, held mouse/touch controls and optional keyboard, with the live camera visible. |
-| Incidents and recovery (incidents and recovery) | Available data, observed interruptions, receiver reopening and reception recovery. |
-| Live MAVLink (live MAVLink) | Received message types and components, counters, approximate rates, fields and bytes; the display can be frozen. |
-| Sessions | Captured video and matched boxes, framing intervals and centering/relative-size curves linked to replay, flight events, telemetry and reception analysis. |
-
-MAVLink transports include UDP, TCP and serial. The `ardupilotmega` dialect is
-used to decode MAVLink 1 and 2. Images come from a Gazebo sensor or a local V4L2
-device. The JSONL journal retains received MAVLink frames. Optional visual capture
-adds JPEG images, matched detections, sampled control state and operator-request
-events in a separate SQLite file; it is not a complete outgoing-command log.
-Analog video alone supplies no MAVLink measurements. A recent reception does not measure
-radio latency or the physical age of a sensor measurement; an interruption alone
-does not identify its cause.
-
-For a Betaflight controller exposing USB MSP, the separate
-[USB readout](docs/betaflight-probe.md) reports identity, attitude, status and
-processed RC channels through a finite command-line probe. It supports MSP API
-1.48 and sends only allowlisted read queries; it does not enable web telemetry
-or physical flight commands.
-
-For an EdgeTX radio, the separate [USB display test](docs/edgetx-usb-display.md)
-checks PC messages and acknowledgements with a Lua tool on the radio screen.
-It does not change model settings or send flight commands.
-The following [mixer bench](docs/edgetx-usb-mixer-bench.md) exercises one unused
-channel in a copied model with both RF modules disabled and the aircraft
-disconnected. Its script timeout is not a flight failsafe.
-The [native guard bench](docs/edgetx-native-guard-bench.md) adds a radio-side
-stale-output gate and a deliberately held-value fixture, still with RF off.
-The [vision-to-channel bench](docs/edgetx-vision-bench.md) connects a selected
-person in the real-camera Yaw preview to unused CH32 for a finite session, with
-both RF modules OFF and the existing native manual/freshness gate.
-The separate [disarmed RF yaw bench](docs/edgetx-rf-yaw-bench.md) checks a small
-fixed yaw sequence received by a USB-connected Betaflight controller, with
-throttle, ARM and crash flip held low in a dedicated radio model. It requires
-removed propellers and no aircraft battery; it is not a flight backend.
-
-Recordings are stored in `~/.local/share/argos/recordings/`, or in
-`$XDG_DATA_HOME/argos/recordings/` when that variable contains an absolute path.
-Use `--recordings-dir` to choose another directory. Recording limits and closure
-reasons are described in the [console guide](docs/console.md).
-
-## Repository layout
-
-| Directory | Role |
-| --- | --- |
-| `argos/console/` | Receivers, console state, recording, archives and local API. |
-| `argos/console/static/` | HTML/CSS/JavaScript interface with local fonts; no build server required. |
-| `argos/backends/mavlink/` | Transports, decoding, measurement validation and recording format. |
-| `argos/core/`, `argos/perception/`, `argos/guidance/`, `argos/safety/` | Contracts and experiments, plus the optional live image detector, tracker and framing law. |
-| `argos/backends/attitude_sim.py`, `argos/harness/` | Simulation and instrumentation, including link statistics reused by live MAVLink. |
-| `tests/`, `examples/` | Automated checks and runnable examples. |
-
-Further reading: [architecture and data flow](docs/architecture.md), [console and API](docs/console.md),
-[manual web flight and control API](docs/web-control.md), [visual framing](docs/framing.md),
-[MAVLink transport and recording format](docs/mavlink-transport.md),
-[validation environment](docs/validation.md).
-
-## Verify a change
-
-```sh
-python -m pip install -e '.[dev,mavlink,plot,console,console-test,radio-profile]'
-python -m pytest -q
-```
-
-Browser tests use Node.js 22 and Playwright:
+Browser tests use **Node.js 22** and Playwright:
 
 ```sh
 npm ci
@@ -210,29 +139,15 @@ npx playwright install --with-deps chromium
 npm run test:browser
 ```
 
-They use an isolated local server and test responses, without connecting to a
-simulator or an existing console. CI checks Python behavior, browser workflows
-and wheel installation with its web assets. Node.js and Playwright are not
-required to use ARGOS.
-
-C++, a custom MAVLink dialect and a real onboard video transport remain future
-work. Reception tests that simulate faults are development tools; the interface
-does not expose fault-injection controls.
+They run against an isolated local server with simulated responses.
+[CI](.github/workflows/ci.yml) also builds a wheel and checks its imports, CLI
+and web assets in a separate environment. These checks exercise the software;
+they do not establish real-flight performance.
 
 ## License
 
-ARGOS code is distributed under the [MIT license](LICENSE). Bundled fonts retain
-their [OFL licenses and provenance](argos/console/static/fonts/README.md).
-ArduPilot and its Gazebo plugin are external projects with their own licenses.
-
-Optional [camera-based person detection and tracking](docs/vision.md) adds a
-walking-person Gazebo scene and CPU inference during manual simulated flight.
-The pilot can explicitly engage experimental [visual framing](docs/framing.md)
-with `--framing`. Manual attitude input stops the assistance; in the Stabilize
-manual-throttle variant, throttle adjustments keep framing active. This does not
-establish outdoor following or horizontal position hold.
-
-**Gentle / Normal / Responsive** adjusts approach and retreat response while
-keeping centering settings and command limits unchanged. After a visual capture,
-open **Sessions → Flight replay → Framing report** to inspect the observed
-assistance intervals, relative-size error and interruptions against the video.
+ARGOS code is [MIT licensed](LICENSE). Bundled [fonts](argos/console/static/fonts/README.md)
+and [tracker code](argos/perception/_vendor/README.md) retain their own licenses
+and attribution. ArduPilot and its Gazebo plugin are external projects;
+the [recorded demo](examples/demo-flight/README.md#rendered-asset-attribution)
+documents the rendered assets it uses.
