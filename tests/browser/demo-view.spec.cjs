@@ -272,7 +272,7 @@ test('fullscreen demo fills the screen and keeps the complete native camera imag
 
 function attachPocketReports(model) {
   const cameraState = model.modifyState;
-  const reports = { receivedAt: null, age: .02, modify: () => {} };
+  const reports = { receivedAt: null, lastReceivedAt: null, age: .02, modify: () => {} };
   model.modifyState = state => {
     cameraState(state);
     const sample = {
@@ -282,6 +282,7 @@ function attachPocketReports(model) {
       yaw_phase: 'A', pitch_phase: 'A', sticks: { roll: 0, pitch: -512, throttle: 1024, yaw: 256 },
       lua_outputs: { yaw: { valid: true, value: 82 }, pitch: { valid: true, value: -20 } },
     };
+    reports.lastReceivedAt = sample.received_at;
     Object.assign(state.yaw_assist, {
       session: sample.session, generation: sample.generation, ticket: sample.ticket, ack: sample.ack,
       radio_state: 'A', radio_cause: 'A', radio_mode: 'D', radio_yaw_phase: 'A', radio_pitch_phase: 'A',
@@ -901,14 +902,83 @@ test('history and radar memory reset for a new run and camera, with a bounded re
   expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
 });
 
-async function prepareLastReport(page, model) {
+async function installDemoClock(page) {
   await page.clock.install();
+  await page.addInitScript(() => {
+    // Mock HTTP runs in Node, outside Playwright's browser clock. Track body
+    // consumption and native image loading so time cannot outrun mock replies.
+    const fetch = window.fetch.bind(window);
+    window.demoPendingBodies = 0;
+    window.demoPendingImages = 0;
+    const Image = window.Image;
+    window.Image = class extends Image {
+      constructor(...args) {
+        super(...args);
+        window.demoPendingImages += 1;
+        let pending = true;
+        const done = () => {
+          if (pending) { pending = false; window.demoPendingImages -= 1; }
+        };
+        this.addEventListener('load', done, { once: true });
+        this.addEventListener('error', done, { once: true });
+      }
+    };
+    window.fetch = async (...args) => {
+      window.demoPendingBodies += 1;
+      let pending = true;
+      const done = () => {
+        if (pending) { pending = false; window.demoPendingBodies -= 1; }
+      };
+      try {
+        const response = await fetch(...args);
+        if (!response.ok) done();
+        for (const method of ['json', 'blob']) {
+          const read = response[method].bind(response);
+          response[method] = (...options) => read(...options).finally(done);
+        }
+        return response;
+      } catch (error) { done(); throw error; }
+    };
+  });
+}
+
+async function pauseDemoClock(page, model) {
+  await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 100));
+  await expect.poll(() => page.evaluate(() => window.demoPendingBodies + window.demoPendingImages), { intervals: [10] }).toBe(0);
+  const browserOrigin = await page.evaluate(() => performance.now());
+  const serverOrigin = model.lastAt;
+  let now = serverOrigin;
+  model.clock = () => now;
+  // Timestamp each mock response at the actual browser time, not the end of
+  // the next clock step: an early JPEG must never look like a future frame.
+  await page.route('**/api/**', async route => {
+    const browserNow = await page.evaluate(() => performance.now());
+    now = Math.max(now, serverOrigin + (browserNow - browserOrigin) / 1000);
+    await route.fallback();
+  });
+}
+
+async function advanceDemoClock(page, milliseconds) {
+  const settled = () => expect.poll(() => page.evaluate(() => window.demoPendingBodies + window.demoPendingImages), { intervals: [10] }).toBe(0);
+  await settled();
+  for (let remaining = milliseconds; remaining > 0; remaining -= 100) {
+    const step = Math.min(100, remaining);
+    await page.clock.runFor(step);
+    await settled();
+  }
+}
+
+async function prepareLastReport(page, model) {
+  await installDemoClock(page);
   const camera = await setupDemoCamera(page, model);
   const reports = attachPocketReports(model);
-  reports.receivedAt = 1_000_000 + model.clock() - .02;
   await enterDemo(page);
   await expectPocketReady(page);
-  await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 100));
+  await pauseDemoClock(page, model);
+  // Freeze an already consumed report only after setup and the clock pause.
+  // UI setup speed must not spend the receipt's 350 ms freshness budget.
+  reports.receivedAt = reports.lastReceivedAt;
+  await expectPocketReady(page);
   return { camera, reports };
 }
 
@@ -922,7 +992,7 @@ function expirePocketReport(runtime) {
 async function showLastReport(page, reports) {
   reports.age = .5;
   reports.modify = expirePocketReport;
-  await page.clock.runFor(150);
+  await advanceDemoClock(page, 150);
   await expect(page.locator('#demo-summary')).toHaveAttribute('data-held', 'true');
 }
 
@@ -939,11 +1009,11 @@ test('demo retains a muted last report through backend expiry without extending 
   await expect(page.locator('.demo-rail').first()).toHaveCSS('opacity', '0.5');
   await expect(page.locator('#demo-target-state')).toHaveText('Tracked');
   await expect(page.locator('#demo-shot-state')).toHaveText('LAST REPORT');
-  await page.clock.runFor(300); // The bounded history samples at 250 ms.
+  await advanceDemoClock(page, 300); // The bounded history samples at 250 ms.
   await expect(page.locator('.demo-history-track[data-lane="yaw"] .demo-segment[data-state="unknown"]:not([hidden])')).not.toHaveCount(0);
   await page.screenshot({ path: test.info().outputPath('demo-last-report.png'), fullPage: true });
   reports.age = 1.01;
-  await page.clock.runFor(100);
+  await advanceDemoClock(page, 100);
   await expectUnavailable(page, ALL_POCKET_FIELDS);
   await expect(page.locator('#demo-report-hint')).toBeHidden();
   expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
@@ -951,13 +1021,13 @@ test('demo retains a muted last report through backend expiry without extending 
 
 test('last report expires locally even when HTTP keeps repeating a fresh age and receipt', async ({ page, model }) => {
   const { reports } = await prepareLastReport(page, model);
-  await page.clock.runFor(450);
+  await advanceDemoClock(page, 450);
   await expect(page.locator('#demo-summary')).toHaveAttribute('data-held', 'true');
-  await page.clock.runFor(650);
+  await advanceDemoClock(page, 650);
   await expectUnavailable(page, ALL_POCKET_FIELDS);
   // Only a genuinely new receipt can restore a current report.
   reports.receivedAt = null;
-  await page.clock.runFor(150);
+  await advanceDemoClock(page, 150);
   await expectPocketReady(page);
   await expect(page.locator('#demo-summary')).toHaveAttribute('data-held', 'false');
 });
@@ -988,7 +1058,7 @@ for (const change of ['disconnected', 'disabled', 'malformed', 'correlation', 'g
       await page.locator('#demo-button').click();
       await enterDemo(page);
     }
-    await page.clock.runFor(200);
+    await advanceDemoClock(page, 200);
     await expect(page.locator('#demo-summary')).toHaveAttribute('data-held', 'false');
     await expect(page.locator('#demo-mode')).toHaveText('Unavailable');
     await expect(page.locator('#demo-yaw-correction')).toHaveText('—');
@@ -1007,7 +1077,7 @@ for (const next of ['manual', 'waiting', 'paused']) {
       runtime.pilot_sample.lua_outputs.yaw = { valid: false, value: 0 };
       runtime.assistance.yaw = { state: next, valid: false, value: null };
     };
-    await page.clock.runFor(200);
+    await advanceDemoClock(page, 200);
     await expect(page.locator('#demo-summary')).toHaveAttribute('data-held', 'false');
     await expect(page.locator('#demo-yaw-state')).toHaveText({ manual: 'Manual', waiting: 'Waiting', paused: 'Paused' }[next]);
     await expect(page.locator('#demo-yaw-correction')).toHaveText('—');
@@ -1016,12 +1086,12 @@ for (const next of ['manual', 'waiting', 'paused']) {
 }
 
 async function setupSettledTimeline(page, model) {
-  await page.clock.install();
+  await installDemoClock(page);
   await setupDemoCamera(page, model);
   const reports = attachPocketReports(model);
   await enterDemo(page);
   await expectPocketReady(page);
-  await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 100));
+  await pauseDemoClock(page, model);
   return reports;
 }
 
@@ -1044,7 +1114,7 @@ const visibleTimeline = (page, lane, state) => page.locator(`.demo-history-track
 test('brief pause and waiting reports use hatches and a settled caption while Inspect keeps each observed state', async ({ page, model }) => {
   const reports = await setupSettledTimeline(page, model);
   reports.modify = runtime => setReportedAxis(runtime, 'pitch', 'paused');
-  await page.clock.runFor(150);
+  await advanceDemoClock(page, 150);
   await expect(page.locator('#demo-pitch-state')).toHaveText('Paused');
   await expect(page.locator('#demo-pitch-detail')).toHaveText('Paused');
   await expect(page.locator('#demo-pitch-label')).toBeHidden();
@@ -1053,13 +1123,13 @@ test('brief pause and waiting reports use hatches and a settled caption while In
   await expect(page.locator('#demo-history-detail')).toContainText('Pitch Paused');
   const pauseAt = await page.evaluate(() => performance.now());
   reports.modify = runtime => setReportedAxis(runtime, 'pitch', 'waiting');
-  await page.clock.runFor(200);
+  await advanceDemoClock(page, 200);
   await expect(page.locator('#demo-pitch-label')).toBeHidden();
   await inspectTimeline(page);
   await expect(page.locator('#demo-history-detail')).toContainText('Pitch Waiting');
   const waitingAt = await page.evaluate(() => performance.now());
   reports.modify = runtime => setReportedAxis(runtime, 'pitch', 'paused');
-  await page.clock.runFor(400); // Cross 500 ms plus one 100 ms render tick.
+  await advanceDemoClock(page, 400); // Cross 500 ms plus one 100 ms render tick.
   await expect(page.locator('#demo-pitch-label')).toHaveText('Standby');
   await expect(page.locator('#demo-pitch-label')).toBeVisible();
   const now = await page.evaluate(() => performance.now());
@@ -1072,9 +1142,9 @@ test('brief pause and waiting reports use hatches and a settled caption while In
   await expect(visibleTimeline(page, 'pitch', 'waiting')).toHaveCount(0);
   await expect(page.locator('.demo-history-track[data-lane="pitch"] .demo-interruption:not([hidden])')).not.toHaveCount(0);
   reports.modify = () => {};
-  await page.clock.runFor(150);
+  await advanceDemoClock(page, 150);
   await expect(page.locator('#demo-pitch-detail')).toHaveText('Assisted');
-  await page.clock.runFor(600);
+  await advanceDemoClock(page, 600);
   await expect(page.locator('#demo-pitch-label')).toBeHidden();
   await expect(page.locator('#demo-pitch-detail')).toHaveText('Assisted');
   expect(model.calls.filter(call => call.method !== 'GET')).toEqual([]);
@@ -1082,9 +1152,9 @@ test('brief pause and waiting reports use hatches and a settled caption while In
 
 test('brief manual takeover changes live authority immediately, then sustained ownership gets a block and a long label', async ({ page, model }) => {
   const reports = await setupSettledTimeline(page, model);
-  await page.clock.runFor(2200);
+  await advanceDemoClock(page, 2200);
   reports.modify = runtime => setReportedAxis(runtime, 'pitch', 'manual');
-  await page.clock.runFor(200);
+  await advanceDemoClock(page, 200);
   await expect(page.locator('.demo-axis[data-axis="pitch"] .demo-rail[data-kind="pilot"]')).toHaveAttribute('data-active', 'true');
   await expect(page.locator('.demo-axis[data-axis="pitch"] .demo-rail[data-kind="argos"]')).toHaveAttribute('data-active', 'false');
   await expect(page.locator('#demo-pitch-detail')).toHaveText('Manual');
@@ -1092,16 +1162,16 @@ test('brief manual takeover changes live authority immediately, then sustained o
   await expect(page.locator('#demo-history-detail')).toContainText('Pitch MANUAL');
   await expect(visibleTimeline(page, 'pitch', 'manual')).toHaveCount(0);
   reports.modify = () => {};
-  await page.clock.runFor(300);
+  await advanceDemoClock(page, 300);
   await inspectTimeline(page);
   await expect(visibleTimeline(page, 'pitch', 'manual')).toHaveCount(0);
   await expect(page.locator('.demo-history-track[data-lane="pitch"] .demo-interruption:not([hidden])')).not.toHaveCount(0);
   reports.modify = runtime => setReportedAxis(runtime, 'pitch', 'manual');
-  await page.clock.runFor(700);
+  await advanceDemoClock(page, 700);
   await inspectTimeline(page);
   await expect(visibleTimeline(page, 'pitch', 'manual')).toHaveCount(1);
   await expect(visibleTimeline(page, 'pitch', 'manual')).toHaveText('');
-  await page.clock.runFor(1600);
+  await advanceDemoClock(page, 1600);
   await inspectTimeline(page);
   await expect(visibleTimeline(page, 'pitch', 'manual')).toHaveText('MANUAL');
 });
@@ -1109,13 +1179,13 @@ test('brief manual takeover changes live authority immediately, then sustained o
 test('unknown data bypasses caption settling and never becomes hatched assistance', async ({ page, model }) => {
   const reports = await setupSettledTimeline(page, model);
   reports.modify = runtime => setReportedAxis(runtime, 'pitch', 'waiting');
-  await page.clock.runFor(700);
+  await advanceDemoClock(page, 700);
   await expect(page.locator('#demo-pitch-label')).toHaveText('Standby');
   reports.modify = runtime => setReportedAxis(runtime, 'pitch', 'unknown');
-  await page.clock.runFor(150);
+  await advanceDemoClock(page, 150);
   await expect(page.locator('#demo-pitch-label')).toHaveText('Unavailable');
   await expect(page.locator('#demo-pitch-detail')).toHaveText('Unavailable');
-  await page.clock.runFor(100); // Give the immediate gap a nonzero screen width.
+  await advanceDemoClock(page, 100); // Give the immediate gap a nonzero screen width.
   await inspectTimeline(page);
   await expect(visibleTimeline(page, 'pitch', 'unknown')).not.toHaveCount(0);
   await expect(visibleTimeline(page, 'pitch').last()).toHaveAttribute('data-state', 'unknown');
@@ -1124,23 +1194,26 @@ test('unknown data bypasses caption settling and never becomes hatched assistanc
 });
 
 test('an established manual span keeps its category as a different-axis observation reaches the 30-second cutoff', async ({ page, model }) => {
+  // As in the dense-history case below, ~300 real HTTP/image completions
+  // accompany the 30 virtual seconds. Keep the UI timing assertions unchanged.
+  test.setTimeout(45_000);
   const reports = await setupSettledTimeline(page, model);
   reports.modify = runtime => setReportedAxis(runtime, 'yaw', 'manual');
   // Start the span only after the asynchronous mock response reached the UI.
   // Changing the Node fixture alone does not start a browser observation.
-  await page.clock.runFor(150);
+  await advanceDemoClock(page, 150);
   await expect(page.locator('#demo-yaw-detail')).toHaveText('Manual');
-  await page.clock.runFor(300);
+  await advanceDemoClock(page, 300);
   reports.modify = runtime => { setReportedAxis(runtime, 'yaw', 'manual'); setReportedAxis(runtime, 'pitch', 'paused'); };
-  await page.clock.runFor(100);
+  await advanceDemoClock(page, 100);
   await expect(page.locator('#demo-pitch-detail')).toHaveText('Paused');
-  await page.clock.runFor(200);
+  await advanceDemoClock(page, 200);
   await inspectTimeline(page);
   await expect(visibleTimeline(page, 'yaw', 'manual')).toHaveCount(1);
   reports.modify = () => {};
-  await page.clock.runFor(100);
+  await advanceDemoClock(page, 100);
   await expect(page.locator('#demo-yaw-detail')).toHaveText('Assisted');
-  await page.clock.runFor(29_700);
+  await advanceDemoClock(page, 29_700);
   await inspectTimeline(page);
   // The retained left edge is inside the manual interval, after its original
   // start was pruned. It must not become an ARGOS-colored short excursion.
@@ -1154,7 +1227,7 @@ test('dense interruption history keeps its oldest hatch even when the display po
   const reports = await setupSettledTimeline(page, model);
   let count = 0;
   reports.modify = runtime => { if (++count % 2) setReportedAxis(runtime, 'pitch', 'paused'); };
-  await page.clock.runFor(29_000);
+  await advanceDemoClock(page, 29_000);
   await inspectTimeline(page);
   expect(count).toBeGreaterThan(256);
   const hatches = page.locator('.demo-history-track[data-lane="pitch"] .demo-interruption:not([hidden])');

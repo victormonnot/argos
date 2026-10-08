@@ -15,14 +15,14 @@ jobs:
           python-version: "3.12"
 
       - name: Install test dependencies
-        run: python -m pip install -e ".[dev,mavlink,plot,console,console-test,radio-profile]"
+        run: python -m pip install -e ".[dev,mavlink,plot,console,console-test,radio-profile,tracking]"
 
-      - name: Install Lua for the Pocket stream contract tests
-        run: sudo apt-get update && sudo apt-get install -y lua5.4
+      - name: Install Lua and FFmpeg for integration tests
+        run: sudo apt-get update && sudo apt-get install -y lua5.4 ffmpeg
 
       - name: Test Python and verify the offline examples
         run: |
-          python -m pytest -q
+          python -m pytest -q -ra
           python examples/verify_demo.py
           python examples/verify_demo_flight.py
 

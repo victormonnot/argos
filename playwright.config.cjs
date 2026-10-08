@@ -2,6 +2,8 @@ const { defineConfig } = require('@playwright/test');
 module.exports = defineConfig({
   testDir: './tests/browser',
   testMatch: '**/*.spec.cjs',
+  // Expose failed assertions in CI annotations and the uploaded browser report.
+  reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : undefined,
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
   retries: 0,
