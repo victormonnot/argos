@@ -1,5 +1,7 @@
 # Manual web flight in Gazebo/SITL
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 **Flight controls** lets an operator fly the simulated drone with held mouse or touch
 buttons and optional keyboard shortcuts. The camera and current vehicle state
 remain visible. ArduPilot stabilizes attitude in both supported modes; AltHold

@@ -1,5 +1,7 @@
 # EdgeTX native stale-output bench
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 This extends the [unused-channel mixer bench](edgetx-usb-mixer-bench.md).
 It configures native EdgeTX logical switches to select the manual stick when
 the PC/Lua producer stops changing its heartbeat. A separate fault fixture

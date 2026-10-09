@@ -1,5 +1,7 @@
 # Custom YOLOX-Nano models
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 ARGOS can explicitly load a custom YOLOX-Nano ONNX bundle exported by IRIS or
 another producer implementing the contract below. Official Tiny, Nano and S
 models retain their pinned size/SHA-256 checks. Neither path downloads weights

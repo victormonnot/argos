@@ -1,5 +1,7 @@
 # Betaflight USB readout
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 This finite command-line probe reads a Betaflight controller over an explicitly
 selected USB serial port. It displays firmware identity, reported arming state,
 attitude and processed receiver channels. It is a bench diagnostic, separate

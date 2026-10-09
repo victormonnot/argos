@@ -1,5 +1,7 @@
 # Offline tracker comparison
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 `examples/compare_trackers.py` compares ImageTracker, official ByteTrack and
 official BoT-SORT without learned ReID on the same completed native `.flight`
 recording, custom YOLOX bundle and explicit selections. It extends the

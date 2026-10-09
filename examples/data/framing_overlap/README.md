@@ -1,5 +1,7 @@
 # Recorded overlapping-detection metadata
 
+[Documentation](../../../docs/README.md) · [Project overview](../../../README.md)
+
 This seven-image fixture comes from the September 9, 2026 Gazebo/SITL flight
 with YOLOX-S, four CPU threads and the code later committed as `fd7dc69`.
 Image 3069 contains the selected track 1 (confidence 0.834) and a smaller track 2

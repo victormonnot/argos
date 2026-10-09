@@ -83,18 +83,8 @@ The physical workflows are experiments with specific radio profiles and receiver
 checks. Apparent size is not a distance measurement in metres. Follow the
 relevant guide for setup, pilot takeover and current limits.
 
-<details>
-<summary>Earlier hardware benches and other technical guides</summary>
-
-- [Betaflight USB readout](docs/betaflight-probe.md)
-- [EdgeTX USB display](docs/edgetx-usb-display.md), [mixer bench](docs/edgetx-usb-mixer-bench.md) and [native guard](docs/edgetx-native-guard-bench.md)
-- [Vision-to-channel bench](docs/edgetx-vision-bench.md) and [disarmed RF yaw bench](docs/edgetx-rf-yaw-bench.md)
-- [Virtual-radio simulation bench](docs/radio-bench.md)
-- [Person detection](docs/vision.md) and [Gazebo scenes](examples/gazebo/README.md)
-- [Session lifecycle and SSH access](docs/running.md)
-- [Small telemetry-only example](examples/demo/README.md)
-
-</details>
+**[All documentation →](docs/README.md)** — reading paths, hardware bench checks,
+offline experiments and technical references.
 
 ## Development
 

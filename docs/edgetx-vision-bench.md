@@ -1,5 +1,7 @@
 # Real-camera vision to an unused EdgeTX channel
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 This bench connects the console's **Yaw preview** to **CH32** on a Pocket with
 both RF modules OFF. A selected person's horizontal position in the real camera
 image drives a small correction on the radio's channel monitor. The helper reads

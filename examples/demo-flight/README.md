@@ -1,5 +1,7 @@
 # Recorded flight demo
 
+[Documentation](../../docs/README.md) · [Project overview](../../README.md)
+
 Explore a real archived **Gazebo simulation session** in the normal ARGOS web
 interface. Play, pause, seek backwards, inspect matched detections, and compare
 the recorded controls with telemetry and messages. This is a 36.58-second

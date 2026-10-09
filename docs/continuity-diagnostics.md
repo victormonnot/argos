@@ -1,5 +1,7 @@
 # Offline selected-person diagnosis
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 `examples/diagnose_continuity.py` diagnoses the current detector, local image
 association, continuous target selection and dry yaw admission on completed
 native `.flight` recordings. It opens no camera, console server, radio or flight

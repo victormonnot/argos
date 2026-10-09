@@ -1,5 +1,7 @@
 # Local filming captures
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 The FLY and DST consoles can record one take as a camera archive plus timestamped
 pilot-stick, radio-status and vision observations. Start and Stop control the
 recording only. They do not arm the aircraft, select a target or change assistance.

@@ -1,5 +1,7 @@
 # Experimental apparent-distance assistance
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 `ARGOS DST` is a separate Pocket model and `python -m argos.distance` is a
 separate launcher. Keep the working `ARGOS FLY` model, script and configuration.
 This prototype regulates the selected person's apparent box height. It does

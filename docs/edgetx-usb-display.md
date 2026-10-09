@@ -1,5 +1,7 @@
 # EdgeTX USB display test
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 This bench tool checks a PC-to-radio USB serial exchange with an EdgeTX Lua
 script. The radio displays a counter; the PC requires an acknowledgement for
 each numbered message. It does not read or alter model settings, mix channels,

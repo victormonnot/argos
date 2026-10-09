@@ -1,5 +1,7 @@
 # ARGOS console
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 A local console for receiving the drone camera feed and telemetry, configuring
 sources, and recording sessions. The interface is in English, works without
 external web resources, and displays the entire image.

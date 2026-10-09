@@ -1,5 +1,7 @@
 # Environment and validation
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 The published V1 corresponds to package version **0.1.0**, with passive
 observation and recorded-session analysis. The working tree additionally contains
 the opt-in [manual web flight](web-control.md) and [camera perception](vision.md)

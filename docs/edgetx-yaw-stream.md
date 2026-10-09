@@ -1,5 +1,7 @@
 # Continuous Pocket yaw assistance: software foundation
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 This is the transport and authority contract for `ARGOS FLY`. The
 [one-command workflow](argos-fly.md) joins the console and stream; the
 [profile guide](edgetx-fly-profile.md) prepares the radio model. Existing finite

@@ -1,5 +1,7 @@
 # SITL replay example
 
+[Documentation](../../docs/README.md) · [Project overview](../../README.md)
+
 This directory contains an **extract of telemetry actually received from
 ArduPilot SITL on the ground**, prepared from a validation capture made on
 September 7, 2026. It contains no images or video. The 58 selected frames are

@@ -1,5 +1,7 @@
 # ARGOS FLY: one final Pocket model
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 This profile connects the continuous `ArgFly` producer to **CH4 yaw**. Its
 ordinary manual model supplies throttle, arming, roll, pitch and manual yaw.
 SC middle selects manual; displayed **SC↑** permits assistance after a deliberate

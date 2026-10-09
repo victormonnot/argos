@@ -1,5 +1,7 @@
 # Recorded framing dropout metadata
 
+[Documentation](../../../docs/README.md) · [Project overview](../../../README.md)
+
 These two small fixtures come from Gazebo camera observations captured on
 2026-09-08 with ARGOS revision `1e41013` and its unchanged YOLOX-Tiny detector.
 They retain original availability times (`at`), camera receipt times

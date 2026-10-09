@@ -1,5 +1,7 @@
 # Disarmed EdgeTX / Betaflight RF yaw bench
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 This diagnostic extends the [native guard bench](edgetx-native-guard-bench.md)
 from an unused radio channel to received yaw values in Betaflight. The path is
 PC USB → Pocket Lua/native mixer → internal CRSF/ELRS → receiver → Betaflight.

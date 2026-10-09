@@ -1,5 +1,7 @@
 # Camera-based person detection and tracking
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 ARGOS can detect people in the onboard image while the operator flies manually.
 The optional **Person detection** switch displays bounding boxes, confidence and
 short-lived track IDs. Each overlay accompanies the exact image analyzed by the

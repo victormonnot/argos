@@ -1,5 +1,7 @@
 # Observing Gazebo and ArduPilot SITL together
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 This session shows the onboard camera and vehicle telemetry while on the ground.
 The console receives data without sending commands to ArduPilot or the camera.
 The guide involves no arming, flight or gimbal movement.

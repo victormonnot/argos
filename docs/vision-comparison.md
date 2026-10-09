@@ -1,5 +1,7 @@
 # Compare vision on recorded images
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 The offline comparison runs **YOLOX-Tiny and YOLOX-S on the same saved camera
 images**, using the same current ARGOS appearance encoder and image tracker.
 It produces a readable table and per-image results. A separate export makes

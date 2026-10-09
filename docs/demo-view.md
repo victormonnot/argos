@@ -1,5 +1,7 @@
 # Demo view
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 In **Observation**, choose **Demo view** above the camera. **Exit demo** restores
 the ordinary display. The fullscreen button remains available when supported by
 the browser. Opening Sources, the capture inspector or another workspace also

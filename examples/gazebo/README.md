@@ -1,5 +1,7 @@
 # Outdoor example scenes
 
+[Documentation](../../docs/README.md) · [Project overview](../../README.md)
+
 This fragment adds an animated person to the launcher's isolated runway world.
 The person walks a short loop 8–10 metres ahead of the vehicle's initial position,
 with lateral motion and changes in orientation. Coordinates specify simulation

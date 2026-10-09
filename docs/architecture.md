@@ -1,5 +1,7 @@
 # Architecture
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 ARGOS integrates a local observation console: camera reception, MAVLink
 inspection, recording and historical analysis, plus opt-in manual simulation
 control, optional image-based person detection and explicit visual framing in

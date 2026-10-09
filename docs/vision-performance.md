@@ -1,5 +1,7 @@
 # Offline inference thread comparison
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 Use `examples/benchmark_vision_threads.py` to compare the existing YOLOX-Tiny
 CPU thread limits 1, 2 and 4 on the computer that will run ARGOS. The model and
 ARGOS vision dependency must already be installed; this tool downloads nothing

@@ -1,5 +1,7 @@
 # Visual framing in GPS-free SITL
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 The optional **Visual framing** control uses a selected person's camera box for
 bounded yaw and forward/backward pitch assistance. The panel offers three choices:
 

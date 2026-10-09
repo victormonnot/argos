@@ -1,5 +1,7 @@
 # Offline multi-person selection qualification
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 The controlled harness compares the current continuous `YawPreview`, the held
 motion prototype, and the `motion_held_candidates` prototype. It feeds each the
 same explicit detections, native track IDs, 208-value unit appearance vectors,

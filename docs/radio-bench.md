@@ -1,5 +1,7 @@
 # Virtual-radio and assistance bench
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 This runnable example checks how ArduCopter SITL shares control between an
 independent virtual pilot and selective ARGOS assistance. It runs an automated
 Gazebo flight, records observations and produces an acceptance report. No radio

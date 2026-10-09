@@ -1,5 +1,7 @@
 # Dense review and recovery counterfactuals
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 `examples/validate_continuity.py` extends the [offline tracker comparison](tracker-comparison.md)
 with a reviewed short span. It reuses the original inference cache, prehistory,
 selection, association parameters and clocks. No new inference, device, active

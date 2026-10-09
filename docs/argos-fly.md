@@ -1,5 +1,7 @@
 # ARGOS FLY local workflow
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 ARGOS FLY runs the physical-camera console and the continuous Pocket yaw stream
 with one command. It is horizontal framing assistance: the pilot keeps throttle,
 arming, roll and pitch. The software/profile are prepared for a combined

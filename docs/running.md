@@ -1,5 +1,7 @@
 # Starting, returning to and stopping a session
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 ## On the local machine
 
 A single supported Linux PC runs Gazebo, ArduPilot SITL, the console and its

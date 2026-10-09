@@ -1,5 +1,7 @@
 # EdgeTX USB mixer bench
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 This is the next bench step after the [USB display exchange](edgetx-usb-display.md).
 A PC sends a fixed sequence of small values to a Lua mixer script. An unused
 radio channel shows 0%, +25%, 0%, -25%, then 0%. The aircraft stays disconnected

@@ -1,5 +1,7 @@
 # Offline motion-assisted target recovery
 
+[Documentation](README.md) · [Project overview](../README.md)
+
 `examples/compare_recovery.py` tests whether short image-space motion history
 helps selected-person recovery after ByteTrack changes an identifier. It reuses
 the [tracker comparison](tracker-comparison.md) cache and the separate
