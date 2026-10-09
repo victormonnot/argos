@@ -1,7 +1,7 @@
 [project]
 name = "argos"
 version = "0.1.0"
-description = "Local drone observation console, passive MAVLink diagnostics and recorded-session analysis."
+description = "Software for drone autonomy and mission control."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE", "argos/console/static/fonts/*-OFL.txt",
