@@ -387,13 +387,15 @@ Capture works with recent video even without an open MAVLink link. This supports
 an analog receiver connected through a Linux/V4L2 USB capture device, once the
 actual adapter has been tested. Analog OSD text remains pixels in the image;
 it does not populate the ARGOS telemetry HUD. Telemetry requires a separate
-MAVLink connection. Real-camera control remains disabled by the existing
-simulation restrictions.
+MAVLink connection. Browser **Flight controls** remain restricted to simulation.
+Physical-camera assistance uses the separate [FLY](argos-fly.md) or
+[DST](argos-distance.md) radio path.
 
 Visual recording samples at **up to 10 Hz**, without encoding a movie or running
 extra detector inference. It saves JPEG images already received, and boxes only
 when they belong to that exact image and source. With analysis active, retained
-images follow completed detector results (currently up to 5 Hz); the sampling
+images follow completed detector results (5 Hz by default, configurable up to
+10 Hz); the sampling
 ceiling is not a guaranteed video frame rate. The timeline uses local receipt
 and availability times, not synchronized camera exposure timestamps. An image
 may have arrived shortly before Start; its original age is preserved. A detection
@@ -414,7 +416,9 @@ Sessions to retain the full session. Keep their names together when copying them
 to another console's recording directory. The sidecar is bound to the journal's
 identifier, original start and run identity. Older journals without it remain
 readable; an invalid sidecar does not invalidate independent telemetry replay.
-This first version has no MP4 export, audio, bundle import or 3D reconstruction.
+This sampled visual sidecar has no MP4 export, audio, bundle import or 3D
+reconstruction. The separate [filming camera archive](filming.md) supports
+video export.
 
 A dedicated writer thread receives a bounded queue of **8 items**. It never waits
 for disk on the control loop. Queue overflow visibly ends media capture;

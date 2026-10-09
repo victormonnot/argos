@@ -100,10 +100,10 @@ These are separate component checks, each with its own prerequisites. Use the
 
 | Reference | What it covers |
 | --- | --- |
-| [Architecture](architecture.md) | Console and simulation data flow, ownership and component boundaries |
+| [Architecture](architecture.md) | Simulation and physical-radio paths, control ownership, recordings and offline experiments |
 | [MAVLink transport](mavlink-transport.md) | Transport options, decoding, reception measurements and journal format |
 | [Test commands](../README.md#verify-a-change) and [CI workflow](../.github/workflows/ci.yml) | Development checks and installed-package verification |
-| [Dated validation reports](validation.md) | September 2026 environments, trials, observations and limitations recorded at the time |
+| [Verification and trial reports](validation.md) | Current test evidence and prerequisites, followed by the dated September 2026 trials |
 | [Dropout fixture](../examples/data/framing_dropout/README.md) and [overlap fixture](../examples/data/framing_overlap/README.md) | Metadata used for offline framing-interruption checks |
 
 Licenses and provenance: [ARGOS code](../LICENSE),

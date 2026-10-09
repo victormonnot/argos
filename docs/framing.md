@@ -16,8 +16,10 @@ Both framing profiles try to retain the person's apparent height in the image.
 button specifies a distance in metres. With manual throttle, ARGOS never requests
 vertical correction: the pilot manages height and ground clearance. ArduPilot
 still stabilizes attitude and applies its ordinary throttle mapping and tilt
-compensation. These are web inputs in SITL; independent radio authority and a
-Betaflight adapter are later integrations.
+compensation. This page describes the web-input controller in SITL. Independent
+radio input is covered by the [SITL radio guide](radio-bench.md); physical
+Pocket/Betaflight assistance uses the separate [FLY](argos-fly.md) and
+[DST](argos-distance.md) paths.
 
 **Distance response** selects **Gentle / Normal / Responsive** for approach and
 retreat in either framing profile. Normal retains the original controller.

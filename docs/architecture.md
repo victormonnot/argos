@@ -2,22 +2,38 @@
 
 [Documentation](README.md) · [Project overview](../README.md)
 
-ARGOS integrates a local observation console: camera reception, MAVLink
-inspection, recording and historical analysis, plus opt-in manual simulation
-control, optional image-based person detection and explicit visual framing in
-AltHold. The default console remains passive. This document explains how those
-parts fit together and the boundaries of the implementation. For setup and
-operator workflows, use the [console guide](console.md) and
-[web-control guide](web-control.md); for wire and file
-contracts, use the [MAVLink transport guide](mavlink-transport.md).
+ARGOS runs on a ground computer. Its local console combines camera reception,
+person detection, recording and replay. Optional control paths connect it either
+to ArduPilot SITL through MAVLink or to a physical aircraft through a Pocket
+radio. Those paths have different authority and failure rules; the default
+console is passive.
+
+This document describes the implemented software, not a claim that every current
+configuration has flown. The [validation record](validation.md) separates
+automated checks, recorded demonstrations and remaining hardware work. For setup,
+start with the [documentation index](README.md).
 
 ## Runtime and data flow
 
-The supported entry point, `python -m argos.console`, starts one Python process
+The console entry point, `python -m argos.console`, starts one Python process
 with FastAPI/Uvicorn on `127.0.0.1`. That process serves the browser assets, owns
 the configured receivers and manages the local recording directory. It starts
-without sources unless they are explicitly configured. With `--vision-model`,
-a separate spawned inference process receives camera JPEG bytes only.
+without sources unless they are explicitly configured. With `--vision-model` or
+`--vision-bundle`, a separate spawned inference process receives camera JPEGs
+and returns image-space detections; it has no command transport.
+
+| Runtime | Entry point and control boundary |
+| --- | --- |
+| Observation and replay | `python -m argos.console`; configured sources are passive unless simulation control is explicitly enabled. Replay needs no running camera, radio or simulator. |
+| Simulation control | `--sim-control`, optionally `--sim-framing`; `FlightControl` owns a browser lease and sends MAVLink to loopback SITL. |
+| Physical yaw assistance | `python -m argos.fly`; the ground computer supplies yaw demands to `ArgFly.lua` on the Pocket. Pilot throttle, roll, pitch and arming remain manual. |
+| Physical apparent-distance experiment | `python -m argos.distance`; a separate `ArgDst.lua` model can add bounded pitch from apparent target size. Throttle, roll and arming remain manual. |
+
+FLY and DST validate their saved configuration, detector and local radio-profile
+artifacts before starting the shared console and their own serial worker. They
+do not configure a MAVLink connection to the physical aircraft. Local artifact
+hashes identify files; they do not verify which model or script is installed on
+the radio. Their `--check` mode opens no devices or listener.
 
 In the reference simulation, Gazebo and ArduPilot SITL run as separate processes.
 ARGOS subscribes to a Gazebo camera topic and reads a MAVLink connection to SITL;
@@ -26,11 +42,13 @@ the server does not launch or supervise either simulator. The separate
 isolated Gazebo, SITL and console session for manual flight. A Linux V4L2 device can replace
 the camera source. Camera and telemetry connections have independent lifecycles.
 
+The shared observation path and optional **simulation** control path are:
+
 ```mermaid
 flowchart LR
     camera["Gazebo camera or V4L2 device"]
     peer["Configured MAVLink peer"]
-    disk[("Local JSONL journals")]
+    disk[("Local journals and visual sidecars")]
     browser["Browser"]
     vision["Optional person detector process"]
     subgraph server["ARGOS Python process"]
@@ -38,12 +56,13 @@ flowchart LR
         link["Transport and MavlinkLink: decoded Received events"]
         state["Measurement caches, live inspector and diagnostic histories"]
         recorder["ConsoleRecorder: active capture"]
-        archive["RecordingArchive: verify, replay and analyze"]
+        archive["RecordingArchive / VisualArchive"]
         api["FastAPI: JSON, JPEG and web assets"]
         pilot["FlightControl: simulation lease, manual priority and sends"]
         framing["FramingControl and image-only FramingLaw"]
     end
     camera --> video
+    video -->|"optional visual capture"| recorder
     peer --> link
     link --> state
     link --> recorder
@@ -68,8 +87,59 @@ The arrows show the main data paths. Browser POST requests configure or reopen
 receivers and start or stop recording. These actions send no MAVLink messages.
 With `--sim-control`, a separate control path calls the transport's `send()`
 method for pilot input, GCS heartbeat, parameter/status requests and explicit
-mode/arming actions. Disabled or unclaimed control is passive. Recording capture
-receives decoded inbound events; outgoing control messages are not recorded.
+mode/arming actions. Disabled or unclaimed simulation control is passive. The
+MAVLink journal records decoded inbound events; optional visual sidecars
+separately retain sampled control state and discrete operator requests.
+
+### Physical camera and Pocket radio
+
+The physical path uses a V4L2 capture device on the ground computer and USB serial
+to the Pocket. Aircraft video and the radio control link remain separate:
+
+```mermaid
+flowchart TB
+    aircraft["Aircraft camera"] --> capture["Video receiver / V4L2 capture"]
+    capture --> vision["Ground computer: VisionService + ImageTracker"]
+    vision --> selected["YawPreview: selected target and recovery"]
+    selected --> source["LocalYawSource / LocalDistanceSource"]
+    source -->|"immutable latest demand"| worker["Independent USB serial worker"]
+    worker <-->|"tickets, demands and status"| pocket["Pocket: ArgFly.lua / ArgDst.lua"]
+    pilot["Pilot sticks and switches"] --> pocket
+    pocket --> gates["Native EdgeTX mixer gates"]
+    gates --> rf["RF receiver → flight controller"]
+```
+
+[`LocalYawSource`](../argos/console/yaw_source.py) and
+[`LocalDistanceSource`](../argos/console/distance_source.py) publish from the
+console event-loop owner after each tick. They validate image/source identity and
+deadlines before replacing one immutable mailbox sample. The radio thread reads
+that sample without calling inference, HTTP or the console session. Radio target
+selection requests return to the owner through a bounded pending request. A
+stalled owner cannot refresh a demand's original image deadline.
+
+[`YawAssistService`](../argos/console/yaw_assist.py) and
+[`DistanceAssistService`](../argos/console/distance_assist.py) own the serial
+worker and bounded diagnostic logging. The corresponding backend streams use
+distinct V3 greetings and radio-issued tickets; new images can trigger sends at
+up to 20 Hz, with 10 Hz refreshes while a command remains fresh. The Pocket's
+300 ms ticket lease and native mixer gates are separate from the host's image
+and source-health checks. The standalone yaw bridge retains its HTTP source;
+the integrated launchers use the mailbox path above.
+
+The pilot enables assistance and selects/reselects a target through the radio.
+FLY latches deliberate yaw takeover until a new SC cycle. DST gives yaw and pitch
+independent temporary stick priority, with fresh-ticket resumption after
+recentering; SC middle requests persistent manual control. Target loss, expired
+images or protocol faults withdraw correction rather than supplying predicted
+commands. FLY/DST do not inherit the simulator's browser lease or automatic Land
+path. Exact thresholds and receiver checks belong to the [FLY](argos-fly.md),
+[DST](argos-distance.md) and [radio-stream](edgetx-yaw-stream.md) guides.
+
+Yaw uses horizontal image offset. DST's
+[`ApparentDistanceLaw`](../argos/guidance/apparent_distance.py) uses target-box
+height relative to an explicitly captured reference. Neither measures metric
+range, position or altitude. Radio ACKs and Lua reports are not measurements of
+native mixer output or aircraft response.
 
 ## Ownership and scheduling
 
@@ -81,22 +151,31 @@ assembles the application and ties resource startup and cleanup to its lifespan.
 | Work | Owner and execution context |
 | --- | --- |
 | MAVLink polling, measurement admission, live histories and capture writes | `ConsoleSession.tick()`, called by one asyncio task in the server event loop. |
-| Optional manual control | `FlightControl` receives selected vehicle reports; the same session tick checks lease expiry and transmits current pilot inputs. HTTP mutations run on that event loop. |
+| Optional simulation control | `FlightControl` receives selected vehicle reports; the same session tick checks lease expiry and transmits current pilot inputs. HTTP mutations run on that event loop. |
 | Gazebo images | Subscription callbacks publish into the thread-safe `VideoStore`. |
 | Optional person detection | App-owned `VisionService`, serviced by `ConsoleSession.tick()`, submits bounded work to a spawned OpenCV process. Results and short-lived image-space associations are consumed without waiting on inference. |
 | Optional visual framing | `FramingControl` owns target selection, freshness and takeover; `FramingLaw` updates derived axes on distinct analyzed images. `FlightControl` retains authority and the MAVLink send boundary. |
+| Physical assistance | The event-loop owner publishes `LocalYawSource` or `LocalDistanceSource`; an independent serial thread services the Pocket. Diagnostic logging uses a separate bounded worker. |
 | V4L2 images | One worker thread owns the device reader and publishes into `VideoStore`. |
+| Visual and filming capture | The session samples replay state; camera and radio observers enqueue filming data. Separate bounded writers perform sidecar disk I/O. |
 | Recording verification, indexing, replay and analysis | Archive calls run through `asyncio.to_thread`; a lock protects the shared archive cache. |
 | Receiver reopening | Blocking replacement work runs in a thread; the session retains ownership until replacement or cleanup finishes. |
 | Display state, selected panels, filters and replay cursor | JavaScript in the browser; these do not own the receivers. |
 
 The receive task waits 10 ms between ticks while vision is configured and healthy,
 or 50 ms without it. This promptly collects completed analyses while respecting
-the configured analysis ceiling (five per second by default, `--vision-hz` from
-one to ten) and the existing command rates. Each link poll
-limits its read work; neither interval is a guaranteed schedule. Recording writes are synchronous in the
-tick, so slow storage or CPU work can delay reception. The current process layout
-does not provide hard real-time scheduling or guarantee lossless capture.
+the configured analysis ceiling: five per second for the plain console, ten for
+FLY/DST, with `--vision-hz` accepting one to ten in the console. Each link poll
+limits its read work; neither interval is a guaranteed schedule. MAVLink journal
+writes are synchronous in the tick, so slow storage or CPU work can delay
+reception. Sidecar queues and the serial worker do not make the application
+hard real-time or guarantee lossless capture.
+
+Camera conversion runs outside the store's short reader lock. The store retains
+one valid JPEG instead of a frame queue, so an old queue cannot accumulate inside
+ARGOS while the browser falls behind. Camera drivers may still buffer frames.
+
+### Simulation lease and framing
 
 Each lease starts unprepared. The pilot selects AltHold or Stabilize and prepares
 that mode while disarmed with a fresh landed report and neutral input. Arming
@@ -138,9 +217,30 @@ after a refused or unconfirmed command. Only a new ground preparation resumes
 pilot transmissions. See
 [web-control.md](web-control.md) for the profile checks and their limits.
 
-Camera conversion runs outside the store's short reader lock. The store retains
-one valid JPEG instead of a frame queue, so an old queue cannot accumulate inside
-ARGOS while the browser falls behind. Camera drivers may still buffer frames.
+### Vision and selected-target continuity
+
+[`VisionService`](../argos/console/vision.py) bounds inference to one submitted
+image at a time and pairs each accepted result with its original JPEG. Source
+replacement resets the live [`ImageTracker`](../argos/perception/image_tracks.py)
+association; an old worker result cannot become a fresh image for a new source.
+Detection, short-lived track IDs and explicit target selection are separate
+steps. A box or local ID does not establish a person's real-world identity.
+
+Official YOLOX Tiny/Nano/S weights have pinned sizes and hashes. An explicitly
+selected [custom Nano bundle](custom-vision-models.md) supplies a manifest,
+weights, class mapping and matching preprocessing/output contract. Startup
+verifies the bundle and probes its graph; invalid custom inference does not
+silently fall back to official weights. FLY/DST default to official Nano with
+four CPU inference threads. Model loading does not enable another tracker or
+change the radio gates.
+
+For physical assistance, [`YawPreview`](../argos/console/yaw_preview.py) owns
+the selected target and its recovery state. Its continuous mode can retain a
+reference for up to three seconds of detection loss while images remain fresh,
+without issuing a correction for the missing target. A replacement track needs
+unique compatible appearance/geometry and two distinct qualifying images;
+ambiguity or expired memory requires a new selection. This production path is
+separate from the offline alternative trackers and recovery prototypes below.
 
 ## From received bytes to displayed measurements
 
@@ -217,19 +317,28 @@ server or CDN. The JavaScript is split by workflow:
 
 | File | Responsibility |
 | --- | --- |
-| [app.js](../argos/console/static/app.js) | Observation shell, state/image polling, source controls, capture and live diagnostic display. |
+| [app.js](../argos/console/static/app.js) | Observation shell, state/image polling, source controls, capture, physical-assistance display and Demo view. |
 | [live.js](../argos/console/static/live.js) | On-demand MAVLink inspection and display freezing. |
 | [sessions.js](../argos/console/static/sessions.js) | Recording catalog, replay, cursor playback and paginated raw messages. |
 | [analysis.js](../argos/console/static/analysis.js) | Historical reception curves, gaps and analysis filters. |
 | [control.js](../argos/console/static/control.js) | Mouse/touch/keyboard input, explicit lease ownership, serialized input requests and release on loss of browser context. |
+| [framing-report.js](../argos/console/static/framing-report.js) | Recorded visual-framing report and links into the replay cursor. |
 
 State, images and inspection data use separate HTTP requests. Freezing a view or
 leaving a tab changes browser behavior; the server continues receiving and an
 active recording continues until it is stopped or reaches a closure condition.
-Manual control has a different lifecycle: leaving Flight controls, losing focus or
+Simulation control has a different lifecycle: leaving Flight controls, losing focus or
 hiding the page releases its lease rather than continuing to pilot in the
 background. Flight controls reuses Observation's camera instead of opening a second
 video subscription.
+
+Physical FLY/DST selection belongs to the server and radio, so changing tabs or
+closing the browser does not release it. [Demo view](demo-view.md) is a read-only
+presentation of that path, with recording controls. Its axis indicators use
+correlated Pocket `AP1` observations, including independent validity and phase
+per axis. They describe pilot sticks and Lua-reported corrections, not the
+flight controller's applied output. Its recent history is browser memory;
+filming logs are retained independently.
 
 Independent requests can complete after their context has changed. The frontend
 checks session and receiver identities (`run_id`, video `source_id`, MAVLink
@@ -242,8 +351,10 @@ current view.
 before replacement. A full replacement creates a new session; reopening one
 receiver keeps the session and changes that receiver's identity. Configuration
 changes and MAVLink reopening are blocked during capture. Camera reopening is
-allowed because video is not part of the MAVLink journal. If a V4L2 reader has
-not released its device, replacement refuses to start a second reader.
+allowed: it creates a new video source identity, clears physical target selection
+and reattaches an active filming observer to the new store. Sidecar images retain
+their source identities. If a V4L2 reader has not released its device,
+replacement refuses to start a second reader.
 When simulation control is enabled, source replacement also requires released
 controls and confirmed disarming. Same-source MAVLink reopening requires the
 lease to be released, preserves armed/uncertain flight evidence and resumes
@@ -256,11 +367,25 @@ supported access pattern.
 
 ## Journals and historical views
 
-[ConsoleRecorder](../argos/console/recording.py) owns at most one active file.
+[ConsoleRecorder](../argos/console/recording.py) owns at most one active recording.
 The default directory is `~/.local/share/argos/recordings/`, or
 `$XDG_DATA_HOME/argos/recordings/` when that variable is absolute. A CLI option can
-override it. Journals use unique identifiers and are created without overwriting
-existing files; there is no database or cloud storage dependency.
+override it. Recordings use unique identifiers and are created without
+overwriting existing files. Storage is local JSONL, optional SQLite visual
+sidecars and filming files; no external database or cloud service is required.
+
+| Artifact | Recorded evidence |
+| --- | --- |
+| `<id>.jsonl` | Capture context, decoded inbound MAVLink frames when configured, and journal completion. It contains no video or outgoing MAVLink commands. |
+| `<id>.visual.sqlite3` | Optional sampled JPEGs, paired detections, simulation-control snapshots and console/operator events for visual replay. Sampling is capped at 10 Hz. |
+| `<id>.flight/` | Optional physical-camera take: original capture JPEGs in `camera.mjpeg`, a timestamp/provenance index, manifests and radio/vision observations. |
+
+A recent physical-camera image can support a take without a MAVLink source.
+Starting or stopping recording does not arm, select a target or enable
+assistance. The three artifacts have separate completion and loss indicators;
+a complete JSONL journal does not imply complete visual or filming data.
+
+### MAVLink journals
 
 The [recording format](../argos/backends/mavlink/recording.py) stores original
 frame bytes and local timestamps in JSONL. Version 2 added capture context;
@@ -292,10 +417,36 @@ identified analysis defaults.
 
 [analysis.py](../argos/console/analysis.py) computes receipt rates, ages and gaps
 from recorded events. The raw-message view exposes successive decoded frames,
-including ones not admitted as measurements. MAVLink journals contain **no video
-or outgoing pilot commands**
-and do not persist the console's derived incident history. Received `STATUSTEXT`
-frames are included while recording, but the live assembled history is in memory.
+including ones not admitted as measurements. The JSONL journal does not persist
+the console's derived incident history. Received `STATUSTEXT` frames are included
+while recording, but the live assembled history is in memory.
+
+### Visual replay and filming
+
+[`VisualRecorder` and `VisualArchive`](../argos/console/visual_recording.py)
+store and reopen the sampled SQLite sidecar. Capture observes existing images
+and state without rerunning inference or control. The archive checks the
+recording/run/start-time binding and visual revision; JPEG hashes bind retrieved
+frames to the saved bytes. Replay shows recorded observations at the cursor,
+including gaps, and cannot send commands. The [bundled flight replay](../examples/demo-flight/README.md)
+is a simulation recording, distinct from the physical-flight portfolio media.
+
+[`FilmingCapture`](../argos/console/filming.py) attaches observers to the existing
+camera store and radio service. [`CameraRecorder`](../argos/console/camera_recording.py)
+writes admitted capture JPEGs before browser overlays, without opening another
+camera or encoding another JPEG. Its frame index supplies the actual receipt
+intervals; an MJPEG player's assumed frame rate is not the recording clock.
+Separate queues report drops and write failures instead of blocking producers
+on disk. They do not guarantee that every received image will be retained.
+
+Filming events include radio-status/pilot observations and image-bound vision
+results. `AP1` supplies calibrated pre-mix sticks and Lua outputs, not native
+channel readback or FC telemetry. Repeated reports preserve original receipt
+times. A bracketed clock anchor relates host radio timestamps to console time;
+neither clock measures camera exposure or physical response. Run diagnostics and
+the filming take are separate logs, with separate sampling and overflow limits.
+The [filming guide](filming.md) defines the files, completeness checks and export
+workflow.
 
 ## Retention and limits
 
@@ -307,58 +458,72 @@ process memory: decoding, conversion, requests and indexing also allocate memory
 | Camera | One retained valid JPEG; dimensions and raw/encoded sizes are checked by [video.py](../argos/console/video.py). |
 | Live inspector | Latest frame for up to 256 source/type identities by default; bounded time buckets estimate rates. Evicted identities lose their retained counters. |
 | Diagnostic histories | Up to 60 session events and 60 status-text entries by default, with separate bounds for pending text assembly. |
-| Capture | At most 100,000 events and 32 MiB; space is reserved for finalization, so closure can occur before the byte limit. No automatic next segment. |
+| MAVLink capture | At most 100,000 events and 32 MiB; space is reserved for finalization, so closure can occur before the byte limit. No automatic next segment. |
+| Visual replay | At most 256 MiB, 36,000 samples, 20,000 events and one hour; bounded writer queue, at most 10 samples/s. |
+| Filming camera | Defaults to 30 minutes, 2 GiB and 216,000 images; pending/in-progress images are bounded to 128 and 64 MiB. |
+| Filming events | At most 128 MiB and 200,000 events, with a 4 MiB queue bound. |
 | Archive | Catalog shows up to 200 most recently modified candidates; one validated file and one source replay index are cached. |
 | Historical responses | Raw messages are paginated; analysis limits the number of bins and detailed gaps. |
 
-Write and archive limits share [recording_limits.py](../argos/console/recording_limits.py),
+MAVLink write and archive limits share [recording_limits.py](../argos/console/recording_limits.py),
 so the console does not intentionally create a completed journal larger than it
 can reopen. Reaching a recording limit stops capture while live observation
 continues. Existing files survive restarts; live counters, incidents and browser
 selections are not a durable session database. Limits apply per file, with no
-automatic deletion policy for accumulated journals.
+automatic deletion policy for accumulated recordings. Sidecar status must be
+checked separately when a queue, duration or storage limit is reached.
 
 ## Experimental packages and integration boundary
 
-The repository also contains contracts and experiments outside the live console:
+The console composes detection, laws and transports; individual packages retain
+narrower responsibilities:
 
 | Package | Current role |
 | --- | --- |
 | [core](../argos/core/) | Typed observation, command, `World` and `Truth` contracts for experiments. |
-| [perception](../argos/perception/) | Optional live `yolox.py` and `image_tracks.py` feed the console overlay. Earlier generic frame/detector/tracking experiments remain separately tested, without live guidance integration. |
-| [guidance](../argos/guidance/), [safety](../argos/safety/) | `guidance/image_framing.py` supplies the explicit simulation framing path. Earlier policies and safety contracts remain separate experiments. |
+| [perception](../argos/perception/) | `yolox.py`, `model_bundle.py`, `image_tracks.py` and appearance utilities support live detection/association. Alternative trackers and recovery policies are available to offline experiments. Perception does not import guidance or backends. |
+| [guidance](../argos/guidance/) | `image_framing.py` supplies simulation framing; `apparent_distance.py` supplies DST's image-height law. The console owns their activation and lifecycle. |
+| [safety](../argos/safety/) | Validation, gate and envelope contracts used by the experimental core. This package is not the live aircraft's safety controller. |
+| [backends](../argos/backends/) | MAVLink/EdgeTX transports, radio-profile tooling, immutable demand contracts and experimental simulators. `DistanceDemand` carries data; console-owned `DistanceValidator` invokes the distance law. |
 | [attitude_sim.py](../argos/backends/attitude_sim.py) | Simulated backend used to exercise those contracts. |
-| [harness](../argos/harness/) | Instrumentation: link statistics reused by live MAVLink, plus offline plotting and development utilities. |
+| [harness](../argos/harness/) | Link statistics reused by live MAVLink, plotting, and offline continuity/multi-person orchestration that combines perception, console selection and dry command admission. |
 
 The MAVLink transport is not an implementation of `World`. The console does not
 run a general navigation loop, and the presence of a `safety` package does not make it a
 vehicle safety controller. Experimental `World.time()` belongs to its backend;
 the live console clock is not a shared clock for every package or machine.
 
-The current separation makes the observation path usable and testable without
-running the experiments. C++, a custom dialect, onboard video transport and swarm
-coordination remain future work rather than hidden runtime dependencies.
+The [offline continuity tools](continuity-diagnostics.md) can replay saved
+detections and images through target selection and dry yaw admission. ByteTrack,
+BoT-SORT and the motion/duplicate/candidate recovery prototypes are comparison
+paths, not the tracker or recovery policy enabled by FLY/DST. The BoT-SORT
+comparison does not enable learned ReID. A result on reused recordings or
+synthetic scenarios is not live integration or independent flight validation.
+
+`harness/continuity_replay.py` and `harness/multi_person_scenarios.py` own that
+cross-layer orchestration. [`continuity_provenance.py`](../argos/harness/continuity_provenance.py)
+verifies saved source dependencies, including the exact historical relocation
+of replay from `perception` and the corresponding two runner substitutions.
+It does not generally waive changed-source hashes; new reports bind current
+paths and bytes. [Dense validation](continuity-validation.md) describes that
+compatibility and the limits of reviewed references.
+
+The observation path remains usable without running these experiments. ARGOS
+perception and guidance run on the ground computer; onboard deployment, a new
+custom MAVLink dialect and swarm coordination are outside this runtime.
 
 ## Verification map
 
-Transport and recording tests cover framing, validation, replayable data and
-completion. Console tests cover stale data, receiver replacement, recording
-limits, archives, status assembly and reception incidents. The
-[browser suite](../tests/browser/console.spec.cjs) checks operator workflows and
-delayed responses using an isolated server.
-The [control browser suite](../tests/browser/control.spec.cjs) adds held pointer
-and multitouch inputs, keyboard guards, lease/lifecycle failures and responsive
-control geometry. Controller and API tests separately cover expiry, command
-evidence and simulation-only restrictions.
+| Boundary | Automated coverage |
+| --- | --- |
+| Package dependencies | [Core isolation tests](../tests/test_core_isolation.py) reject prohibited imports between perception, laws and backends. |
+| MAVLink and simulation control | Transport/journal tests check decoding, completion and replay; controller/API tests check expiry, command evidence and simulation-only restrictions. |
+| Physical assistance | Source, stream, native-profile and Lua tests check image identity, tickets, expiry and pilot handoff under software fixtures. They do not measure RF or aircraft response. |
+| Vision and offline experiments | Model-contract, association, continuity and provenance tests check declared inputs, deterministic scenarios and rejection of altered evidence. |
+| Recording and browser | Tests cover sidecar bounds/completion, replay, filming loss reporting, delayed responses, control lifecycle and Demo view evidence. Browser fixtures use synthetic camera/radio data. |
 
-These checks establish software behavior within their fixtures. The
-[validation record](validation.md) distinguishes them from the actual ground
-SITL/Gazebo checks and the hardware scenarios still unverified. Use the
-[README](../README.md#verify-a-change) for test commands and the
-[SITL guide](sitl-observation.md) to reproduce the integrated simulation.
-
-The optional [vision guide](vision.md) specifies model provenance, bounded
-processing, source fencing and paired-image expiry. Only separately enabled
-[visual framing](framing.md) and an explicit operator engagement connect these
-observations to derived inputs at `FlightControl`. Journals still record received
-MAVLink only.
+The [current verification record](validation.md#current-verification) gives dated
+suite and CI evidence, prerequisites and physical limitations. Counts describe
+the tested revision, not every later checkout. Use the
+[README](../README.md#verify-a-change) for commands and the
+[SITL guide](sitl-observation.md) for the integrated simulator setup.

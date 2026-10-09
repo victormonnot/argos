@@ -114,8 +114,10 @@ still opens the runway without a person or detector. `--scene person` and
 For an already configured camera, add `--vision-model /absolute/path/to/model.onnx`
 and the matching `--vision-variant` to `python -m argos.console`. The detector accepts
 the same JPEG camera data from Gazebo or the existing V4L2 receiver. Physical
-assisted flight has not been validated. Missing, altered or unsupported model files leave vision unavailable
-with an explicit status; the application does not download replacements.
+assistance uses the separate [FLY](argos-fly.md) and [DST](argos-distance.md)
+workflows; loading a detector alone does not enable control. Missing, altered
+or unsupported model files leave vision unavailable with an explicit status;
+the application does not download replacements.
 
 ## Physical-camera yaw preview
 
@@ -363,6 +365,8 @@ following. No marker, downward optical flow, known body height or hidden target
 coordinates corrects the model's output. Relative apparent size supplies the
 optional framing objective; it is not a metric range measurement.
 
-Journals continue to store received MAVLink only. Images, detections and track
-IDs are live and are not replayed from Sessions. See [validation](validation.md)
+JSONL journals store received MAVLink only. When visual recording is enabled,
+the separate sidecar stores sampled images, matching detections and track IDs
+for [replay in Sessions](console.md#visual-flight-replay). Replay shows recorded
+results; it does not rerun detection or tracking. See [validation](validation.md)
 for the actual checks and their limits.

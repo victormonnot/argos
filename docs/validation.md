@@ -2,10 +2,47 @@
 
 [Documentation](README.md) · [Project overview](../README.md)
 
-The published V1 corresponds to package version **0.1.0**, with passive
-observation and recorded-session analysis. The working tree additionally contains
-the opt-in [manual web flight](web-control.md) and [camera perception](vision.md)
-milestones verified below; no new release is implied. This page separates automated, simulator and hardware evidence.
+This page records what has been checked, on which version, and what each check
+can establish. Start with the [current verification](#current-verification) and
+[test coverage](#automated-checks); the [September reports](#historical-reports)
+retain the observations from earlier simulator and camera trials.
+
+## Current verification
+
+The latest full verification recorded here is **October 8, 2026**, for commit
+[`d6dc970`](https://github.com/victormonnot/argos/commit/d6dc970cbd55459eff63bd46b572ba828457c030).
+All three jobs passed in
+[GitHub Actions run 37848404424](https://github.com/victormonnot/argos/actions/runs/37848404424).
+The counts below come from the corresponding local checks; the GitHub run
+independently confirms the workflow passed on that commit.
+
+| Check | Recorded result |
+| --- | --- |
+| Full Python suite | **4,324 passed, 1 skipped**, including the 47 architecture checks |
+| Chromium browser suite | **277 passed**, with two workers on two CPUs, CI mode and no retries |
+| Bundled recordings | Both verifiers passed: the 58-frame MAVLink journal and the 36.58-second simulator flight with 177 JPEG images |
+| Installed wheel | Build, fresh installation, isolated imports and CLI, packaged web resources, passive initial state and `pip check` passed |
+| README replay quickstart | A fresh environment with only `console,mavlink` extras served the page, recording catalog, replay and a decoded JPEG over real HTTP |
+
+The single skipped Python case is a BoT-SORT-only pixel/camera-motion check that
+does not apply to ByteTrack. It is not a missing-dependency skip. The run also
+reported one Starlette/httpx deprecation warning. Local integration checks used
+Python 3.12, Lua 5.4.6 and FFmpeg 7.0.2.
+
+On October 9, source hashes and the Git diff confirmed that the README and
+documentation revisions since this run changed no application code, test code,
+dependency declaration or CI configuration. The full suites were not rerun for
+those documentation changes. This is a dated result, not a claim about every
+later commit.
+
+These checks do not launch Gazebo or fly a physical aircraft. The
+[historical reports](#historical-reports) describe the integrated simulator trials.
+The [project overview](../README.md#where-it-is-now) and
+[portfolio](https://victormonnot.com/projects/argos/) show the separate physical
+yaw-assistance milestone, with the pilot retaining the other controls.
+That demonstration does not establish reliable distance keeping, autonomous
+missions or swarm operation. Offline tracker and recovery comparisons remain
+[offline experiments](continuity-diagnostics.md).
 
 ## Automated checks
 
@@ -13,7 +50,7 @@ milestones verified below; no new release is implied. This page separates automa
 
 | Job | What it checks |
 | --- | --- |
-| Python 3.12 | The pytest suite: contracts, simulation, local transports, measurement validation, captures, archives and API. The bundled SITL example is also verified. |
+| Python 3.12 | The pytest suite: contracts, guidance, local transports, radio scripts, perception, captures, archives and API. Both bundled recordings are verified. |
 | Browser, Node.js 22 | Playwright workflows in Chromium, using a local file server and test responses. No dependency on a simulator or an existing console. |
 | Installed package, Python 3.12 | Wheel build, installation in a separate virtual environment, CLI, HTML/CSS/JS, fonts and state with no source configured. |
 
@@ -22,23 +59,48 @@ the module comes from `site-packages`. This detects issues such as missing
 packaged assets that an editable installation could hide. The smoke test makes
 in-memory HTTP requests without opening a network server, camera or MAVLink link.
 
-Transport tests use localhost UDP/TCP and a POSIX serial pseudo-terminal.
-Simulated faults remain in tests. They do not replace validation of radio
-hardware, a camera driver or an actual flight.
+### Prerequisites and limits
+
+Use the [development commands](../README.md#verify-a-change) for the complete
+test installation. Installing only the replay quickstart dependencies is not
+enough to exercise every integration. Check the pytest skip summary (`-ra`):
+optional checks can be skipped when their dependency or executable is absent.
+
+| Area | Required for the checks | What is exercised and what remains separate |
+| --- | --- | --- |
+| Contracts, guidance, API and recordings | Python test extras listed in CI | State transitions, expiry, failure handling, recording integrity and API behavior; these are software checks. |
+| Serial and MAVLink transports | `mavlink` extra; Linux/POSIX | Localhost UDP/TCP and serial pseudo-terminals, not a physical USB link or radio. |
+| FLY/DST radio logic | Lua 5.4 and `radio-profile` extra | The actual assistance scripts with substituted EdgeTX inputs, clock and serial APIs; not the native mixer, radio firmware or RF link. Older standalone Lua bench scripts have their own manual checks. |
+| Perception and tracker comparisons | `tracking` extra | OpenCV image operations, ByteTrack and BoT-SORT on controlled data. Detector tests use synthetic outputs and substitute model execution; CI does not download or benchmark trained weights. |
+| Camera archive export | FFmpeg | Real encoding/export checks, including timestamps and gaps; not camera-driver qualification. |
+| Browser | Node.js 22 and Playwright Chromium | Real page rendering and interactions against test responses; not the complete Python-to-aircraft path. |
+
+An integrated simulator trial, a props-off hardware check and a physical flight
+answer different questions. None is implied by a green unit or browser suite.
 
 ## Installation and versions
 
-Local preparation verified a wheel build and a non-editable installation in a
-fresh Python 3.12 virtual environment, separate from the development environment.
-Imports, `python -m argos.console --help`, web assets and `pip check` all passed.
-The package includes frontend assets and font licenses.
+The package version in [pyproject.toml](../pyproject.toml) is still **0.1.0**.
+That version alone does not identify which later repository features or checks
+are present; use the Git revision when comparing results. The October check
+above built the wheel from the source tree and installed it in a fresh Python
+3.12 environment, separate from the development checkout. Frontend assets,
+font licenses and vendored tracker licenses are packaged with the code.
 
-Direct MAVLink, console and plotting dependencies are pinned in
+Direct MAVLink, console, plotting and tracking dependencies are pinned in
 [pyproject.toml](../pyproject.toml). NumPy, pytest, the build tool and transitive
 dependencies are still resolved by pip. The repository therefore does not
 promise an identical binary environment on every installation. The tested
 environment is Ubuntu 24.04 x86-64/Python 3.12; declaring Python ≥3.11 does not
 amount to validating a full platform matrix.
+
+## Historical reports
+
+The reports below describe **September 2026 revisions**, in the terms used at
+the time. Their test counts, feature limits and hardware observations are not
+claims about the current tree. In particular, the initial pre-push CI status is
+superseded by the [October verification](#current-verification). Original trial
+details and headings are retained so existing links remain useful.
 
 ## SITL and camera trial
 
