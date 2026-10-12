@@ -48,7 +48,6 @@ body[data-demo=true] .app-header { border-bottom-color:var(--accent); }
 @media(max-width:760px) {
   body[data-demo=true] #demo-actions { display:contents; }
   body[data-demo=true] #demo-install { grid-column:3; grid-row:1; font-size:11px; }
-  body[data-demo=true] #demo-home { grid-column:3; grid-row:2; padding:4px 0; font-size:11px; }
   body[data-demo=true] .header-context { grid-column:1/3; }
   .hosted-demo-notice { padding:10px 14px; font-size:11px; }
 }

@@ -44,7 +44,8 @@ for (const viewport of [{ width: 1366, height: 850 }, { width: 390, height: 844 
     await expect(page.locator('#replay-play')).toHaveText('Play');
     await expect(page.locator('#replay-cursor')).toHaveValue('0.5');
     await expect(page.locator('#service-status')).toHaveText('Recorded simulation');
-    await expect(page.locator('#demo-home')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Back to welcome' })).toHaveCount(0);
+    await expect(page.locator('#demo-install')).toBeVisible();
     expect(navigations).toEqual(['http://127.0.0.1:4173/']);
     expect(model.calls.length).toBe(callsBeforeEntry);
     if (viewport.width < 760) {
@@ -54,8 +55,6 @@ for (const viewport of [{ width: 1366, height: 850 }, { width: 390, height: 844 
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: test.info().outputPath('console.png'), fullPage: true });
-    await page.locator('#demo-home').click();
-    await expect(enter).toBeVisible();
   });
 }
 
