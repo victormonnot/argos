@@ -16,6 +16,9 @@ GPS-free workflow, its launcher and control API.
 
 ## Starting the interface
 
+For a public recording-only experience, use the separate
+[hosted demo mode](../deploy/README.md). The commands below start the local console.
+
 From the repository root:
 
 ```sh

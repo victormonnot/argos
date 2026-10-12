@@ -3,12 +3,13 @@ import asyncio
 import json
 import math
 import os
+import re
 import stat
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.background import BackgroundTask
 
@@ -33,19 +34,41 @@ FONT_FILES = frozenset({
     "marcellus-400-latin.woff2",
     "marcellus-400-latin-ext.woff2",
 })
+DEMO_ASSETS = frozenset({
+    "/app.css", "/app.js", "/control.js", "/control.css", "/sessions.js", "/sessions.css",
+    "/framing-report.js", "/live.js", "/live.css", "/analysis.js", "/analysis.css",
+    "/demo.css", "/demo.js",
+    *(f"/fonts/{name}" for name in FONT_FILES),
+})
+DEMO_READ_PATHS = DEMO_ASSETS | {"/", "/demo", "/api/demo-config"}
+DEMO_ARCHIVE_ROUTE = re.compile(
+    r"/api/recordings(?:/[0-9a-f]{32}(?:/(?:replay|messages|analysis|download|framing-report"
+    r"|visual(?:/download|/frames/[0-9]+\.jpg)?))?)?")
 
 
 def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None, yaw_service=None):
-    session = session or ConsoleSession(config or ConsoleConfig())
-    archive = RecordingArchive(session.recorder.directory)
-    visual_archive = VisualArchive(session.recorder.directory)
-    vision = vision or VisionService(session.config.vision_model, variant=session.config.vision_variant,
-                                     bundle_path=session.config.vision_bundle,
-                                     threads=session.config.vision_threads,
-                                     max_hz=session.config.vision_hz)
-    session.vision = vision
+    config = config or (session.config if session is not None else ConsoleConfig())
+    if config.demo:
+        if any(value is not None for value in (session, vision, yaw_service)):
+            raise ValueError("the read-only demo cannot accept live services")
+        # Archive-only instances never construct a session, recorder, camera,
+        # control service or detector, including during application startup.
+        archive = RecordingArchive(config.recordings_dir)
+        visual_archive = VisualArchive(config.recordings_dir)
+    else:
+        session = session or ConsoleSession(config)
+        archive = RecordingArchive(session.recorder.directory)
+        visual_archive = VisualArchive(session.recorder.directory)
+        vision = vision or VisionService(session.config.vision_model, variant=session.config.vision_variant,
+                                         bundle_path=session.config.vision_bundle,
+                                         threads=session.config.vision_threads,
+                                         max_hz=session.config.vision_hz)
+        session.vision = vision
     if yaw_service is not None and session.config.yaw_assist:
         session.yaw_recovery_sink = yaw_service.record_recovery
+
+    def recording_status():
+        return {"id": None, "state": "idle"} if config.demo else session.recorder.snapshot()
 
     def snapshot():
         # A display read can land between receiver ticks. Deliver an already
@@ -61,6 +84,9 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
 
     @asynccontextmanager
     async def lifespan(app):
+        if config.demo:
+            yield
+            return
         session.start()
         vision.start()
         if yaw_service is not None:
@@ -98,11 +124,19 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
     app.state.session = session
     app.state.vision = vision
     app.add_middleware(ConsoleJSONCompression)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver"])
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=[
+        "127.0.0.1", "localhost", "[::1]", "testserver", *config.public_hosts])
 
     @app.middleware("http")
     async def local_headers(request, call_next):
-        response = await call_next(request)
+        if config.demo and request.method not in ("GET", "HEAD"):
+            response = JSONResponse({"detail": "The public demo only supports reading recorded sessions"},
+                                    status_code=405, headers={"Allow": "GET, HEAD"})
+        elif (config.demo and request.url.path not in DEMO_READ_PATHS
+              and not DEMO_ARCHIVE_ROUTE.fullmatch(request.url.path)):
+            response = JSONResponse({"detail": "This endpoint is unavailable in the public demo"}, status_code=404)
+        else:
+            response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -114,7 +148,30 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
 
     @app.get("/")
     async def index():
-        return FileResponse(STATIC / "index.html", media_type="text/html")
+        return FileResponse(STATIC / ("demo-welcome.html" if config.demo else "index.html"), media_type="text/html")
+
+    @app.get("/demo")
+    async def demo_console():
+        if not config.demo:
+            raise HTTPException(404, "The public demo is not enabled")
+        html = await asyncio.to_thread((STATIC / "index.html").read_text)
+        return HTMLResponse(html.replace("<body ", '<body data-demo="true" ', 1))
+
+    @app.get("/api/demo-config")
+    async def demo_config():
+        identifier = None
+        if config.demo:
+            catalog = await archive_call(archive.catalog, recording_status())
+            identifier = next((item["id"] for item in catalog["items"] if item["state"] == "unverified"), None)
+        return {"enabled": config.demo, "recording_id": identifier}
+
+    @app.get("/demo.css")
+    async def demo_stylesheet():
+        return FileResponse(STATIC / "demo.css", media_type="text/css")
+
+    @app.get("/demo.js")
+    async def demo_script():
+        return FileResponse(STATIC / "demo.js", media_type="text/javascript")
 
     @app.get("/app.css")
     async def stylesheet():
@@ -364,7 +421,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
             raise HTTPException(exc.status, str(exc)) from exc
 
     def require_closed(identifier):
-        status = session.recorder.snapshot()
+        status = recording_status()
         if status["id"] == identifier and status["state"] in ("recording", "error"):
             raise HTTPException(404, "Completed recording unavailable")
 
@@ -378,7 +435,7 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
         binding = visual_binding(metadata)
         if binding is None:
             return {"state": "missing", "detail": "This journal has no visual capture"}
-        current = session.recorder.snapshot()
+        current = recording_status()
         if current["id"] == identifier and current.get("visual", {}).get("state") == "finalizing":
             return {**current["visual"], "detail": "Visual recording is finishing; reopen the session shortly"}
         try:
@@ -394,14 +451,17 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
         binding = visual_binding(metadata)
         if binding is None:
             raise HTTPException(404, "This journal has no visual capture")
-        current = session.recorder.snapshot()
+        current = recording_status()
         if current["id"] == identifier and current.get("visual", {}).get("state") == "finalizing":
             raise HTTPException(409, "Visual recording is still finishing")
         return metadata, binding
 
     @app.get("/api/recordings")
     async def recordings():
-        return await archive_call(archive.catalog, session.recorder.snapshot())
+        catalog = await archive_call(archive.catalog, recording_status())
+        if config.demo:
+            catalog["directory"] = "Included demo recordings"
+        return catalog
 
     @app.get("/api/recordings/{identifier}")
     async def recording(identifier: str):

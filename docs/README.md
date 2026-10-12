@@ -21,6 +21,7 @@ and bench checks are grouped separately below.
 | [Console](console.md) | Camera and telemetry sources, live views, recording, replay and API |
 | [Running a session](running.md) | Starting, stopping, tmux and access from another computer |
 | [Recorded flight example](../examples/demo-flight/README.md) | A bundled simulator flight to replay, with a guided timeline |
+| [Hosted demo](../deploy/README.md) | Public replay mode, its limits and deployment on a server with Coolify |
 | [Filming](filming.md) | Capturing physical-camera video and pilot/radio observations, then exporting them |
 | [Demo view](demo-view.md) | Reading target, pilot-input and assistance status in the compact presentation |
 | [Telemetry-only example](../examples/demo/README.md) | A small MAVLink recording for message and reception analysis |

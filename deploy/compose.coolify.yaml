@@ -1,0 +1,33 @@
+# Coolify supplies HTTPS and routes to app:8080 on its internal network.
+# Set APP_HOST to the demo domain, without a scheme or path.
+services:
+  app:
+    build:
+      # Coolify uses the repository Base Directory as the project directory.
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    restart: unless-stopped
+    command:
+      - --demo
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --public-host
+      - ${APP_HOST:?Set APP_HOST to the public demo hostname}
+      - --recordings-dir
+      - /app/examples/demo-flight
+    expose:
+      - "8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 128
+    stop_grace_period: 15s

@@ -77,6 +77,8 @@ an alias does not automatically exist on the simulation computer.
 
 This setup uses existing SSH authentication. The console itself is a local
 service, with no account management or intended public HTTP exposure.
+The separate [hosted demo mode](../deploy/README.md) exposes curated recordings
+and their analysis without enabling live sources or controls.
 
 ## Stopping and restarting
 

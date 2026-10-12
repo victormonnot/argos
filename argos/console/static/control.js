@@ -1,6 +1,7 @@
 "use strict";
 
 (() => {
+  if (document.body.dataset.demo === "true") return;
   const node = (id) => document.getElementById(id);
   const directions = Array.from(document.querySelectorAll("[data-control-axis]"));
   const actionButtons = Array.from(document.querySelectorAll("[data-control-action]"));

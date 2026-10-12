@@ -13,6 +13,8 @@
     <link href="/analysis.css" rel="stylesheet"/>
     <link href="/live.css" rel="stylesheet"/>
     <link href="/control.css" rel="stylesheet"/>
+    <link href="/demo.css" rel="stylesheet"/>
+    <script defer="" src="/demo.js"></script>
     <script defer="" src="/app.js">
     </script>
     <script defer="" src="/sessions.js"></script>
@@ -58,6 +60,7 @@
           modified
         </span>
       </button>
+      <a class="button button-outline" hidden id="demo-home" href="/">Back to welcome</a>
     </header>
     <nav aria-label="Workspaces" class="view-navigation">
       <button aria-controls="workspace" aria-current="page" id="view-observation" type="button">Observation</button>
@@ -66,6 +69,10 @@
       <button aria-controls="sessions-workspace" id="view-sessions" type="button">Sessions</button>
       <span id="view-context">Incoming data</span>
     </nav>
+    <div class="hosted-demo-notice" hidden id="hosted-demo-notice">
+      <p>Explore the recorded flight, measurements, messages and analysis. Live flying and recording are unavailable in this demo.</p>
+      <button class="button button-outline" hidden id="demo-retry" type="button">Retry demo</button>
+    </div>
     <div aria-label="Video, recording and incidents" class="reception-bar">
       <button aria-controls="inspector" aria-expanded="false" class="reception-button" data-panel="video" type="button">
         <span>

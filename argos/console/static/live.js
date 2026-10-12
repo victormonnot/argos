@@ -1,6 +1,7 @@
 /* Optional passive live inspection. It never sends a MAVLink or HTTP mutation. */
 (() => {
   "use strict";
+  if (document.body.dataset.demo === "true") return;
   const root = document.getElementById("live-messages-root");
   if (!root) return;
   const finite = (value) => typeof value === "number" && Number.isFinite(value);

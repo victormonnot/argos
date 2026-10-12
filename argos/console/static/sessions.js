@@ -10,6 +10,7 @@
   const identifier = (value) => typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
   const hash = (value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
   const kinds = ["heartbeat", "battery", "attitude", "local_position_ned"];
+  const hostedDemo = document.body.dataset.demo === "true";
   let visible = false;
   let selected = null;
   let metadata = null;
@@ -126,7 +127,7 @@
     catalogRequest?.abort();
     const controller = catalogRequest = new AbortController();
     node("archive-refresh").disabled = true;
-    text("archive-status", "Reading folder…");
+    text("archive-status", hostedDemo ? "Loading demo recordings…" : "Reading folder…");
     try {
       const catalog = await getJSON("/api/recordings", controller);
       if (token !== catalogEpoch || !visible) return;
@@ -155,9 +156,13 @@
       node("archive-list").replaceChildren(fragment);
       markSelection();
       text("archive-count", `${number.format(catalog.total)} ${catalog.total === 1 ? "recording" : "recordings"}`);
-      text("archive-status", catalog.total === 0 ? "No recordings. Start and stop a capture from Observation → Session recording." : catalog.total > catalog.limit ? `Showing the ${catalog.limit} most recently modified files.` : "");
+      const emptyMessage = hostedDemo ? "No demo recording is available. Try Refresh again."
+        : "No recordings. Start and stop a capture from Observation → Session recording.";
+      text("archive-status", catalog.total === 0 ? emptyMessage : catalog.total > catalog.limit ? `Showing the ${catalog.limit} most recently modified files.` : "");
     } catch (error) {
-      if (token === catalogEpoch && visible) text("archive-status", error.name === "AbortError" ? "The folder did not respond in time. Try Refresh again." : error.message);
+      const timeoutMessage = hostedDemo ? "The demo recordings did not load in time. Try Refresh again."
+        : "The folder did not respond in time. Try Refresh again.";
+      if (token === catalogEpoch && visible) text("archive-status", error.name === "AbortError" ? timeoutMessage : error.message);
     } finally {
       if (token === catalogEpoch) {
         node("archive-refresh").disabled = false;
@@ -661,6 +666,11 @@
     void seek(value.at_s);
   });
   document.addEventListener("argos:workspace-changed", (event) => setWorkspace(event.detail.view === "sessions"));
+  document.addEventListener("argos:demo-ready", (event) => {
+    if (!hostedDemo || !identifier(event.detail?.recording_id)) return;
+    setWorkspace(true);
+    void openRecording(event.detail.recording_id, false);
+  });
   node("archive-journal").addEventListener("click", () => {
     document.dispatchEvent(new Event("argos:show-observation"));
     document.querySelector('.reception-bar [data-panel="recording"]').click();

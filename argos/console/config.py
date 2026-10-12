@@ -23,6 +23,11 @@ def default_recordings_dir():
     return root / "argos" / "recordings"
 
 
+def default_demo_recordings_dir():
+    """Only the published fixture is selected implicitly for a visitor demo."""
+    return Path(__file__).resolve().parents[2] / "examples" / "demo-flight"
+
+
 @dataclass(frozen=True)
 class ConsoleConfig:
     sim_control: bool = False
@@ -42,15 +47,39 @@ class ConsoleConfig:
     system: int = 1
     component: int = 1
     battery_age: float = 2.
-    recordings_dir: Path = field(default_factory=default_recordings_dir)
+    recordings_dir: Path | None = None
     limits: TelemetryLimits = field(default_factory=lambda: TelemetryLimits(1., .2, .4))
     vision_variant: str = "tiny"
     vision_threads: int = 2
     vision_hz: int = 5
     yaw_assist: bool = False
     vision_bundle: Path | None = None
+    demo: bool = False
+    public_hosts: tuple[str, ...] = ()
 
     def __post_init__(self):
+        if not isinstance(self.demo, bool):
+            raise ValueError("demo must be a boolean")
+        if not isinstance(self.public_hosts, tuple) or any(
+                not isinstance(host, str) or len(host) > 253 or not re.fullmatch(
+                    r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", host)
+                or any(not label or len(label) > 63 or label.startswith("-") or label.endswith("-")
+                       for label in host.split(".")) for host in self.public_hosts):
+            raise ValueError("public hosts must be exact hostnames without a scheme, port or wildcard")
+        if self.public_hosts and not self.demo:
+            raise ValueError("public hosts are only supported by the read-only demo")
+        if self.demo and (self.video_source != "none" or self.video_endpoint is not None
+                or self.has_telemetry or self.mavlink_peer is not None
+                or self.sequence_scope is not None or self.has_vision or self.sim_control
+                or self.sim_framing or self.yaw_assist or self.environment != "unconfigured"
+                or self.gazebo_python_path is not None):
+            raise ValueError("the read-only demo cannot configure live sources, vision or flight control")
+        directory = self.recordings_dir
+        if directory is None:
+            directory = default_demo_recordings_dir() if self.demo else default_recordings_dir()
+        object.__setattr__(self, "recordings_dir", Path(directory).expanduser().resolve())
+        if self.demo and not self.recordings_dir.is_dir():
+            raise ValueError("demo recordings not found; use a source checkout or --recordings-dir with the published fixture")
         get_model_spec(self.vision_variant)
         validate_inference_threads(self.vision_threads)
         validate_vision_hz(self.vision_hz)

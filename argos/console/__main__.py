@@ -5,7 +5,7 @@ from pathlib import Path
 
 from argos.backends.mavlink import SequenceScope, TelemetryLimits
 from argos.perception.yolox import MODEL_CATALOG
-from .config import ConsoleConfig, default_recordings_dir
+from .config import ConsoleConfig
 
 
 def positive(value):
@@ -60,8 +60,14 @@ def main():
     parser.add_argument("--attitude-age", type=positive, default=.2)
     parser.add_argument("--position-age", type=positive, default=.4)
     parser.add_argument("--battery-age", type=positive, default=2.)
-    parser.add_argument("--recordings-dir", type=Path, default=default_recordings_dir(),
-                        help="capture directory (default: XDG_DATA_HOME/argos/recordings or ~/.local/share/argos/recordings)")
+    parser.add_argument("--recordings-dir", type=Path,
+                        help="recordings directory (default: the published fixture in demo, otherwise the user's local archive)")
+    parser.add_argument("--demo", action="store_true",
+                        help="serve the public welcome and recorded-flight replay only, without live services")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="HTTP bind address; non-loopback bindings require --demo and --public-host")
+    parser.add_argument("--public-host", action="append", default=[],
+                        help="exact allowed public hostname for --demo (repeat for multiple domains; no scheme or port)")
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
     source = "gazebo" if args.gazebo_topic else "device" if args.camera_device else "none"
@@ -69,7 +75,10 @@ def main():
     try:
         if not 1 <= args.port <= 65535:
             raise ValueError("HTTP port must be in 1..65535")
+        if args.host not in ("127.0.0.1", "localhost", "::1") and not (args.demo and args.public_host):
+            raise ValueError("a non-loopback HTTP bind requires --demo and an explicit --public-host")
         config = ConsoleConfig(
+            demo=args.demo, public_hosts=tuple(args.public_host),
             sim_control=args.sim_control, sim_framing=args.sim_framing, vision_model=args.vision_model,
             vision_bundle=args.vision_bundle,
             vision_variant=args.vision_variant,
@@ -90,7 +99,7 @@ def main():
         app = create_app(config)
     except (ImportError, ValueError, TypeError) as exc:
         parser.exit(2, f"error: {exc}\nInstall: pip install -e '.[console,mavlink]'\n")
-    uvicorn.run(app, host="127.0.0.1", port=args.port, access_log=False)
+    uvicorn.run(app, host=args.host, port=args.port, access_log=False)
 
 
 if __name__ == "__main__":

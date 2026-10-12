@@ -1,6 +1,8 @@
 "use strict";
 
 (() => {
+  // Hosted replay starts separately and never connects to live sources.
+  if (document.body.dataset.demo === "true") return;
   const STATE_INTERVAL_MS = 100;
   const FRAME_INTERVAL_MS = 125;
   const REQUEST_TIMEOUT_MS = 2000;

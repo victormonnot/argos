@@ -1,0 +1,16 @@
+# An explicit allowlist keeps local recordings, private notes and credentials
+# out of the build context, including files excluded only in .git/info/exclude.
+**
+!Dockerfile
+!pyproject.toml
+!README.md
+!LICENSE
+!argos/
+!argos/**
+!examples/
+!examples/demo-flight/
+!examples/demo-flight/**
+!examples/verify_demo_flight.py
+**/__pycache__/
+**/*.pyc
+**/*.pyo
