@@ -127,19 +127,27 @@ def test_local_default_cannot_accept_public_hosts():
 
 def test_local_default_remains_an_observation_console():
     with TestClient(module.create_app()) as client:
+        html = client.get("/").text
+        assert 'data-demo="true"' not in html
+        assert 'id="demo-welcome"' not in html
         assert client.get("/api/state").status_code == 200
         assert client.get("/api/demo-config").json() == {"enabled": False, "recording_id": None}
         assert client.get("/demo").status_code == 404
         assert client.get("/api/state", headers={"Host": "try.argos.example"}).status_code == 400
 
 
-def test_demo_routes_welcome_and_marks_only_its_console(client):
+def test_demo_welcome_overlays_the_real_console_and_direct_entry_skips_it(client):
     welcome = client.get("/")
     assert welcome.status_code == 200
+    assert '<body data-demo="true"' in welcome.text
+    assert 'id="sessions-workspace"' in welcome.text
+    assert 'id="demo-welcome"' in welcome.text
     assert "Try ARGOS" in welcome.text
+    assert welcome.text.count("<html") == 1
     console = client.get("/demo")
     assert console.status_code == 200
     assert '<body data-demo="true"' in console.text
+    assert 'id="demo-welcome"' not in console.text
     assert client.get("/demo.js").status_code == 200
     assert client.get("/demo.css").status_code == 200
 

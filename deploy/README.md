@@ -7,7 +7,9 @@ replay the bundled simulated flight, inspect its camera and detections, filter
 MAVLink messages, and explore reception analysis and framing reports. Each
 browser has its own playback cursor.
 
-The welcome page links to the console at `/demo` and explains the demo's limits.
+The console loads behind a blurred welcome overlay with a **Try ARGOS** button
+and a short demo-limit note. Entering dismisses the overlay without reloading
+the recording. The `/demo` URL opens the console directly.
 This mode does not run flight control, live sources, recording, or detection.
 It does not start a simulator and cannot change the recorded flight.
 
@@ -100,7 +102,8 @@ commit alone does not update an image-based deployment.
 
 ## Check a deployment
 
-Confirm that the welcome page loads, **Try ARGOS** opens the recorded flight,
+Confirm that the console appears behind the blurred welcome, **Try ARGOS**
+dismisses it without reloading the recorded flight,
 and playback, messages, analysis and framing reports work. Check that a second
 browser can seek independently. Confirm the demo rejects `POST /api/sources`,
 `POST /api/recordings/start` and `POST /api/control/claim`, and that live state

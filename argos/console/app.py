@@ -146,16 +146,25 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
             "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
         return response
 
+    async def demo_html(*, welcome=False):
+        html = await asyncio.to_thread((STATIC / "index.html").read_text)
+        html = html.replace("<body ", '<body data-demo="true" ', 1)
+        if welcome:
+            overlay = await asyncio.to_thread((STATIC / "demo-welcome.html").read_text)
+            html = html.replace("</body>", overlay + "\n  </body>", 1)
+        return HTMLResponse(html)
+
     @app.get("/")
     async def index():
-        return FileResponse(STATIC / ("demo-welcome.html" if config.demo else "index.html"), media_type="text/html")
+        if config.demo:
+            return await demo_html(welcome=True)
+        return FileResponse(STATIC / "index.html", media_type="text/html")
 
     @app.get("/demo")
     async def demo_console():
         if not config.demo:
             raise HTTPException(404, "The public demo is not enabled")
-        html = await asyncio.to_thread((STATIC / "index.html").read_text)
-        return HTMLResponse(html.replace("<body ", '<body data-demo="true" ', 1))
+        return await demo_html()
 
     @app.get("/api/demo-config")
     async def demo_config():

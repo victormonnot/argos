@@ -20,6 +20,18 @@
   skip.href = "#sessions-workspace";
   skip.textContent = "Skip to demo";
 
+  const welcome = node("demo-welcome");
+  if (welcome) {
+    // The server renders an open overlay to cover the first paint. Upgrade it
+    // to a modal dialog so the loaded console is inert and focus stays inside.
+    welcome.close();
+    welcome.showModal();
+    node("demo-enter").addEventListener("click", () => welcome.close());
+    welcome.addEventListener("close", () => {
+      if (!welcome.open) node("sessions-workspace").focus({ preventScroll: true });
+    });
+  }
+
   let loading = false;
   async function start() {
     if (loading) return;
@@ -35,7 +47,9 @@
       if (config.enabled !== true || !/^[0-9a-f]{32}$/.test(config.recording_id)) {
         throw new Error("The demo recording is unavailable. Please try again.");
       }
-      document.dispatchEvent(new CustomEvent("argos:demo-ready", { detail: { recording_id: config.recording_id } }));
+      document.dispatchEvent(new CustomEvent("argos:demo-ready", { detail: {
+        recording_id: config.recording_id, initial_at_s: welcome ? 0.5 : 0,
+      } }));
     } catch (error) {
       node("replay-status").textContent = error.name === "AbortError"
         ? "The demo took too long to respond. Please try again."

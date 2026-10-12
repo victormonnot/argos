@@ -1,51 +1,6 @@
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <meta name="color-scheme" content="dark"/>
-    <meta name="description" content="Explore ARGOS through an interactive recorded flight: camera, detections, telemetry and flight analysis."/>
-    <title>ARGOS · Try the interactive demo</title>
-    <link href="/app.css" rel="stylesheet"/>
-    <link href="/demo.css" rel="stylesheet"/>
-  </head>
-  <body class="demo-welcome">
-    <a class="skip-link" href="#demo-intro">Skip to the demo</a>
-    <header class="welcome-header">
-      <span class="brand">ARGOS</span>
-      <a href="https://victormonnot.com/projects/argos/">About the project <span aria-hidden="true">↗</span></a>
-    </header>
-    <main class="welcome-main" id="demo-intro">
-      <div class="welcome-intro">
-        <p class="welcome-eyebrow">Interactive demo</p>
-        <h1>ARGOS</h1>
-        <p class="welcome-description">Software for drone autonomy and mission control. Explore the console through a recorded simulated flight, with camera images, detections and telemetry.</p>
-        <div class="welcome-action">
-          <a class="welcome-enter" href="/demo" aria-describedby="demo-limits">Try ARGOS <span aria-hidden="true">→</span></a>
-          <p id="demo-limits">Demo mode with selected features. Live flying and recording are unavailable.</p>
-        </div>
-      </div>
-      <div class="welcome-features" aria-label="What you can explore">
-        <section>
-          <span class="welcome-index" aria-hidden="true">01 / REPLAY</span>
-          <h2>Explore the flight</h2>
-          <p>Play, pause and move through the timeline. Inspect the camera and its recorded detections.</p>
-        </section>
-        <section>
-          <span class="welcome-index" aria-hidden="true">02 / INSPECT</span>
-          <h2>Read the data</h2>
-          <p>Compare flight events with telemetry and filter the original MAVLink messages.</p>
-        </section>
-        <section>
-          <span class="welcome-index" aria-hidden="true">03 / ANALYZE</span>
-          <h2>Look closer</h2>
-          <p>Explore reception charts and the framing report, then return to that moment in the replay.</p>
-        </section>
-      </div>
-    </main>
-    <footer class="welcome-footer">
-      <span>A project by <a href="https://victormonnot.com/">Victor Monnot</a></span>
-      <a href="https://github.com/victormonnot/argos">View source <span aria-hidden="true">↗</span></a>
-    </footer>
-  </body>
-</html>
+<dialog open id="demo-welcome" aria-labelledby="demo-enter" aria-describedby="demo-limits">
+  <div class="demo-welcome-prompt">
+    <button autofocus id="demo-enter" type="button">Try ARGOS</button>
+    <p id="demo-limits">Demo mode · selected features</p>
+  </div>
+</dialog>

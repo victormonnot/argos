@@ -67,7 +67,8 @@ and playback does not rerun the detector. The [demo guide](examples/demo-flight/
 has a short walkthrough, capture details and file verification instructions.
 
 To present this recording to visitors, `python -m argos.console --demo` opens a
-welcome page and a console limited to replay and analysis. See the
+console limited to replay and analysis, with a blurred **Try ARGOS** welcome
+overlay. See the
 [hosting guide](deploy/README.md) for the container and Coolify setup.
 
 ## Hardware and simulation

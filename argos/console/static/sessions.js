@@ -180,7 +180,7 @@
       && value.download_url === `/api/recordings/${id}/download?revision=${value.revision}`;
   }
 
-  async function openRecording(id, moveFocus) {
+  async function openRecording(id, moveFocus, initialAt = 0) {
     cancelReplay();
     const token = epoch;
     selected = id;
@@ -208,6 +208,7 @@
       if (token !== epoch || !visible) return;
       if (!validMetadata(value, id)) throw new Error("Invalid recording description.");
       metadata = value;
+      cursor = clampTime(finite(initialAt) ? initialAt : 0);
       if (visualReady()) detailView = "flight";
       renderDetailView();
       text("replay-status", "");
@@ -234,7 +235,7 @@
       node("archive-download").href = value.download_url;
       node("replay-content").hidden = false;
       node("replay-cursor").max = String(value.duration_s);
-      node("replay-cursor").value = "0";
+      node("replay-cursor").value = String(cursor);
       node("replay-source").replaceChildren();
       const sources = value.sources.filter((item) => item.system > 0 && item.component > 0);
       if (sources.length !== 1) node("replay-source").add(new Option(sources.length ? "Select a recorded component" : "No component", ""));
@@ -244,7 +245,7 @@
       node("replay-no-source").hidden = sources.length > 0;
       node("replay-transport").hidden = !visualReady() && sources.length === 0;
       clearMeasures(sources.length ? "Select the component whose measurements you want to replay." : "");
-      text("replay-time", `0 s / ${numeric(value.duration_s, " s")}`);
+      text("replay-time", `${numeric(cursor, " s")} / ${numeric(value.duration_s, " s")}`);
       if (moveFocus && document.activeElement === opener) {
         (sources.length ? node("replay-source") : node("archive-download")).focus({ preventScroll: true });
         if (matchMedia("(max-width: 760px)").matches) node("replay-content").scrollIntoView({ block: "start" });
@@ -252,7 +253,7 @@
       if (sources.length === 1) {
         source = sources[0];
       }
-      if (cursorReady()) void seek(0);
+      if (cursorReady()) void seek(cursor);
     } catch (error) {
       if (token === epoch && visible) text("replay-status", error.name === "AbortError" ? "Verification timed out. Reopen the recording to retry." : error.message);
     } finally {
@@ -669,7 +670,7 @@
   document.addEventListener("argos:demo-ready", (event) => {
     if (!hostedDemo || !identifier(event.detail?.recording_id)) return;
     setWorkspace(true);
-    void openRecording(event.detail.recording_id, false);
+    void openRecording(event.detail.recording_id, false, event.detail.initial_at_s);
   });
   node("archive-journal").addEventListener("click", () => {
     document.dispatchEvent(new Event("argos:show-observation"));
