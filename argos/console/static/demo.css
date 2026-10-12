@@ -78,3 +78,20 @@ body[data-demo=true] #demo-playback #replay-cursor-status { grid-column:1/-1; ma
   body[data-demo=true] #live-messages-root { flex:none; width:100%; }
   body[data-demo=true] .live-columns { flex:none; height:max(360px,60dvh); }
 }
+
+/* The shared transport takes room that the live desktop layout can otherwise
+   devote to its camera. Short hosted windows need scrolling before it collapses. */
+@media(min-width:761px) and (max-height:780px) {
+  body[data-demo=true]:is([data-view=observation],[data-view=control]):not(.demo-mode) { height:auto; min-height:100dvh; overflow:auto; }
+  body[data-demo=true]:not(.demo-mode) .workspace { flex:none; min-height:460px; }
+  body[data-demo=true]:not(.demo-mode) .camera-panel { align-self:start; }
+  body[data-demo=true]:not(.demo-mode) .camera-stage { min-height:230px; height:clamp(230px,40dvh,420px); }
+  body[data-demo=true]:not(.demo-mode) :is(.inspector,.control-panel) { max-height:680px; }
+}
+@media(min-width:961px) and (max-height:780px) {
+  body[data-demo=true].demo-mode { height:auto; min-height:100dvh; overflow:auto; }
+  body[data-demo=true].demo-mode .workspace { flex:none; overflow:visible; }
+  body[data-demo=true].demo-mode .camera-panel { height:auto; grid-template-columns:minmax(280px,1fr) minmax(320px,40%) minmax(280px,1fr); grid-template-rows:auto auto auto auto auto; }
+  body[data-demo=true].demo-mode .camera-stage { align-self:start; }
+  body[data-demo=true].demo-mode :is(.demo-summary,.demo-shot) { overflow:visible; }
+}

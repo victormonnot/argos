@@ -125,6 +125,7 @@
     let request = null;
     let epoch = 0;
     let error = "";
+    let reloadRequired = false;
     let chosen = null;
     let sourceSignature = "";
     const rows = new Map();
@@ -202,7 +203,7 @@
 
     function render() {
       const ready = cursorReady() && events !== null && !error;
-      freeze.disabled = !cursorReady();
+      freeze.disabled = !recorded?.canPlay;
       freeze.setAttribute("aria-pressed", String(Boolean(recorded?.playing)));
       setText(freeze, recorded?.playing ? "Pause replay" : "Play replay");
       root.dataset.stale = "false";
@@ -311,7 +312,13 @@
           let value;
           try {
             const response = await fetch(`/api/recordings/${metadata.id}/messages?${query}`, { signal: controller.signal, cache: "no-store" });
-            if (!response.ok) throw new Error("Recorded messages could not be read. Retry to reload the original archive.");
+            if (!response.ok) {
+              const failure = new Error(response.status === 409
+                ? "The recording changed. Retry messages to reopen the verified archive."
+                : "Recorded messages could not be read. Retry to reload the original archive.");
+              failure.status = response.status;
+              throw failure;
+            }
             value = await response.json();
           } finally {
             clearTimeout(timeout);
@@ -322,7 +329,10 @@
         }
         if (token === epoch) events = loaded;
       } catch (cause) {
-        if (token === epoch) error = cause.name === "AbortError" ? "Recorded messages timed out. Retry to load the archive." : cause.message;
+        if (token === epoch) {
+          error = cause.name === "AbortError" ? "Recorded messages timed out. Retry to load the archive." : cause.message;
+          reloadRequired = cause.status === 409;
+        }
       } finally {
         if (token === epoch) {
           request = null;
@@ -344,6 +354,7 @@
         archiveKey = nextKey;
         events = null;
         error = "";
+        reloadRequired = false;
         chosen = null;
         search.value = "";
         sourceSignature = "";
@@ -360,7 +371,10 @@
       if (freeze.disabled) return;
       document.dispatchEvent(new CustomEvent("argos:recorded-command", { detail: { action: recorded?.playing ? "pause" : "play" } }));
     });
-    retry.addEventListener("click", () => { error = ""; void loadMessages(); });
+    retry.addEventListener("click", () => {
+      if (reloadRequired) document.dispatchEvent(new CustomEvent("argos:recorded-command", { detail: { action: "reload" } }));
+      else { error = ""; void loadMessages(); }
+    });
     source.addEventListener("change", render);
     search.addEventListener("input", render);
     showTypes.addEventListener("click", () => mobileView("types"));

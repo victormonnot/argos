@@ -18,6 +18,7 @@
   let snapshot = null;
   let source = null;
   let cursor = 0;
+  let openingAt = 0;
   let playing = false;
   let anchorAt = 0;
   let anchorTime = 0;
@@ -34,6 +35,7 @@
   let imageURL = null;
   let recordedPhase = "loading";
   let recordedError = "";
+  let recordedNeedsReopen = false;
   let stopped = false;
   let messageEpoch = 0;
   let messageRequest = null;
@@ -51,6 +53,7 @@
       visual: recordedPhase === "ready" ? visualSnapshot : null,
       imageURL: recordedPhase === "ready" ? imageURL : null,
       playing, speed: Number(node("replay-speed").value),
+      canPlay: Boolean(cursorReady() && recordedPhase === "ready" && metadata.duration_s > 0),
     } }));
   }
 
@@ -67,7 +70,11 @@
     try {
       const response = await fetch(url, { signal: controller.signal, cache: "no-store" });
       const value = await response.json();
-      if (!response.ok) throw new Error(typeof value.detail === "string" ? value.detail : "Read request rejected by the service.");
+      if (!response.ok) {
+        const error = new Error(typeof value?.detail === "string" ? value.detail : "Read request rejected by the service.");
+        error.status = response.status;
+        throw error;
+      }
       return value;
     } finally {
       clearTimeout(timeout);
@@ -78,7 +85,14 @@
     playing = false;
     clearTimeout(timer);
     text("replay-play", "Play");
+    recordedPlaybackStatus();
     notifyRecorded();
+  }
+
+  function recordedPlaybackStatus() {
+    if (!hostedDemo || recordedPhase !== "ready") return;
+    const state = playing ? "Playing" : metadata && cursor >= metadata.duration_s ? "End of recording · paused" : "Paused";
+    text("replay-cursor-status", `${state} · recorded Gazebo flight · all views share this time.`);
   }
 
   function clampTime(offset) {
@@ -237,6 +251,8 @@
     cancelReplay();
     const token = epoch;
     selected = id;
+    openingAt = finite(initialAt) ? initialAt : 0;
+    recordedNeedsReopen = false;
     metadata = snapshot = source = null;
     if (hostedDemo) {
       messageEpoch += 1; messageRequest?.abort();
@@ -265,7 +281,7 @@
       if (token !== epoch || !replayActive()) return;
       if (!validMetadata(value, id)) throw new Error("Invalid recording description.");
       metadata = value;
-      cursor = clampTime(finite(initialAt) ? initialAt : 0);
+      cursor = clampTime(openingAt);
       if (visualReady()) detailView = "flight";
       renderDetailView();
       text("replay-status", "");
@@ -541,17 +557,21 @@
     const timeout = setTimeout(() => controller.abort(), 15000);
     let candidateURL = null;
     try {
-      const visualRevision = metadata.visual?.revision;
+      const visualRevision = metadata.visual?.revision, hasVisual = Boolean(visualReady());
       const [values, visual] = await Promise.all([
         pair ? getJSON(`/api/recordings/${id}/replay?${new URLSearchParams({ revision, at: target, system: pair.system, component: pair.component })}`, controller) : null,
-        visualReady() ? getJSON(`/api/recordings/${id}/visual?${new URLSearchParams({ revision, visual_revision: visualRevision, at: target })}`, controller) : null,
+        hasVisual ? getJSON(`/api/recordings/${id}/visual?${new URLSearchParams({ revision, visual_revision: visualRevision, at: target })}`, controller) : null,
       ]);
       if (token !== epoch || !replayActive()) return;
-      if (values && !validSnapshot(values, id, target, pair)) throw new Error("Invalid recorded measurements.");
-      if (visual && !validVisual(visual, id, revision, visualRevision, target)) throw new Error("Invalid recorded images and observations.");
+      if (pair && !validSnapshot(values, id, target, pair)) throw new Error("Invalid recorded measurements.");
+      if (hasVisual && !validVisual(visual, id, revision, visualRevision, target)) throw new Error("Invalid recorded images and observations.");
       if (visual?.frame?.state === "recent") {
         const response = await fetch(visual.frame.url, { signal: controller.signal, cache: "no-store" });
-        if (!response.ok || !response.headers.get("content-type")?.startsWith("image/jpeg")) throw new Error("The recorded image could not be read.");
+        if (!response.ok || !response.headers.get("content-type")?.startsWith("image/jpeg")) {
+          const error = new Error("The recorded image could not be read.");
+          error.status = response.status;
+          throw error;
+        }
         const blob = await response.blob();
         if (!blob.size || blob.size > 2 * 1024 * 1024) throw new Error("Invalid recorded image size.");
         candidateURL = URL.createObjectURL(blob);
@@ -575,7 +595,7 @@
       notifyRecorded();
       if (previousURL) URL.revokeObjectURL(previousURL);
       text("replay-status", "");
-      text("replay-cursor-status", `${playing ? "Playing" : "Paused"} · recorded Gazebo flight · all views share this time.`);
+      recordedPlaybackStatus();
       controls(false);
       if (playing) timer = setTimeout(() => {
         void seek(anchorAt + (performance.now() - anchorTime) / 1000 * Number(node("replay-speed").value), true);
@@ -583,6 +603,7 @@
     } catch (error) {
       if (token !== epoch || !replayActive()) return;
       controller.abort(); pause();
+      recordedNeedsReopen = error.status === 409;
       const message = error.name === "AbortError" ? "The recording did not respond in time." : error.message;
       clearRecorded("Replay unavailable at this point. Move the cursor or retry.", "error", message);
       text("replay-status", message); controls(false);
@@ -860,16 +881,25 @@
     const target = hostedDemo || flightView() ? cursor + (name === "next" ? .2 : -.2) : snapshot?.[`${name}_at_s`];
     if (finite(target)) void seek(target);
   });
-  node("replay-speed").addEventListener("change", () => { anchorAt = cursor; anchorTime = performance.now(); notifyRecorded(); });
+  node("replay-speed").addEventListener("change", () => {
+    anchorAt = cursor; anchorTime = performance.now();
+    if (hostedDemo && playing) {
+      // Discard any request timed at the old speed before advancing again.
+      clearTimeout(timer);
+      void seek(anchorAt, true);
+    }
+    notifyRecorded();
+  });
   document.addEventListener("argos:recorded-command", event => {
     if (!hostedDemo) return;
     const command = event.detail;
     if (command?.action === "pause") { cancelReplay(); controls(false); }
     else if (command?.action === "play" && !playing) node("replay-play").click();
     else if (command?.action === "seek" && finite(command.at_s)) void seek(command.at_s);
+    else if (command?.action === "reload" && selected) void openRecording(selected, false, cursor);
     else if (command?.action === "retry") {
-      if (metadata) void seek(cursor);
-      else if (demoRecording) void openRecording(demoRecording.id, false, demoRecording.at);
+      if (metadata && !recordedNeedsReopen) void seek(cursor);
+      else if (selected || demoRecording) void openRecording(selected || demoRecording.id, false, metadata ? cursor : openingAt);
     }
   });
   document.addEventListener("visibilitychange", () => {
@@ -880,7 +910,7 @@
         cancelReplay(); controls(false);
         text("replay-cursor-status", "Replay paused · tab hidden.");
       } else if (replayActive() && demoRecording) {
-        if (!metadata) void openRecording(demoRecording.id, false, demoRecording.at);
+        if (!metadata) void openRecording(selected || demoRecording.id, false, selected ? openingAt : demoRecording.at);
         else if (recordedPhase === "loading") void seek(cursor);
       }
       return;

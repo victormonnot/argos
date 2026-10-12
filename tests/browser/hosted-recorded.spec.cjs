@@ -16,10 +16,11 @@ async function installRecorded(page, model) {
       return canvas.toDataURL('image/jpeg').split(',')[1];
     });
   });
-  const mock = { calls: [], hold: null, frameState: 'recent', noFrame: false, overrideVisual: null, overrideReplay: null };
+  const mock = { calls: [], hold: null, frameState: 'recent', noFrame: false, overrideVisual: null, overrideReplay: null, respond: null, messageItems: null };
   const metadata = { ...structuredClone(model.metadata), visual: {
     state: 'complete', id: ID, revision: VISUAL_REVISION, frames: 2, samples: 3, events: 2, duration_s: 3,
   } };
+  mock.metadata = metadata;
   const console = index.replace('<body data-view="observation">', '<body data-demo="true" data-view="observation">');
   await page.route('http://127.0.0.1:4173/', route => route.fulfill({ contentType: 'text/html', body: console.replace('</body>', `${welcome}</body>`) }));
   await page.route('http://127.0.0.1:4173/demo', route => route.fulfill({ contentType: 'text/html', body: console }));
@@ -27,6 +28,8 @@ async function installRecorded(page, model) {
     const request = route.request(), url = new URL(request.url()), pathname = url.pathname;
     mock.calls.push({ method: request.method(), path: pathname, query: Object.fromEntries(url.searchParams) });
     expect(request.method()).toBe('GET');
+    const replacement = mock.respond?.(pathname, url.searchParams);
+    if (replacement) return route.fulfill(replacement).catch(() => {});
     const at = Number(url.searchParams.get('at'));
     const frameRequest = pathname.includes('/frames/');
     const index = frameRequest ? Number(pathname.match(/\/(\d+)\.jpg$/)[1]) : at >= 1.5 ? 2 : 1;
@@ -37,17 +40,17 @@ async function installRecorded(page, model) {
     }
     if (pathname === '/api/demo-config') return route.fulfill({ json: { enabled: true, recording_id: ID } });
     if (pathname === '/api/recordings') return route.fulfill({ json: { directory: '/synthetic/recordings', total: 1, limit: 100,
-      items: [{ id: ID, state: 'unverified', modified_at: 1750000000, size_bytes: 1024 }] } });
-    if (pathname === `/api/recordings/${ID}`) return route.fulfill({ json: metadata });
-    expect(url.searchParams.get('revision')).toBe(REVISION);
-    if (pathname.includes('/visual')) expect(url.searchParams.get('visual_revision')).toBe(VISUAL_REVISION);
+      items: [{ id: metadata.id, state: 'unverified', modified_at: 1750000000, size_bytes: 1024 }] } });
+    if (pathname === `/api/recordings/${metadata.id}`) return route.fulfill({ json: metadata });
+    expect(url.searchParams.get('revision')).toBe(metadata.revision);
+    if (pathname.includes('/visual')) expect(url.searchParams.get('visual_revision')).toBe(metadata.visual.revision);
     if (frameRequest) return route.fulfill({ contentType: 'image/jpeg', body: Buffer.from(jpeg[index - 1], 'base64') }).catch(() => {});
     if (pathname.endsWith('/visual')) {
-      const value = { id: ID, revision: REVISION, visual_revision: VISUAL_REVISION, at_s: at,
+      const value = { id: metadata.id, revision: metadata.revision, visual_revision: metadata.visual.revision, at_s: at,
         state: mock.frameState === 'stale' ? 'stale' : 'recent', sample: { at_s: at },
         control: { vehicle: { armed: true, mode: index === 2 ? 2 : 0 }, phase: 'armed',
           framing: { active: index === 2, phase: index === 2 ? 'active' : 'idle', target_id: index === 2 ? 7 : null, reference_height: .3 } },
-        frame: mock.noFrame ? null : { index, url: `/api/recordings/${ID}/visual/frames/${index}.jpg?revision=${REVISION}&visual_revision=${VISUAL_REVISION}`,
+        frame: mock.noFrame ? null : { index, url: `/api/recordings/${metadata.id}/visual/frames/${index}.jpg?revision=${metadata.revision}&visual_revision=${metadata.visual.revision}`,
           sequence: index * 10, video_id: 'recorded-camera', at_s: index === 2 ? 1.5 : 0, available_at_s: index === 2 ? 1.5 : 0,
           age_s: at - (index === 2 ? 1.5 : 0), state: mock.frameState, width: 160, height: 90,
           detections: index === 2 ? [{ track_id: 7, confidence: .9, box: [.25, .2, .2, .6] }] : [] },
@@ -57,7 +60,7 @@ async function installRecorded(page, model) {
       return route.fulfill({ json: value }).catch(() => {});
     }
     if (pathname.endsWith('/replay')) {
-      const value = { id: ID, revision: REVISION, at_s: at, system: 1, component: 1,
+      const value = { id: metadata.id, revision: metadata.revision, at_s: at, system: 1, component: 1,
         heartbeat: { state: 'recent', rx_age_s: at % 1, received_at: at - at % 1, age_limit_s: 2.5,
           fields: { base_mode: 128, custom_mode: index === 2 ? 2 : 0, system_status: 4 }, boot_progress: null },
         battery: { ...absent(), state: 'recent', rx_age_s: .1, fields: { voltage_battery: 12400, current_battery: 100, battery_remaining: 80 }, voltage_v: 12.4, current_a: 1, remaining_percent: 80 },
@@ -69,7 +72,7 @@ async function installRecorded(page, model) {
       return route.fulfill({ json: value }).catch(() => {});
     }
     if (pathname.endsWith('/messages')) {
-      const all = [
+      const all = mock.messageItems || [
         { index: 1, at_s: 0, type_name: 'HEARTBEAT', message_id: 0, fields: { custom_mode: 0 } },
         { index: 2, at_s: 1.5, type_name: 'ATTITUDE', message_id: 30, fields: { roll: .2, unsafe: '<img src=x onerror=window.injected=true>' } },
         { index: 3, at_s: 2.5, type_name: 'HEARTBEAT', message_id: 0, fields: { custom_mode: 2 } },
@@ -77,7 +80,7 @@ async function installRecorded(page, model) {
         frame_bytes: 3, wire_version: 2, frame_hex: 'fd00a0' }));
       const filtered = all.filter(item => !url.searchParams.has('message_id') || String(item.message_id) === url.searchParams.get('message_id'));
       const offset = Number(url.searchParams.get('offset')), limit = Number(url.searchParams.get('limit')) || 50;
-      return route.fulfill({ json: { id: ID, revision: REVISION, offset, limit, total: filtered.length, items: filtered.slice(offset, offset + limit),
+      return route.fulfill({ json: { id: metadata.id, revision: metadata.revision, offset, limit, total: filtered.length, items: filtered.slice(offset, offset + limit),
         message_types: [{ message_id: 0, type_name: 'HEARTBEAT', count: 2 }, { message_id: 30, type_name: 'ATTITUDE', count: 1 }] } });
     }
     // Framing-report and analysis have independent test suites; preserve their inert defaults here.
@@ -218,8 +221,10 @@ for (const width of [1366, 320, 390]) {
   await expect(page.locator('.live-selected-title')).not.toContainText('ATTITUDE');
   await page.locator('#replay-play').click();
   await expect(page.locator('#replay-play')).toHaveText('Pause');
+  await expect(page.locator('#replay-cursor-status')).toContainText('Playing');
   await page.locator('.live-freeze').click();
   await expect(page.locator('#replay-play')).toHaveText('Play');
+  await expect(page.locator('#replay-cursor-status')).toContainText(/paused/i);
   const paused = await page.locator('#replay-cursor').inputValue();
   await page.waitForTimeout(250);
   await expect(page.locator('#replay-cursor')).toHaveValue(paused);
@@ -334,5 +339,296 @@ test('hiding the tab interrupts a pending seek and returning resumes that cursor
   await expect(page.locator('#replay-cursor')).toHaveValue('2');
   await expect(page.locator('#replay-play')).toHaveText('Play');
   await expect(page.locator('.vision-box')).toHaveCount(1);
+  readOnly(mock);
+});
+
+test('an initial archive metadata failure has a working visible retry without opening live sources', async ({ page, model }) => {
+  const mock = await installRecorded(page, model);
+  mock.respond = pathname => pathname === `/api/recordings/${ID}` ? { status: 503, json: { detail: 'Recording temporarily unavailable' } } : null;
+  await page.goto('/demo');
+  await expect(page.locator('#demo-load-status')).toHaveText('Recording temporarily unavailable');
+  await expect(page.locator('#demo-retry')).toBeVisible();
+  await expect(page.locator('#camera-image')).toBeHidden();
+  await expect(page.locator('#flight-mode')).toHaveText('—');
+  mock.respond = null;
+  await page.locator('#demo-retry').click();
+  await expect(page.locator('#demo-retry')).toBeHidden();
+  await expect(page.locator('#camera-image')).toBeVisible();
+  await expect(page.locator('#flight-mode')).toHaveText('STABILIZE');
+  await expect(page.locator('#replay-cursor')).toHaveValue('0');
+  readOnly(mock);
+});
+
+for (const failure of ['visual unavailable', 'corrupt JPEG', 'null visual', 'null telemetry']) {
+  test(`playback fails visibly for ${failure}, clears observations and retries the same cursor`, async ({ page, model }) => {
+    const mock = await installRecorded(page, model);
+    await openDemo(page); await seek(page, 2);
+    await expect(page.locator('.vision-box')).toHaveCount(1);
+    mock.respond = pathname => {
+      if (failure === 'visual unavailable' && pathname.endsWith('/visual')) return { status: 503, json: { detail: 'Images temporarily unavailable' } };
+      if (failure === 'corrupt JPEG' && pathname.endsWith('.jpg')) return { contentType: 'image/jpeg', body: Buffer.from('Invalid JPEG') };
+      if (failure === 'null visual' && pathname.endsWith('/visual') || failure === 'null telemetry' && pathname.endsWith('/replay')) return { contentType: 'application/json', body: 'null' };
+      return null;
+    };
+    await page.locator('#replay-play').click();
+    await expect(page.locator('#demo-retry')).toBeVisible();
+    await expect(page.locator('#demo-load-status')).toBeVisible();
+    await expect(page.locator('#camera-image')).toBeHidden();
+    await expect(page.locator('#flight-mode')).toHaveText('—');
+    await expect(page.locator('.vision-box')).toHaveCount(0);
+    await expect(page.locator('#replay-play')).toHaveText('Play');
+    const failedAt = await page.locator('#replay-cursor').inputValue();
+    await page.locator('#view-control').click();
+    await expect(page.locator('#control-armed')).toContainText('unavailable');
+    await expect(page.locator('#control-claim')).toBeDisabled();
+    mock.respond = null;
+    await page.locator('#demo-retry').click();
+    await expect(page.locator('#demo-retry')).toBeHidden();
+    await expect(page.locator('#flight-mode')).toHaveText('ALT_HOLD');
+    await expect(page.locator('#replay-cursor')).toHaveValue(failedAt);
+    await expect(page.locator('#replay-play')).toHaveText('Play');
+    await page.locator('#view-observation').click();
+    await expect(page.locator('#camera-image')).toBeVisible();
+    await expect(page.locator('.vision-box')).toHaveCount(1);
+    readOnly(mock);
+  });
+}
+
+test('recorded messages never expose a partial failed archive and retry all original pages', async ({ page, model }) => {
+  const mock = await installRecorded(page, model);
+  mock.metadata.events = 101;
+  mock.metadata.sources[0].events = 101;
+  mock.messageItems = Array.from({ length: 101 }, (_, offset) => ({ index: offset + 1, at_s: offset === 100 ? 1.5 : 0,
+    type_name: offset === 100 ? 'ATTITUDE' : 'HEARTBEAT', message_id: offset === 100 ? 30 : 0,
+    fields: offset === 100 ? { roll: .2 } : { custom_mode: 0 }, system: 1, component: 1, sequence: offset % 256,
+    received_at: 100 + (offset === 100 ? 1.5 : 0), frame_bytes: 3, wire_version: 2, frame_hex: 'fd00a0' }));
+  mock.respond = (pathname, query) => pathname.endsWith('/messages') && query.get('offset') === '100'
+    ? { status: 503, json: { detail: 'Second archive page unavailable' } } : null;
+  await openDemo(page); await seek(page, 2);
+  await page.locator('#view-messages').click();
+  await expect(page.locator('#live-recorded-retry')).toBeVisible();
+  await expect(page.locator('.live-type')).toHaveCount(0);
+  await expect(page.locator('.live-fields')).toBeEmpty();
+  await expect(page.locator('.live-hex')).toBeEmpty();
+  await expect(page.locator('#replay-cursor')).toHaveValue('2');
+  mock.respond = null;
+  await page.locator('#live-recorded-retry').click();
+  await expect(page.locator('#live-recorded-retry')).toBeHidden();
+  await expect(page.locator('.live-type')).toHaveCount(2);
+  await page.locator('.live-type').filter({ hasText: 'ATTITUDE' }).click();
+  await expect(page.locator('.live-fields')).toContainText('roll');
+  expect(mock.calls.filter(call => call.path.endsWith('/messages')).map(call => call.query.offset)).toEqual(['0', '100', '0', '100']);
+  readOnly(mock);
+});
+
+test('the recording ends paused and Play starts it again without changing its outcome', async ({ page, model }) => {
+  const mock = await installRecorded(page, model);
+  await openDemo(page); await seek(page, 2.8);
+  await expect(page.locator('#flight-mode')).toHaveText('ALT_HOLD');
+  await page.locator('#replay-speed').selectOption('4');
+  await page.locator('#replay-play').click();
+  await expect(page.locator('#replay-cursor')).toHaveValue('3');
+  await expect(page.locator('#replay-play')).toHaveText('Play');
+  await expect(page.locator('#replay-next')).toBeDisabled();
+  await expect(page.locator('#replay-cursor-status')).toContainText(/paused/i);
+  await page.locator('#replay-speed').selectOption('1');
+  await page.locator('#replay-play').click();
+  await expect(page.locator('#replay-play')).toHaveText('Pause');
+  await expect(page.locator('#flight-mode')).toHaveText('STABILIZE');
+  await expect(page.locator('.vision-box')).toHaveCount(0);
+  await page.locator('#replay-play').click();
+  const restartedAt = Number(await page.locator('#replay-cursor').inputValue());
+  expect(restartedAt).toBeLessThan(1.5);
+  await expectRed(page);
+  readOnly(mock);
+});
+
+for (const capture of ['video only', 'telemetry only', 'neither source']) {
+  test(`a ${capture} archive reports missing data explicitly without a live fallback`, async ({ page, model }) => {
+    const mock = await installRecorded(page, model);
+    if (capture !== 'telemetry only') { mock.metadata.sources = []; mock.metadata.events = 0; }
+    if (capture !== 'video only') mock.metadata.visual = { state: 'missing' };
+    await page.goto('/demo');
+    await expect(page.locator('#session-status')).toContainText('Recorded flight');
+    await expect(page.locator('#session-status')).not.toContainText('Loading');
+    await expect(page.locator('#demo-retry')).toBeHidden();
+    if (capture === 'video only') {
+      await expect(page.locator('#camera-image')).toBeVisible();
+      await expect(page.locator('#flight-mode')).toHaveText('—');
+      await expect(page.locator('#telemetry-status')).toHaveText('No recorded telemetry component');
+      await seek(page, 2);
+      await expect(page.locator('.vision-box')).toHaveCount(1);
+      expect(mock.calls.some(call => call.path.endsWith('/replay'))).toBe(false);
+    } else {
+      await expect(page.locator('#camera-image')).toBeHidden();
+      await expect(page.locator('#video-status')).toHaveText('No image recorded at this cursor');
+      expect(mock.calls.some(call => call.path.endsWith('/visual'))).toBe(false);
+      if (capture === 'telemetry only') {
+        await expect(page.locator('#flight-mode')).toHaveText('STABILIZE');
+        await seek(page, 2);
+        await expect(page.locator('#flight-mode')).toHaveText('ALT_HOLD');
+      } else {
+        await expect(page.locator('#flight-mode')).toHaveText('—');
+        await expect(page.locator('#replay-play')).toBeDisabled();
+        await expect(page.locator('#replay-cursor')).toBeDisabled();
+        await page.locator('#view-messages').click();
+        await expect(page.locator('.live-empty')).toContainText('No messages');
+        await expect(page.locator('.live-freeze')).toBeDisabled();
+      }
+    }
+    readOnly(mock);
+  });
+}
+
+test('retry after the archive changes reloads its revision and restores the selected moment', async ({ page, model }) => {
+  const mock = await installRecorded(page, model);
+  await openDemo(page); await seek(page, 2);
+  await expect(page.locator('.vision-box')).toHaveCount(1);
+  const nextRevision = 'd'.repeat(64);
+  mock.respond = (pathname, query) => (pathname.endsWith('/replay') || pathname.endsWith('/visual')) && query.get('revision') === REVISION
+    ? { status: 409, json: { detail: 'The file changed; reopen the recording' } } : null;
+  mock.metadata.revision = nextRevision;
+  mock.metadata.download_url = `/api/recordings/${ID}/download?revision=${nextRevision}`;
+  await seek(page, 2.5);
+  await expect(page.locator('#demo-retry')).toBeVisible();
+  await expect(page.locator('#demo-load-status')).toContainText('file changed');
+  await page.locator('#demo-retry').click();
+  await expect(page.locator('#demo-retry')).toBeHidden();
+  await expect(page.locator('#camera-image')).toBeVisible();
+  await expect(page.locator('#flight-mode')).toHaveText('ALT_HOLD');
+  await expect(page.locator('#replay-cursor')).toHaveValue('2.5');
+  expect(mock.calls.filter(call => call.path === `/api/recordings/${ID}`)).toHaveLength(2);
+  expect(mock.calls.filter(call => call.path.endsWith('/replay')).at(-1).query.revision).toBe(nextRevision);
+  readOnly(mock);
+});
+
+test('the recorded camera and matching detection remain visible on a short laptop display', async ({ page, model }) => {
+  await page.setViewportSize({ width: 1024, height: 600 });
+  const mock = await installRecorded(page, model);
+  await openDemo(page); await seek(page, 2);
+  await expect(page.locator('.vision-box')).toHaveCount(1);
+  const image = await page.locator('#camera-image').boundingBox();
+  expect(image.height).toBeGreaterThanOrEqual(90);
+  const layer = await page.locator('#vision-layer').boundingBox();
+  const box = await page.locator('.vision-box').boundingBox();
+  expect(layer.height).toBeGreaterThan(0);
+  expect(box.x).toBeGreaterThanOrEqual(layer.x);
+  expect(box.y).toBeGreaterThanOrEqual(layer.y);
+  expect(box.x + box.width).toBeLessThanOrEqual(layer.x + layer.width + 1);
+  expect(box.y + box.height).toBeLessThanOrEqual(layer.y + layer.height + 1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.waitForTimeout(100);
+  expect(await page.locator('#camera-image').boundingBox()).toEqual(image);
+  readOnly(mock);
+});
+
+test('framing report inspection seeks the hosted replay and preserves original download bindings', async ({ page, model }) => {
+  const mock = await installRecorded(page, model);
+  const context = { profile: 'full', range_response: 'normal', target_id: 7, reference_height: .3 };
+  const report = { state: 'complete', id: ID, revision: REVISION, visual_revision: VISUAL_REVISION, duration_s: 3,
+    coverage: { sampled_s: 3, unknown_s: 0, metric_s: 0, samples: 3, metric_samples: 0 },
+    durations_s: { manual: 1.5, full: 1.5, pilot_throttle: 0, unknown_profile: 0, paused: 0, takeover: 0, inactive: 0, unknown: 0 },
+    intervals: [{ start_s: 0, end_s: 1.5, state: 'manual', profile: null, range_response: null, target_id: null, reference_height: null, reason: '' },
+      { start_s: 1.5, end_s: 3, state: 'full', ...context, reason: '' }],
+    series: [], intervals_count: 2, intervals_truncated: false, series_count: 0, series_downsampled: false,
+    events: [{ at_s: 1.5, index: 1, kind: 'framing', detail: 'Engage framing requested', status: 'accepted' }],
+    events_count: 1, events_truncated: false, interruptions_count: 0,
+    limits: { series: 1200, intervals: 1500, events: 500, sample_age_s: .35, video_age_s: 1 } };
+  mock.respond = pathname => pathname.endsWith('/framing-report') ? { json: report } : null;
+  await openDemo(page);
+  await page.locator('#view-sessions').click();
+  expect(mock.calls.some(call => call.path.endsWith('/framing-report'))).toBe(false);
+  await page.locator('#framing-report>summary').click();
+  await expect(page.locator('.framing-report-results')).toBeVisible();
+  await page.locator('#framing-report-time').fill('2');
+  await page.getByRole('button', { name: 'View this moment in replay' }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#replay-cursor')).toHaveValue('2');
+  await expect(page.locator('.flight-replay-box')).toHaveCount(1);
+  await page.locator('#view-observation').click();
+  await expect(page.locator('#flight-mode')).toHaveText('ALT_HOLD');
+  await expect(page.locator('.vision-box')).toHaveCount(1);
+  await expect(page.locator('#replay-cursor')).toHaveValue('2');
+  await page.locator('#view-sessions').click();
+  await expect(page.locator('#archive-download')).toHaveAttribute('href', `/api/recordings/${ID}/download?revision=${REVISION}`);
+  await expect(page.locator('#archive-download')).toHaveAttribute('download', '');
+  await expect(page.locator('#archive-visual-download')).toHaveAttribute('href', `/api/recordings/${ID}/visual/download?revision=${REVISION}&visual_revision=${VISUAL_REVISION}`);
+  await expect(page.locator('#archive-visual-download')).toHaveAttribute('download', '');
+  readOnly(mock);
+});
+
+test('changing speed while an old playback response is pending never rewinds the displayed cursor', async ({ page, model }) => {
+  const mock = await installRecorded(page, model);
+  await openDemo(page); await seek(page, .5);
+  await expect(page.locator('#replay-play')).toBeEnabled();
+  await page.locator('#replay-speed').selectOption('4');
+  const hold = { when: (pathname, query) => pathname.endsWith('/visual') && Number(query.get('at')) > .5 };
+  mock.hold = hold;
+  await page.locator('#replay-play').click();
+  await expect.poll(() => hold.requested).toBe(true);
+  await page.evaluate(() => {
+    window.cursorSamples = [];
+    window.cursorSampler = setInterval(() => window.cursorSamples.push(Number(document.querySelector('#replay-cursor').value)), 10);
+  });
+  await page.locator('#replay-speed').selectOption('0.5');
+  hold.release();
+  await page.waitForTimeout(500);
+  await page.locator('#replay-play').click();
+  const samples = await page.evaluate(() => { clearInterval(window.cursorSampler); return window.cursorSamples; });
+  expect(samples.length).toBeGreaterThan(10);
+  for (let i = 1; i < samples.length; i++) expect(samples[i], 'Playback time must not move backwards without seeking').toBeGreaterThanOrEqual(samples[i - 1]);
+  await expect(page.locator('#replay-play')).toHaveText('Play');
+  readOnly(mock);
+});
+
+test('recorded message conflicts can reload the revised archive without resetting the visitor cursor', async ({ page, model }) => {
+  const mock = await installRecorded(page, model);
+  await openDemo(page); await seek(page, 2);
+  await expect(page.locator('#flight-mode')).toHaveText('ALT_HOLD');
+  const nextRevision = 'd'.repeat(64);
+  mock.metadata.revision = nextRevision;
+  mock.metadata.download_url = `/api/recordings/${ID}/download?revision=${nextRevision}`;
+  mock.respond = (pathname, query) => pathname.endsWith('/messages') && query.get('revision') === REVISION
+    ? { status: 409, json: { detail: 'Archive revision changed' } } : null;
+  await page.locator('#view-messages').click();
+  await expect(page.locator('#live-recorded-retry')).toBeVisible();
+  await expect(page.locator('.live-type')).toHaveCount(0);
+  await page.locator('#live-recorded-retry').click();
+  await expect(page.locator('#live-recorded-retry')).toBeHidden();
+  await expect(page.locator('.live-type')).toHaveCount(2);
+  await expect(page.locator('#replay-cursor')).toHaveValue('2');
+  expect(mock.calls.filter(call => call.path.endsWith('/messages')).at(-1).query.revision).toBe(nextRevision);
+  expect(mock.calls.filter(call => call.path === `/api/recordings/${ID}`)).toHaveLength(2);
+  readOnly(mock);
+});
+
+test('hiding during a newly selected archive load preserves that selection on return', async ({ page, model }) => {
+  const mock = await installRecorded(page, model);
+  await openDemo(page);
+  const second = 'e'.repeat(32);
+  mock.metadata.id = second;
+  mock.metadata.visual.id = second;
+  mock.metadata.download_url = `/api/recordings/${second}/download?revision=${REVISION}`;
+  await page.locator('#view-sessions').click();
+  const hold = { when: pathname => pathname === `/api/recordings/${second}` };
+  mock.hold = hold;
+  await page.locator(`#archive-list button[data-id="${second}"]`).click();
+  await expect.poll(() => hold.requested).toBe(true);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  hold.release();
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect(page.locator('#replay-play')).toBeEnabled();
+  await expect(page.locator('#replay-title')).toContainText(second.slice(0, 8));
+  await expect(page.locator(`#archive-list button[data-id="${second}"]`)).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#flight-replay-image')).toBeVisible();
+  expect(mock.calls.filter(call => /^\/api\/recordings\/[a-f0-9]{32}$/.test(call.path)).map(call => call.path)).toEqual([
+    `/api/recordings/${ID}`, `/api/recordings/${second}`, `/api/recordings/${second}`,
+  ]);
   readOnly(mock);
 });
