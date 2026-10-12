@@ -72,7 +72,11 @@
       <span id="view-context">Incoming data</span>
     </nav>
     <div class="hosted-demo-notice" hidden id="hosted-demo-notice">
-      <p>Explore the recorded flight, measurements, messages and analysis. Live flying and recording are unavailable in this demo.</p>
+      <div>
+        <p>Explore the console. Open Sessions for the recorded Gazebo flight, measurements, messages and analysis.</p>
+        <p id="demo-unavailable-note">Unavailable in demo mode: live sources, flight commands and new recordings.</p>
+        <p hidden id="demo-load-status" role="status"></p>
+      </div>
       <button class="button button-outline" hidden id="demo-retry" type="button">Retry demo</button>
     </div>
     <div aria-label="Video, recording and incidents" class="reception-bar">
@@ -159,6 +163,7 @@
             <p id="camera-empty-detail">
               Waiting for source status.
             </p>
+            <button class="button button-primary" data-demo-sessions hidden id="demo-open-recording" type="button">Open recorded flight</button>
             <button aria-controls="inspector" class="button button-outline" data-panel="sources" type="button">
               Configure sources
             </button>

@@ -1,7 +1,7 @@
 /* Optional passive live inspection. It never sends a MAVLink or HTTP mutation. */
 (() => {
   "use strict";
-  if (document.body.dataset.demo === "true") return;
+  const hostedDemo = document.body.dataset.demo === "true";
   const root = document.getElementById("live-messages-root");
   if (!root) return;
   const finite = (value) => typeof value === "number" && Number.isFinite(value);
@@ -113,6 +113,40 @@
   columns.append(browser, detailPane);
   root.append(toolbar, columns);
   root.dataset.mobileView = "types";
+
+  if (hostedDemo) {
+    // Build the genuine inspector, but stop before live context listeners,
+    // polling and refresh timers exist. Recorded traffic stays in Sessions.
+    setText(endpoint, "No live MAVLink connection");
+    status.id = "live-demo-unavailable-note";
+    setText(status, "Unavailable in demo mode");
+    for (const control of [freeze, source, search]) {
+      control.disabled = true;
+      control.setAttribute("aria-describedby", status.id);
+      control.title = "Unavailable in demo mode";
+    }
+    source.replaceChildren(new Option("Unavailable", ""));
+    search.placeholder = "Unavailable in demo mode";
+    setText(empty, "Live messages are unavailable in this demo. Open Sessions to inspect the recorded MAVLink messages.");
+    setText(detailEmpty, "No live fields or frames are available. Recorded message fields can be inspected in Sessions.");
+    for (const value of Object.values(counterNodes)) setText(value, "Unavailable");
+    setText(diagnosticNote, "No live connection is started in this demo, so reception counters are unavailable.");
+    setText(caption, "In the local console, this view shows received MAVLink message types, their latest decoded fields and their original frames.");
+    setText(limits, "The demo's recorded messages are available in Sessions, under MAVLink messages.");
+    const recordings = button("Open Sessions", "button button-outline live-recordings");
+    recordings.id = "live-open-sessions";
+    recordings.addEventListener("click", () => document.dispatchEvent(new CustomEvent("argos:show-workspace", {
+      detail: { view: "sessions" },
+    })));
+    actions.insertBefore(recordings, returnButton);
+    showTypes.addEventListener("click", () => mobileView("types"));
+    showFields.addEventListener("click", () => {
+      mobileView("fields");
+      detailPane.scrollTop = 0;
+    });
+    mobileView("types");
+    return;
+  }
 
   let context = { visible: false, serviceFresh: false, run_id: null, connection_id: null };
   let data = null;

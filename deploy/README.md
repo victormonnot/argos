@@ -3,13 +3,19 @@
 [Documentation](../docs/README.md) · [Project overview](../README.md)
 
 The public demo uses the real console and Python archive readers. Visitors can
-replay the bundled simulated flight, inspect its camera and detections, filter
-MAVLink messages, and explore reception analysis and framing reports. Each
-browser has its own playback cursor.
+explore Observation, Flight controls, Live MAVLink and Sessions, including the
+source, telemetry, video, reception and capture inspectors. Live operations are
+disabled with an explanation; unavailable measurements stay empty.
 
-The console loads behind a blurred welcome overlay with a **Try ARGOS** button
-and a short demo-limit note. Entering dismisses the overlay without reloading
-the recording. The `/demo` URL opens the console directly.
+In **Sessions**, visitors can replay the bundled simulated flight, inspect its
+camera and detections, filter recorded MAVLink messages, and explore reception
+analysis and framing reports. Each browser has its own playback cursor.
+
+Observation loads behind a blurred welcome overlay with a **Try ARGOS** button
+and a short demo-limit note. Entering dismisses the overlay in place. The `/demo`
+URL opens Observation directly. The bundled flight opens automatically when
+the visitor first enters Sessions; its images and measurements are currently
+available there, while Observation and Live MAVLink have no live input.
 This mode does not run flight control, live sources, recording, or detection.
 It does not start a simulator and cannot change the recorded flight.
 
@@ -102,10 +108,11 @@ commit alone does not update an image-based deployment.
 
 ## Check a deployment
 
-Confirm that the console appears behind the blurred welcome, **Try ARGOS**
-dismisses it without reloading the recorded flight,
-and playback, messages, analysis and framing reports work. Check that a second
-browser can seek independently. Confirm the demo rejects `POST /api/sources`,
+Confirm that Observation appears behind the blurred welcome and **Try ARGOS**
+dismisses it in place. Check all workspaces and inspectors, visibly disabled live
+controls, and keyboard/mobile navigation. Open Sessions and verify playback,
+recorded messages, analysis and framing reports. Check that a second browser can
+seek independently. Confirm the demo rejects `POST /api/sources`,
 `POST /api/recordings/start` and `POST /api/control/claim`, and that live state
 is unavailable at `/api/state`.
 

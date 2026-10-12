@@ -11,6 +11,7 @@
   const hash = (value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
   const kinds = ["heartbeat", "battery", "attitude", "local_position_ned"];
   const hostedDemo = document.body.dataset.demo === "true";
+  let demoRecording = null;
   let visible = false;
   let selected = null;
   let metadata = null;
@@ -72,13 +73,14 @@
   function setWorkspace(show) {
     if (visible === show) return;
     visible = show;
-    if (show) {
+    if (show && (!hostedDemo || demoRecording)) {
       void refreshCatalog();
       // A request canceled on leaving cannot leave old values under a new cursor.
-      if (metadata && detailView === "messages") void loadMessages(messagesOffset);
+      if (!selected && demoRecording) void openRecording(demoRecording.id, false, demoRecording.at);
+      else if (metadata && detailView === "messages") void loadMessages(messagesOffset);
       else if (cursorReady()) void seek(cursor);
-      else if (selected && !metadata) void openRecording(selected, false);
-    } else {
+      else if (selected && !metadata) void openRecording(selected, false, demoRecording?.id === selected ? demoRecording.at : 0);
+    } else if (!show) {
       cancelReplay();
       catalogEpoch += 1;
       catalogRequest?.abort();
@@ -669,8 +671,11 @@
   document.addEventListener("argos:workspace-changed", (event) => setWorkspace(event.detail.view === "sessions"));
   document.addEventListener("argos:demo-ready", (event) => {
     if (!hostedDemo || !identifier(event.detail?.recording_id)) return;
-    setWorkspace(true);
-    void openRecording(event.detail.recording_id, false, event.detail.initial_at_s);
+    demoRecording = { id: event.detail.recording_id, at: event.detail.initial_at_s };
+    if (visible) {
+      void refreshCatalog();
+      if (!metadata) void openRecording(demoRecording.id, false, demoRecording.at);
+    }
   });
   node("archive-journal").addEventListener("click", () => {
     document.dispatchEvent(new Event("argos:show-observation"));

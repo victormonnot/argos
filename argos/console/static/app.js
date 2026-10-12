@@ -1,8 +1,8 @@
 "use strict";
 
 (() => {
-  // Hosted replay starts separately and never connects to live sources.
-  if (document.body.dataset.demo === "true") return;
+  // Hosted mode reuses the console layout without connecting to live sources.
+  const hostedDemo = document.body.dataset.demo === "true";
   const STATE_INTERVAL_MS = 100;
   const FRAME_INTERVAL_MS = 125;
   const REQUEST_TIMEOUT_MS = 2000;
@@ -527,7 +527,7 @@
   }
 
   function renderDemoHistory(now = performance.now()) {
-    if (!demoActive()) return;
+    if (hostedDemo || !demoActive()) return;
     demoHistoryRenderedAt = now;
     if (!demoHistoryPools) {
       demoHistoryPools = {};
@@ -1115,6 +1115,7 @@
   }
 
   async function getResponse(url) {
+    if (hostedDemo) throw new Error("Live data is unavailable in this demo.");
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
@@ -1301,6 +1302,7 @@
   }
 
   async function postJson(path, payload) {
+    if (hostedDemo) throw new Error("Live actions are unavailable in this demo.");
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), 10000);
     try {
@@ -1610,6 +1612,10 @@
   }
 
   function render() {
+    if (hostedDemo) {
+      renderPanel();
+      return;
+    }
     const now = performance.now();
     const fresh = serviceFresh(now);
     if (visionEnabled && frame && (!fresh || current.video.state !== "recent" || !visionRecent(now) || currentFrameAge(now) > frameLimit())) {
@@ -1753,6 +1759,7 @@
   for (const button of document.querySelectorAll("[data-telemetry-section]")) button.addEventListener("click", () => openInspector("telemetry", button.dataset.telemetrySection, button));
   element("inspector-close").addEventListener("click", closeInspector);
   document.addEventListener("keydown", (event) => {
+    if (hostedDemo && element("demo-welcome")?.open) return;
     if (event.key === "Escape" && document.body.dataset.view === "messages" && !["SELECT", "INPUT", "TEXTAREA"].includes(event.target.tagName)) {
       event.preventDefault();
       showWorkspace("observation", { restore: true });
@@ -1857,6 +1864,7 @@
   });
   element("yaw-preview-clear").addEventListener("click", () => { void clearYawPreview(); });
   document.addEventListener("argos:workspace-changed", event => {
+    if (hostedDemo) return;
     if (event.detail.view !== "observation" && !continuousYaw()) void clearYawPreview();
     renderYawPreview(performance.now());
     renderVisionSelection();
@@ -1878,6 +1886,7 @@
   }).observe(element("demo-shot-view"));
   new ResizeObserver(() => renderDemoHistory()).observe(element("demo-history"));
   document.addEventListener("visibilitychange", () => {
+    if (hostedDemo) return;
     if (demoActive() && document.hidden) {
       demoLastReport = null;
       demoAxisPresentation = {};
@@ -1905,8 +1914,10 @@
   window.addEventListener("pagehide", () => { stopped = true; clearFrame(); });
   window.addEventListener("pageshow", (event) => { if (event.persisted) window.location.reload(); });
   // Independently expires a frozen endpoint even if repeated requests succeed.
-  window.setInterval(render, 100);
+  if (!hostedDemo) window.setInterval(render, 100);
   render();
-  void pollState();
-  void pollFrames();
+  if (!hostedDemo) {
+    void pollState();
+    void pollFrames();
+  }
 })();
