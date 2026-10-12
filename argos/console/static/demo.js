@@ -9,7 +9,7 @@
   node("environment").textContent = "Demo mode";
   node("service-dot").hidden = true;
   node("service-status").textContent = "Recorded simulation";
-  node("demo-home").hidden = false;
+  node("demo-actions").hidden = false;
   node("hosted-demo-notice").hidden = false;
   node("workspace").hidden = true;
   node("sessions-workspace").hidden = false;
