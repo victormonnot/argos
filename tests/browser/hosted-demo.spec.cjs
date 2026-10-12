@@ -23,7 +23,7 @@ for (const viewport of [{ width: 1366, height: 850 }, { width: 390, height: 844 
     await expect(enter).toBeVisible();
     await expect(enter).toBeFocused();
     await expect(page.locator('#demo-welcome:modal')).toBeVisible();
-    await expect(page.locator('#demo-limits')).toHaveText('Demo mode · selected features');
+    await expect(page.locator('#demo-limits')).toHaveText('Demo mode');
     await expect(page.locator('body')).toHaveAttribute('data-view', 'observation');
     await expect(page.locator('#replay-play')).toBeEnabled();
     await expect(page.locator('#flight-mode')).toHaveText('STABILIZE');
