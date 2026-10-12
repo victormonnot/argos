@@ -1194,9 +1194,10 @@ test('unknown data bypasses caption settling and never becomes hatched assistanc
 });
 
 test('an established manual span keeps its category as a different-axis observation reaches the 30-second cutoff', async ({ page, model }) => {
-  // As in the dense-history case below, ~300 real HTTP/image completions
-  // accompany the 30 virtual seconds. Keep the UI timing assertions unchanged.
-  test.setTimeout(45_000);
+  // About 300 real HTTP/JPEG completions accompany these 30 virtual seconds.
+  // Allow slower CI workers to finish them without changing the clock steps,
+  // network waits or the history assertions at the 30-second boundary.
+  test.setTimeout(90_000);
   const reports = await setupSettledTimeline(page, model);
   reports.modify = runtime => setReportedAxis(runtime, 'yaw', 'manual');
   // Start the span only after the asynchronous mock response reached the UI.
