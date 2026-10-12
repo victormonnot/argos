@@ -115,36 +115,261 @@
   root.dataset.mobileView = "types";
 
   if (hostedDemo) {
-    // Build the genuine inspector, but stop before live context listeners,
-    // polling and refresh timers exist. Recorded traffic stays in Sessions.
-    setText(endpoint, "No live MAVLink connection");
-    status.id = "live-demo-unavailable-note";
-    setText(status, "Unavailable in demo mode");
-    for (const control of [freeze, source, search]) {
-      control.disabled = true;
-      control.setAttribute("aria-describedby", status.id);
-      control.title = "Unavailable in demo mode";
-    }
-    source.replaceChildren(new Option("Unavailable", ""));
-    search.placeholder = "Unavailable in demo mode";
-    setText(empty, "Live messages are unavailable in this demo. Open Sessions to inspect the recorded MAVLink messages.");
-    setText(detailEmpty, "No live fields or frames are available. Recorded message fields can be inspected in Sessions.");
-    for (const value of Object.values(counterNodes)) setText(value, "Unavailable");
-    setText(diagnosticNote, "No live connection is started in this demo, so reception counters are unavailable.");
-    setText(caption, "In the local console, this view shows received MAVLink message types, their latest decoded fields and their original frames.");
-    setText(limits, "The demo's recorded messages are available in Sessions, under MAVLink messages.");
+    // The hosted inspector reads original archive messages once, then follows
+    // the same recorded cursor as Observation and Sessions. No live service,
+    // wall-clock freshness calculation or independent playback timer exists.
+    const maxMessages = 10000;
+    let recorded = null;
+    let archiveKey = "";
+    let events = null;
+    let request = null;
+    let epoch = 0;
+    let error = "";
+    let chosen = null;
+    let sourceSignature = "";
+    const rows = new Map();
+    const fieldRows = new Map();
+    const visible = () => document.body.dataset.view === "messages" && !document.hidden;
+    const archiveValid = (value) => value && /^[0-9a-f]{32}$/.test(value.id) &&
+      /^[0-9a-f]{64}$/.test(value.revision) && integer(value.events) &&
+      finite(value.duration_s) && value.duration_s >= 0;
+    const cursorReady = () => recorded?.phase === "ready" && archiveValid(recorded.metadata) &&
+      finite(recorded.at_s) && recorded.at_s >= 0 && recorded.at_s <= recorded.metadata.duration_s;
+
+    setText(title, "Recorded messages");
+    setText(endpoint, "Recorded Gazebo simulation · no live connection");
+    status.id = "live-recorded-status";
+    setText(caption, "Original decoded fields and frames from the recording, across all sources. Each type shows its latest message at or before the shared replay cursor.");
+    setText(diagnostics.querySelector("summary"), "Recorded counters at cursor");
+    setText(counterNodes.rx_messages.previousElementSibling, "Recorded messages");
+    setText(counterNodes.rx_bytes.previousElementSibling, "Recorded frame bytes");
+    setText(diagnosticNote, "Message and byte totals count original frames through the replay cursor. Invalid bytes, unsupported frames and read errors are not recorded; no live reception counters are available.");
+    setText(limits, "No live rates or current connection health are inferred from this recording. 64-bit integers and non-finite values may appear as text to preserve their value.");
     const recordings = button("Open Sessions", "button button-outline live-recordings");
     recordings.id = "live-open-sessions";
     recordings.addEventListener("click", () => document.dispatchEvent(new CustomEvent("argos:show-workspace", {
       detail: { view: "sessions" },
     })));
+    const retry = button("Retry messages", "button button-outline");
+    retry.id = "live-recorded-retry";
+    retry.hidden = true;
     actions.insertBefore(recordings, returnButton);
+    actions.append(retry);
+
+    function cancel() {
+      epoch += 1;
+      request?.abort();
+      request = null;
+    }
+
+    function renderFields(item) {
+      const names = new Set(Object.keys(item.fields));
+      for (const [name, row] of fieldRows) if (!names.has(name)) { row.element.remove(); fieldRows.delete(name); }
+      for (const [name, value] of Object.entries(item.fields)) {
+        let row = fieldRows.get(name);
+        if (!row) {
+          const element = make("div");
+          const output = make("dd");
+          element.append(make("dt", "", name), output);
+          fields.append(element);
+          fieldRows.set(name, row = { element, output });
+        }
+        setText(row.output, typeof value === "string" ? value : JSON.stringify(value));
+      }
+    }
+
+    function rowFor(item) {
+      const identity = key(item);
+      if (rows.has(identity)) return rows.get(identity);
+      const control = button("", "live-type");
+      control.dataset.key = identity;
+      const row = { control, name: make("span", "live-type-name"), rate: make("span", "live-type-rate", "Recorded"),
+        origin: make("span", "live-type-source"), age: make("span", "live-type-age") };
+      control.append(row.name, row.rate, row.origin, row.age);
+      control.addEventListener("click", () => {
+        chosen = identity;
+        render();
+        detailPane.scrollTop = 0;
+        if (matchMedia("(max-width:760px)").matches) {
+          mobileView("fields");
+          selectedTitle.focus({ preventScroll: true });
+        }
+      });
+      rows.set(identity, row);
+      list.append(control);
+      return row;
+    }
+
+    function render() {
+      const ready = cursorReady() && events !== null && !error;
+      freeze.disabled = !cursorReady();
+      freeze.setAttribute("aria-pressed", String(Boolean(recorded?.playing)));
+      setText(freeze, recorded?.playing ? "Pause replay" : "Play replay");
+      root.dataset.stale = "false";
+      root.setAttribute("aria-busy", String(Boolean(request) || recorded?.phase === "loading"));
+      retry.hidden = !error;
+      if (recorded?.phase === "error") setText(status, recorded.error || "Recorded playback is unavailable. Retry the recording.");
+      else if (error) setText(status, error);
+      else if (!cursorReady()) setText(status, "Loading recorded replay…");
+      else if (events === null) setText(status, "Reading original recorded messages…");
+      else setText(status, `Recorded simulation · t + ${fmt(recorded.at_s)} s · ${recorded.playing ? "playing" : "paused"}. Latest message of each type at or before this cursor.`);
+      const latest = new Map();
+      let count = 0, bytes = 0;
+      if (ready) for (const item of events) {
+        if (item.at_s > recorded.at_s) break;
+        const identity = key(item);
+        latest.set(identity, { ...item, count: (latest.get(identity)?.count || 0) + 1 });
+        count += 1;
+        bytes += item.frame_bytes;
+      }
+      const items = [...latest.values()].sort((a, b) => a.system - b.system || a.component - b.component || a.message_id - b.message_id);
+      const choices = [...new Set(items.map(sourceKey))];
+      const signature = choices.join("|");
+      if (ready && signature !== sourceSignature) {
+        sourceSignature = signature;
+        const previous = source.value;
+        source.replaceChildren(new Option("All sources", "*"));
+        for (const choice of choices) source.append(new Option(`System ${choice.split(":")[0]} · component ${choice.split(":")[1]}`, choice));
+        source.value = choices.includes(previous) ? previous : "*";
+      }
+      source.disabled = search.disabled = !ready;
+      const query = search.value.trim().toUpperCase();
+      const shown = items.filter((item) => (source.value === "*" || sourceKey(item) === source.value) &&
+        (!query || item.type_name.toUpperCase().includes(query) || String(item.message_id).includes(query)));
+      const available = new Set(items.map(key));
+      const visibleKeys = new Set(shown.map(key));
+      if (ready && !visibleKeys.has(chosen)) chosen = shown.length ? key(shown[0]) : null;
+      for (const [identity, row] of rows) {
+        if (!available.has(identity)) { row.control.remove(); rows.delete(identity); }
+        else row.control.hidden = !visibleKeys.has(identity);
+      }
+      for (const item of shown) {
+        const row = rowFor(item);
+        row.control.hidden = false;
+        row.control.setAttribute("aria-pressed", String(key(item) === chosen));
+        setText(row.name, `${item.type_name} · ${item.message_id}`);
+        setText(row.origin, `${item.system} / ${item.component} · ${fmt(item.count)} recorded`);
+        setText(row.age, `At + ${fmt(item.at_s)} s`);
+      }
+      setText(listSummary, ready ? `${shown.length} / ${items.length} types · system / component` : "");
+      empty.hidden = shown.length > 0;
+      setText(empty, !ready ? "Recorded messages will appear when the replay is ready." : items.length ? "No types match these filters." : "No messages were recorded at or before this cursor.");
+      const item = shown.find((entry) => key(entry) === chosen);
+      selected.hidden = !item;
+      detailEmpty.hidden = Boolean(item);
+      showFields.disabled = !item;
+      setText(detailEmpty, ready ? "Select a recorded type to inspect its original fields and frame." : "No fields are shown while the recorded cursor is loading or unavailable.");
+      if (item) {
+        setText(selectedTitle, `${item.type_name} · ${item.message_id}`);
+        setText(selectedMeta, `System ${item.system} · component ${item.component} · sequence ${item.sequence} · MAVLink ${item.wire_version} · ${item.frame_bytes} bytes\nRecorded at t + ${fmt(item.at_s)} s · replay cursor t + ${fmt(recorded.at_s)} s`);
+        renderFields(item);
+        setText(hex, item.frame_hex.match(/.{1,2}/g)?.join(" ") || "");
+      } else {
+        fields.replaceChildren();
+        fieldRows.clear();
+        setText(hex, "");
+      }
+      for (const [name, element] of Object.entries(counterNodes)) {
+        setText(element, name === "rx_messages" ? ready ? fmt(count) : "—" : name === "rx_bytes" ? ready ? fmt(bytes) : "—" : "Not recorded");
+      }
+    }
+
+    function validPage(value, metadata, offset, previous) {
+      if (!value || value.id !== metadata.id || value.revision !== metadata.revision || value.total !== metadata.events ||
+        value.offset !== offset || value.limit !== 100 || !Array.isArray(value.items) ||
+        value.items.length !== Math.min(100, metadata.events - offset)) return false;
+      return value.items.every((item, index) => {
+        const valid = item && item.index === offset + index + 1 && finite(item.at_s) && item.at_s >= previous &&
+          item.at_s <= metadata.duration_s && finite(item.received_at) && item.received_at >= 0 &&
+          [item.system, item.component, item.sequence].every((value) => integer(value) && value <= 255) &&
+          integer(item.message_id) && item.message_id <= 0xffffff && typeof item.type_name === "string" && item.type_name.length <= 128 &&
+          item.fields && typeof item.fields === "object" && !Array.isArray(item.fields) &&
+          integer(item.frame_bytes) && item.frame_bytes > 0 && item.frame_bytes <= 280 &&
+          [1, 2].includes(item.wire_version) && typeof item.frame_hex === "string" && /^[0-9a-f]+$/i.test(item.frame_hex) &&
+          item.frame_hex.length === item.frame_bytes * 2;
+        if (valid) previous = item.at_s;
+        return valid;
+      });
+    }
+
+    async function loadMessages() {
+      if (!visible() || !archiveValid(recorded?.metadata) || request || events !== null || error) return;
+      const metadata = recorded.metadata;
+      if (metadata.events > maxMessages) {
+        error = `This recording exceeds the demo inspector limit of ${maxMessages} messages. Open Sessions to inspect its paginated messages.`;
+        render();
+        return;
+      }
+      const token = ++epoch;
+      const controller = request = new AbortController();
+      render();
+      try {
+        const loaded = [];
+        while (loaded.length < metadata.events) {
+          const query = new URLSearchParams({ revision: metadata.revision, offset: loaded.length, limit: 100 });
+          const timeout = setTimeout(() => controller.abort(), 15000);
+          let value;
+          try {
+            const response = await fetch(`/api/recordings/${metadata.id}/messages?${query}`, { signal: controller.signal, cache: "no-store" });
+            if (!response.ok) throw new Error("Recorded messages could not be read. Retry to reload the original archive.");
+            value = await response.json();
+          } finally {
+            clearTimeout(timeout);
+          }
+          if (token !== epoch || !visible()) return;
+          if (!validPage(value, metadata, loaded.length, loaded.at(-1)?.at_s || 0)) throw new Error("Invalid recorded messages response. No fields are shown.");
+          loaded.push(...value.items);
+        }
+        if (token === epoch) events = loaded;
+      } catch (cause) {
+        if (token === epoch) error = cause.name === "AbortError" ? "Recorded messages timed out. Retry to load the archive." : cause.message;
+      } finally {
+        if (token === epoch) {
+          request = null;
+          render();
+        }
+      }
+    }
+
+    function refreshActivity() {
+      if (!visible() || recorded?.phase === "error") cancel();
+      else void loadMessages();
+      render();
+    }
+    document.addEventListener("argos:recorded-state", (event) => {
+      const next = event.detail || {};
+      const nextKey = archiveValid(next.metadata) ? `${next.metadata.id}:${next.metadata.revision}` : "";
+      if (nextKey !== archiveKey) {
+        cancel();
+        archiveKey = nextKey;
+        events = null;
+        error = "";
+        chosen = null;
+        search.value = "";
+        sourceSignature = "";
+        source.replaceChildren(new Option("All sources", "*"));
+        mobileView("types");
+      }
+      recorded = next;
+      refreshActivity();
+    });
+    document.addEventListener("argos:workspace-changed", refreshActivity);
+    document.addEventListener("visibilitychange", refreshActivity);
+    window.addEventListener("pagehide", cancel);
+    freeze.addEventListener("click", () => {
+      if (freeze.disabled) return;
+      document.dispatchEvent(new CustomEvent("argos:recorded-command", { detail: { action: recorded?.playing ? "pause" : "play" } }));
+    });
+    retry.addEventListener("click", () => { error = ""; void loadMessages(); });
+    source.addEventListener("change", render);
+    search.addEventListener("input", render);
     showTypes.addEventListener("click", () => mobileView("types"));
     showFields.addEventListener("click", () => {
       mobileView("fields");
       detailPane.scrollTop = 0;
     });
     mobileView("types");
+    render();
     return;
   }
 

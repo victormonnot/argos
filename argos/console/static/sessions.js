@@ -32,9 +32,35 @@
   let messagesPage = null;
   let visualSnapshot = null;
   let imageURL = null;
+  let recordedPhase = "loading";
+  let recordedError = "";
+  let stopped = false;
+  let messageEpoch = 0;
+  let messageRequest = null;
+  const replayActive = () => !stopped && (hostedDemo ? !document.hidden : visible);
   const visualReady = () => metadata?.visual?.state === "complete" && hash(metadata.visual.revision);
   const flightView = () => detailView === "flight";
-  const cursorReady = () => metadata && (flightView() ? visualReady() : detailView === "measures" && source);
+  const cursorReady = () => metadata && (hostedDemo ? visualReady() || source : flightView() ? visualReady() : detailView === "measures" && source);
+
+  // Hosted views consume one confirmed archive cursor, never the live clock.
+  function notifyRecorded() {
+    if (!hostedDemo) return;
+    document.dispatchEvent(new CustomEvent("argos:recorded-state", { detail: {
+      metadata, at_s: cursor, source, phase: recordedPhase, error: recordedError,
+      snapshot: recordedPhase === "ready" ? snapshot : null,
+      visual: recordedPhase === "ready" ? visualSnapshot : null,
+      imageURL: recordedPhase === "ready" ? imageURL : null,
+      playing, speed: Number(node("replay-speed").value),
+    } }));
+  }
+
+  function clearRecorded(message, phase = "loading", error = "") {
+    recordedPhase = phase;
+    recordedError = error;
+    notifyRecorded(); // Consumers release the old image before its URL is revoked.
+    clearVisual(message);
+    clearMeasures(message);
+  }
 
   async function getJSON(url, controller) {
     const timeout = setTimeout(() => controller.abort(), 15000);
@@ -52,6 +78,7 @@
     playing = false;
     clearTimeout(timer);
     text("replay-play", "Play");
+    notifyRecorded();
   }
 
   function clampTime(offset) {
@@ -73,6 +100,18 @@
   function setWorkspace(show) {
     if (visible === show) return;
     visible = show;
+    if (hostedDemo) {
+      if (show && demoRecording) {
+        void refreshCatalog();
+        if (metadata && detailView === "messages") void loadMessages(messagesOffset);
+      } else if (!show) {
+        catalogEpoch += 1; catalogRequest?.abort(); catalogRequest = null;
+        messageEpoch += 1; messageRequest?.abort(); messageRequest = null;
+        node("archive-refresh").disabled = false;
+      }
+      notifyAnalysis(); notifyFramingReport();
+      return;
+    }
     if (show && (!hostedDemo || demoRecording)) {
       void refreshCatalog();
       // A request canceled on leaving cannot leave old values under a new cursor.
@@ -93,6 +132,18 @@
 
   function controls(busy = false) {
     const ready = Boolean(cursorReady());
+    if (hostedDemo) {
+      node("replay-transport").hidden = !metadata;
+      node("replay-cursor").disabled = !ready || metadata.duration_s === 0;
+      node("replay-play").disabled = !ready || (recordedPhase !== "ready" && !playing) || metadata.duration_s === 0;
+      for (const direction of ["previous", "next"]) {
+        node(`replay-${direction}`).disabled = !ready || busy || (direction === "previous" ? cursor <= 0 : cursor >= metadata.duration_s);
+        node(`replay-${direction}`).setAttribute("aria-label", direction === "previous" ? "Back 0.2 seconds" : "Forward 0.2 seconds");
+      }
+      node("replay-transport").setAttribute("aria-busy", String(busy));
+      notifyFramingReport();
+      return;
+    }
     node("replay-transport").hidden = !ready;
     node("replay-cursor").disabled = !ready || metadata.duration_s === 0;
     node("replay-play").disabled = !ready || (!(flightView() ? visualSnapshot : snapshot) && !playing) || metadata.duration_s === 0;
@@ -187,6 +238,10 @@
     const token = epoch;
     selected = id;
     metadata = snapshot = source = null;
+    if (hostedDemo) {
+      messageEpoch += 1; messageRequest?.abort();
+      clearRecorded("Opening the recorded flight…");
+    }
     clearVisual("No recorded video in this session.");
     cursor = 0;
     detailView = "measures";
@@ -207,7 +262,7 @@
     const controller = request = new AbortController();
     try {
       const value = await getJSON(`/api/recordings/${id}`, controller);
-      if (token !== epoch || !visible) return;
+      if (token !== epoch || !replayActive()) return;
       if (!validMetadata(value, id)) throw new Error("Invalid recording description.");
       metadata = value;
       cursor = clampTime(finite(initialAt) ? initialAt : 0);
@@ -256,8 +311,15 @@
         source = sources[0];
       }
       if (cursorReady()) void seek(cursor);
+      else if (hostedDemo) {
+        recordedPhase = "ready"; notifyRecorded(); controls(false);
+      }
     } catch (error) {
-      if (token === epoch && visible) text("replay-status", error.name === "AbortError" ? "Verification timed out. Reopen the recording to retry." : error.message);
+      if (token === epoch && replayActive()) {
+        const message = error.name === "AbortError" ? "Verification timed out. Reopen the recording to retry." : error.message;
+        text("replay-status", message);
+        if (hostedDemo) clearRecorded("Recording unavailable. Try again.", "error", message);
+      }
     } finally {
       if (token === epoch && request === controller) request = null;
     }
@@ -464,8 +526,76 @@
     }
   }
 
+  async function seekRecorded(offset, automatic = false) {
+    if (!automatic) pause();
+    request?.abort();
+    const token = ++epoch, id = selected, revision = metadata.revision;
+    const target = clampTime(offset), pair = source;
+    if (!automatic) {
+      cursor = target; node("replay-cursor").value = String(cursor);
+      text("replay-time", `${numeric(cursor, " s")} / ${numeric(metadata.duration_s, " s")}`);
+      clearRecorded("Reading the recording at this point…");
+    }
+    controls(true);
+    const controller = request = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    let candidateURL = null;
+    try {
+      const visualRevision = metadata.visual?.revision;
+      const [values, visual] = await Promise.all([
+        pair ? getJSON(`/api/recordings/${id}/replay?${new URLSearchParams({ revision, at: target, system: pair.system, component: pair.component })}`, controller) : null,
+        visualReady() ? getJSON(`/api/recordings/${id}/visual?${new URLSearchParams({ revision, visual_revision: visualRevision, at: target })}`, controller) : null,
+      ]);
+      if (token !== epoch || !replayActive()) return;
+      if (values && !validSnapshot(values, id, target, pair)) throw new Error("Invalid recorded measurements.");
+      if (visual && !validVisual(visual, id, revision, visualRevision, target)) throw new Error("Invalid recorded images and observations.");
+      if (visual?.frame?.state === "recent") {
+        const response = await fetch(visual.frame.url, { signal: controller.signal, cache: "no-store" });
+        if (!response.ok || !response.headers.get("content-type")?.startsWith("image/jpeg")) throw new Error("The recorded image could not be read.");
+        const blob = await response.blob();
+        if (!blob.size || blob.size > 2 * 1024 * 1024) throw new Error("Invalid recorded image size.");
+        candidateURL = URL.createObjectURL(blob);
+        const decoded = new Image(); decoded.src = candidateURL;
+        await decoded.decode();
+        if (decoded.naturalWidth !== visual.frame.width || decoded.naturalHeight !== visual.frame.height) throw new Error("Recorded image dimensions do not match its observations.");
+      }
+      if (token !== epoch || !replayActive()) return;
+      if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
+      // Publish image, detections and measurements together at the confirmed time.
+      cursor = target;
+      node("replay-cursor").value = String(cursor);
+      text("replay-time", `${numeric(cursor, " s")} / ${numeric(metadata.duration_s, " s")}`);
+      const previousURL = imageURL;
+      imageURL = null;
+      if (values) renderSnapshot(values); else clearMeasures("No recorded telemetry component.");
+      if (visual) renderVisual(visual, candidateURL); else clearVisual(visualUnavailable());
+      candidateURL = null;
+      recordedPhase = "ready"; recordedError = "";
+      if (cursor >= metadata.duration_s) pause();
+      notifyRecorded();
+      if (previousURL) URL.revokeObjectURL(previousURL);
+      text("replay-status", "");
+      text("replay-cursor-status", `${playing ? "Playing" : "Paused"} · recorded Gazebo flight · all views share this time.`);
+      controls(false);
+      if (playing) timer = setTimeout(() => {
+        void seek(anchorAt + (performance.now() - anchorTime) / 1000 * Number(node("replay-speed").value), true);
+      }, 100);
+    } catch (error) {
+      if (token !== epoch || !replayActive()) return;
+      controller.abort(); pause();
+      const message = error.name === "AbortError" ? "The recording did not respond in time." : error.message;
+      clearRecorded("Replay unavailable at this point. Move the cursor or retry.", "error", message);
+      text("replay-status", message); controls(false);
+    } finally {
+      clearTimeout(timeout);
+      if (candidateURL) URL.revokeObjectURL(candidateURL);
+      if (token === epoch && request === controller) request = null;
+    }
+  }
+
   async function seek(offset, automatic = false) {
-    if (!cursorReady() || !visible) return;
+    if (!cursorReady() || !replayActive()) return;
+    if (hostedDemo) return seekRecorded(offset, automatic);
     if (flightView()) return seekVisual(offset, automatic);
     if (!automatic) pause();
     request?.abort();
@@ -535,13 +665,14 @@
 
   function changeDetailView(name) {
     if (detailView === name || !metadata) return;
-    cancelReplay();
+    if (!hostedDemo) cancelReplay();
+    else { messageEpoch += 1; messageRequest?.abort(); }
     detailView = name;
     renderDetailView();
     text("replay-status", "");
     if (name === "messages") void loadMessages(messagesOffset);
-    else if (cursorReady()) void seek(cursor);
-    else if (name === "flight") clearVisual(visualUnavailable());
+    else if (!hostedDemo && cursorReady()) void seek(cursor);
+    else if (name === "flight" && !visualReady()) clearVisual(visualUnavailable());
     controls();
   }
 
@@ -608,8 +739,9 @@
 
   async function loadMessages(offset) {
     if (!metadata || !visible || detailView !== "messages") return;
-    request?.abort();
-    const token = ++epoch;
+    if (hostedDemo) messageRequest?.abort(); else request?.abort();
+    const token = hostedDemo ? ++messageEpoch : ++epoch;
+    const currentRequest = () => token === (hostedDemo ? messageEpoch : epoch);
     const id = selected, revision = metadata.revision;
     const opener = document.activeElement;
     const restoreFocus = [node("messages-previous"), node("messages-next")].includes(opener);
@@ -623,7 +755,8 @@
     node("messages-retry").hidden = true;
     text("messages-count", "");
     text("messages-status", "Reading messages…");
-    const controller = request = new AbortController();
+    const controller = new AbortController();
+    if (hostedDemo) messageRequest = controller; else request = controller;
     try {
       const query = new URLSearchParams({ revision, offset, limit: 50 });
       if (filters.source) {
@@ -632,7 +765,7 @@
       }
       if (filters.type) query.set("message_id", filters.type);
       const value = await getJSON(`/api/recordings/${id}/messages?${query}`, controller);
-      if (token !== epoch || !visible || detailView !== "messages") return;
+      if (!currentRequest() || !visible || detailView !== "messages") return;
       if (!validMessages(value, id, revision, offset, filters)) throw new Error("Invalid messages response.");
       messagesPage = value;
       node("messages-type").replaceChildren(new Option("All types", ""));
@@ -649,13 +782,13 @@
         (node("messages-list").querySelector("summary") || node("messages-count")).focus({ preventScroll: true });
       }
     } catch (error) {
-      if (token !== epoch || !visible || detailView !== "messages") return;
+      if (!currentRequest() || !visible || detailView !== "messages") return;
       text("messages-status", error.name === "AbortError" ? "Messages did not respond in time." : error.message);
       node("messages-retry").hidden = false;
       if (restoreFocus && [document.body, opener].includes(document.activeElement)) node("messages-retry").focus({ preventScroll: true });
     } finally {
-      if (token === epoch && request === controller) {
-        request = null;
+      if (currentRequest() && (hostedDemo ? messageRequest : request) === controller) {
+        if (hostedDemo) messageRequest = null; else request = null;
         node("messages-list").setAttribute("aria-busy", "false");
       }
     }
@@ -672,10 +805,8 @@
   document.addEventListener("argos:demo-ready", (event) => {
     if (!hostedDemo || !identifier(event.detail?.recording_id)) return;
     demoRecording = { id: event.detail.recording_id, at: event.detail.initial_at_s };
-    if (visible) {
-      void refreshCatalog();
-      if (!metadata) void openRecording(demoRecording.id, false, demoRecording.at);
-    }
+    if (visible) void refreshCatalog();
+    if (!metadata && replayActive()) void openRecording(demoRecording.id, false, demoRecording.at);
   });
   node("archive-journal").addEventListener("click", () => {
     document.dispatchEvent(new Event("argos:show-observation"));
@@ -691,14 +822,21 @@
     cancelReplay();
     const [system, component] = node("replay-source").value.split(":").map(Number);
     source = metadata.sources.find((item) => item.system === system && item.component === component) || null;
-    clearMeasures("Select the component whose measurements you want to replay.");
-    if (source) void seek(cursor);
+    if (hostedDemo) {
+      clearRecorded("Reading the selected recorded component…");
+      if (cursorReady()) void seek(cursor);
+      else { recordedPhase = "ready"; notifyRecorded(); controls(false); }
+    } else {
+      clearMeasures("Select the component whose measurements you want to replay.");
+      if (source) void seek(cursor);
+    }
   });
   node("replay-cursor").addEventListener("input", () => {
     cancelReplay();
     cursor = clampTime(Number(node("replay-cursor").value));
     text("replay-time", `${numeric(cursor, " s")} / ${numeric(metadata.duration_s, " s")}`);
-    if (flightView()) clearVisual("Reading the recording at this point…");
+    if (hostedDemo) clearRecorded("Reading the recording at this point…");
+    else if (flightView()) clearVisual("Reading the recording at this point…");
     else clearMeasures("Reading receptions at this point…");
     seekTimer = setTimeout(() => { void seek(cursor); }, 70);
   });
@@ -710,21 +848,43 @@
       text("replay-cursor-status", flightView() ? "Replay paused · recorded images and observations." : "Replay paused · historical receptions.");
       return;
     }
-    if (!cursorReady() || !(flightView() ? visualSnapshot : snapshot)) return;
+    if (!cursorReady() || (hostedDemo ? recordedPhase !== "ready" : !(flightView() ? visualSnapshot : snapshot))) return;
     playing = true;
     anchorAt = cursor >= metadata.duration_s ? 0 : cursor;
     anchorTime = performance.now();
     text("replay-play", "Pause");
+    notifyRecorded();
     void seek(anchorAt, true);
   });
   for (const name of ["previous", "next"]) node(`replay-${name}`).addEventListener("click", () => {
-    const target = flightView() ? cursor + (name === "next" ? .2 : -.2) : snapshot?.[`${name}_at_s`];
+    const target = hostedDemo || flightView() ? cursor + (name === "next" ? .2 : -.2) : snapshot?.[`${name}_at_s`];
     if (finite(target)) void seek(target);
   });
-  node("replay-speed").addEventListener("change", () => { anchorAt = cursor; anchorTime = performance.now(); });
+  node("replay-speed").addEventListener("change", () => { anchorAt = cursor; anchorTime = performance.now(); notifyRecorded(); });
+  document.addEventListener("argos:recorded-command", event => {
+    if (!hostedDemo) return;
+    const command = event.detail;
+    if (command?.action === "pause") { cancelReplay(); controls(false); }
+    else if (command?.action === "play" && !playing) node("replay-play").click();
+    else if (command?.action === "seek" && finite(command.at_s)) void seek(command.at_s);
+    else if (command?.action === "retry") {
+      if (metadata) void seek(cursor);
+      else if (demoRecording) void openRecording(demoRecording.id, false, demoRecording.at);
+    }
+  });
   document.addEventListener("visibilitychange", () => {
     notifyAnalysis();
     notifyFramingReport();
+    if (hostedDemo) {
+      if (document.hidden) {
+        cancelReplay(); controls(false);
+        text("replay-cursor-status", "Replay paused · tab hidden.");
+      } else if (replayActive() && demoRecording) {
+        if (!metadata) void openRecording(demoRecording.id, false, demoRecording.at);
+        else if (recordedPhase === "loading") void seek(cursor);
+      }
+      return;
+    }
     if (document.hidden) {
       if (playing) {
         cancelReplay();
@@ -734,10 +894,12 @@
     }
   });
   window.addEventListener("pagehide", () => {
+    stopped = true;
     visible = false;
     notifyAnalysis();
     notifyFramingReport();
     cancelReplay();
-    catalogRequest?.abort();
+    catalogRequest?.abort(); messageRequest?.abort();
+    if (hostedDemo) clearRecorded("Replay closed.");
   });
 })();

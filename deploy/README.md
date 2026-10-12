@@ -3,19 +3,27 @@
 [Documentation](../docs/README.md) · [Project overview](../README.md)
 
 The public demo uses the real console and Python archive readers. Visitors can
-explore Observation, Flight controls, Live MAVLink and Sessions, including the
-source, telemetry, video, reception and capture inspectors. Live operations are
-disabled with an explanation; unavailable measurements stay empty.
+explore Observation, Flight controls, Recorded MAVLink and Sessions, including
+the source, telemetry, video, reception and capture inspectors. Observation shows
+the original camera images, paired detections and telemetry at the playback cursor.
+Flight controls show recorded observations; operations remain disabled with an
+explanation. Missing measurements and radio reports stay unavailable.
 
 In **Sessions**, visitors can replay the bundled simulated flight, inspect its
 camera and detections, filter recorded MAVLink messages, and explore reception
-analysis and framing reports. Each browser has its own playback cursor.
+analysis and framing reports. One shared playback cursor and speed follow the
+visitor across all views; each browser has its own independent cursor. Recorded
+MAVLink shows the latest original message of each type at or before that cursor.
+Sessions also retains its paginated view of the full message archive.
 
 Observation loads behind a blurred welcome overlay with a **Try ARGOS** button
 and a short demo-limit note. Entering dismisses the overlay in place. The `/demo`
-URL opens Observation directly. The bundled flight opens automatically when
-the visitor first enters Sessions; its images and measurements are currently
-available there, while Observation and Live MAVLink have no live input.
+URL opens Observation directly. The bundled flight loads automatically, paused
+at 0.5 seconds behind the welcome or at zero for direct entry. Play, pause, speed
+and seeking affect the same recorded time in every view. Ages and stale/gap labels
+refer to that cursor, not elapsed time while the recording is paused. Image,
+detections and measurements update together after a seek; failed or outdated
+responses cannot overwrite a newer cursor.
 This mode does not run flight control, live sources, recording, or detection.
 It does not start a simulator and cannot change the recorded flight.
 
@@ -110,8 +118,11 @@ commit alone does not update an image-based deployment.
 
 Confirm that Observation appears behind the blurred welcome and **Try ARGOS**
 dismisses it in place. Check all workspaces and inspectors, visibly disabled live
-controls, and keyboard/mobile navigation. Open Sessions and verify playback,
-recorded messages, analysis and framing reports. Check that a second browser can
+controls, and keyboard/mobile navigation. Play, pause and seek in Observation;
+verify its image, detections and telemetry remain paired when seeking backwards.
+Change views and confirm the cursor/speed persist. Recorded MAVLink must show
+only original messages at or before that cursor. Open Sessions for the full
+message archive, analysis and framing reports. Check that a second browser can
 seek independently. Confirm the demo rejects `POST /api/sources`,
 `POST /api/recordings/start` and `POST /api/control/claim`, and that live state
 is unavailable at `/api/state`.

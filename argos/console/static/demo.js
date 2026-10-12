@@ -1,4 +1,4 @@
-/* Hosted console setup. Live capabilities stay disabled; Sessions reads archives. */
+/* Hosted console setup. Live capabilities stay disabled; one archive cursor feeds every view. */
 (() => {
   "use strict";
   if (document.body.dataset.demo !== "true") return;
@@ -13,6 +13,10 @@
   node("session-status").textContent = "Demo mode · no vehicle connected";
   node("replay-empty").hidden = true;
   node("demo-open-recording").hidden = false;
+  node("view-messages").textContent = "Recorded MAVLink";
+  node("demo-playback").append(node("replay-transport"));
+  node("demo-playback").hidden = false;
+  node("replay-transport").hidden = true;
 
   // Keep the actual controls discoverable, with an explanation that also works
   // on touch screens and for keyboard users who cannot focus disabled buttons.
@@ -32,7 +36,7 @@
   node("framing-controls").hidden = false;
   node("recording-stop").hidden = false;
   const labels = {
-    "view-context": "Explore the interface",
+    "view-context": "Recorded Gazebo flight",
     "global-recording-state": "Capture · unavailable",
     "video-status": "Unavailable in demo mode",
     "recording-state": "Unavailable in demo mode",
@@ -43,13 +47,18 @@
     "source-telemetry-endpoint": "No live telemetry link",
     "source-video-state": "Unavailable",
     "source-video-detail": "Live camera input is unavailable in demo mode.",
-    "camera-empty-title": "Explore the ARGOS console",
-    "camera-empty-detail": "Watch the recorded Gazebo flight in Sessions. Live camera input is unavailable in demo mode.",
+    "camera-empty-title": "Opening the recorded flight…",
+    "camera-empty-detail": "Recorded images and measurements will appear at the selected time.",
     "camera-source": "No live camera",
     "vision-status": "Live detection is unavailable in demo mode",
     "control-environment": "Demo mode",
     "control-authority": "Unavailable in demo mode",
     "control-feedback": "Flight commands require a connected vehicle or simulator.",
+    "control-hold-note": "Flight commands are unavailable in demo mode. Use playback controls to inspect recorded actions.",
+    "control-mode-note": "Mode and arming are recorded observations at the shared cursor.",
+    "control-neutral-note": "Playback cannot change the aircraft or the recorded outcome.",
+    "framing-profile-note": "Assistance choices are unavailable in demo mode. Recorded framing state appears above.",
+    "framing-response-note": "Distance response cannot be changed during replay.",
     "framing-status": "Unavailable in demo mode. Inspect recorded framing in Sessions.",
     "sources-form-hint": "Unavailable in demo mode. Source configuration requires a local ARGOS installation.",
     "recording-hint": "Unavailable in demo mode. The included recording can be replayed and downloaded in Sessions.",
@@ -60,14 +69,15 @@
     "demo-history-status": "Radio reports unavailable",
   };
   for (const [id, value] of Object.entries(labels)) node(id).textContent = value;
+  document.querySelector(".control-loss-note").textContent = "Install ARGOS to use flight controls with your own simulator or vehicle.";
   for (const button of document.querySelectorAll("[data-demo-sessions]")) {
     button.addEventListener("click", () => document.dispatchEvent(new CustomEvent("argos:show-workspace", { detail: { view: "sessions" } })));
   }
   document.addEventListener("argos:workspace-changed", event => {
     node("demo-unavailable-note").hidden = event.detail.view === "sessions";
     node("view-context").textContent = {
-      observation: "Explore the interface", control: "Flight commands unavailable",
-      messages: "Live connection unavailable", sessions: "Recorded Gazebo flight",
+      observation: "Recorded Gazebo flight", control: "Recorded observations · commands unavailable",
+      messages: "Recorded MAVLink", sessions: "Recorded Gazebo flight",
     }[event.detail.view];
   });
 
@@ -84,6 +94,13 @@
   }
 
   let loading = false;
+  let configReady = false;
+  document.addEventListener("argos:recorded-state", event => {
+    const state = event.detail;
+    node("demo-load-status").hidden = state.phase !== "error";
+    node("demo-load-status").textContent = state.error || "";
+    node("demo-retry").hidden = state.phase !== "error";
+  });
   async function start() {
     if (loading) return;
     loading = true;
@@ -99,6 +116,7 @@
       if (config.enabled !== true || !/^[0-9a-f]{32}$/.test(config.recording_id)) {
         throw new Error("The demo recording is unavailable. Please try again.");
       }
+      configReady = true;
       document.dispatchEvent(new CustomEvent("argos:demo-ready", { detail: {
         recording_id: config.recording_id, initial_at_s: welcome ? 0.5 : 0,
       } }));
@@ -115,7 +133,10 @@
       loading = false;
     }
   }
-  node("demo-retry").addEventListener("click", () => { void start(); });
+  node("demo-retry").addEventListener("click", () => {
+    if (configReady) document.dispatchEvent(new CustomEvent("argos:recorded-command", { detail: { action: "retry" } }));
+    else void start();
+  });
   // Archive requests stop on pagehide; returning from the browser cache needs
   // the same fresh initialization as the normal console.
   window.addEventListener("pageshow", event => { if (event.persisted) window.location.reload(); });

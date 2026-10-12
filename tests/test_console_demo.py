@@ -148,6 +148,8 @@ def test_demo_welcome_overlays_the_real_console_and_direct_entry_skips_it(client
     assert console.status_code == 200
     assert '<body data-demo="true"' in console.text
     assert 'id="demo-welcome"' not in console.text
+    assert 'src="/recorded-view.js"' in console.text
+    assert client.get("/recorded-view.js").status_code == 200
     assert client.get("/demo.js").status_code == 200
     assert client.get("/demo.css").status_code == 200
 

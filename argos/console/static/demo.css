@@ -54,3 +54,27 @@ body[data-demo=true] :is(input,select):disabled { color:var(--muted); opacity:.6
   body[data-demo=true] #global-recording { grid-column:1/3; grid-row:3; justify-self:start; }
   .hosted-demo-notice { padding:10px 14px; font-size:11px; }
 }
+
+/* The existing archive transport is shared by every hosted workspace. */
+body[data-demo=true] #demo-playback { flex-shrink:0; padding:0 18px; background:var(--surface); border-bottom:1px solid var(--line); }
+body[data-demo=true] #demo-playback .replay-transport { display:grid; grid-template-columns:auto minmax(160px,1fr); column-gap:24px; border:0; padding:8px 0; }
+body[data-demo=true] #demo-playback .replay-controls { grid-row:1/3; gap:6px; }
+body[data-demo=true] #demo-playback .replay-speed { margin-left:6px; }
+body[data-demo=true] #demo-playback .replay-cursor-label { margin:0; }
+body[data-demo=true] #demo-playback #replay-cursor { margin:0; }
+body[data-demo=true] #demo-playback #replay-cursor-status { grid-column:1/-1; margin-top:2px; }
+@media(max-width:760px) {
+  body[data-demo=true] #demo-playback { padding:0 14px; }
+  body[data-demo=true] #demo-playback .replay-transport { grid-template-columns:1fr; gap:4px; }
+  body[data-demo=true] #demo-playback .replay-controls { grid-row:auto; }
+  body[data-demo=true] #demo-playback .replay-controls .button { min-width:0; padding:6px 9px; }
+  body[data-demo=true] #demo-playback .replay-speed { width:auto; margin:0 0 0 auto; gap:5px; }
+  body[data-demo=true] #demo-playback .replay-speed select { width:63px; }
+}
+/* Leave room for recorded message rows below the shared playback controls. */
+@media(max-width:760px),(max-height:680px) {
+  body[data-demo=true][data-view=messages] { height:auto; min-height:100dvh; overflow:auto; }
+  body[data-demo=true] #messages-workspace { flex:none; overflow:visible; }
+  body[data-demo=true] #live-messages-root { flex:none; width:100%; }
+  body[data-demo=true] .live-columns { flex:none; height:max(360px,60dvh); }
+}

@@ -37,7 +37,7 @@ FONT_FILES = frozenset({
 DEMO_ASSETS = frozenset({
     "/app.css", "/app.js", "/control.js", "/control.css", "/sessions.js", "/sessions.css",
     "/framing-report.js", "/live.js", "/live.css", "/analysis.js", "/analysis.css",
-    "/demo.css", "/demo.js",
+    "/demo.css", "/demo.js", "/recorded-view.js",
     *(f"/fonts/{name}" for name in FONT_FILES),
 })
 DEMO_READ_PATHS = DEMO_ASSETS | {"/", "/demo", "/api/demo-config"}
@@ -181,6 +181,10 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
     @app.get("/demo.js")
     async def demo_script():
         return FileResponse(STATIC / "demo.js", media_type="text/javascript")
+
+    @app.get("/recorded-view.js")
+    async def recorded_view_script():
+        return FileResponse(STATIC / "recorded-view.js", media_type="text/javascript")
 
     @app.get("/app.css")
     async def stylesheet():

@@ -125,7 +125,7 @@
       else button.removeAttribute("aria-current");
     }
     element("control-panel").hidden = view !== "control";
-    const title = { observation: "Observation", control: "Flight controls", messages: "Live MAVLink", sessions: "Sessions" }[view];
+    const title = { observation: "Observation", control: "Flight controls", messages: hostedDemo ? "Recorded MAVLink" : "Live MAVLink", sessions: "Sessions" }[view];
     text("view-title", title);
     document.title = `ARGOS · ${title}`;
     text("view-context", { observation: "Incoming data", control: "Manual flight · GPS-free", messages: "Current stream inspection", sessions: "History · replay" }[view]);
@@ -935,6 +935,7 @@
   }
 
   function layoutVision() {
+    if (hostedDemo) return;
     const result = frame?.vision;
     if (!result) return;
     const stage = element("camera-stage"), layer = element("vision-layer");
@@ -1875,6 +1876,14 @@
     renderVisionSelection();
   });
   new ResizeObserver(layoutVision).observe(element("camera-stage"));
+  if (hostedDemo) document.addEventListener("argos:recorded-state", event => {
+    const recordedFrame = event.detail?.visual?.frame;
+    if (recordedFrame && recordedFrame.width > 0 && recordedFrame.height > 0) {
+      demoFrameRatio = recordedFrame.width / recordedFrame.height;
+      element("camera-stage").style.setProperty("--demo-frame-ratio", String(demoFrameRatio));
+      layoutDemo();
+    }
+  });
   const demoLayoutObserver = new ResizeObserver(layoutDemo);
   for (const selector of [".workspace", ".camera-header", ".camera-footer", ".demo-history", ".demo-provenance"]) {
     demoLayoutObserver.observe(document.querySelector(selector));

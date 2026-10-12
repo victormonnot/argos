@@ -12,7 +12,7 @@ async function demoPages(page) {
 }
 
 for (const viewport of [{ width: 1366, height: 850 }, { width: 390, height: 844 }]) {
-  test(`welcome opens Observation and keeps the archive deferred at ${viewport.width}px`, async ({ page, model }) => {
+  test(`welcome previews recorded Observation behind an inert overlay at ${viewport.width}px`, async ({ page, model }) => {
     await page.setViewportSize(viewport);
     await demoPages(page);
     await page.route('**/api/demo-config', route => route.fulfill({ json: { enabled: true, recording_id: ID } }));
@@ -25,7 +25,9 @@ for (const viewport of [{ width: 1366, height: 850 }, { width: 390, height: 844 
     await expect(page.locator('#demo-welcome:modal')).toBeVisible();
     await expect(page.locator('#demo-limits')).toHaveText('Demo mode · selected features');
     await expect(page.locator('body')).toHaveAttribute('data-view', 'observation');
-    expect(model.calls).toEqual([]);
+    await expect(page.locator('#replay-play')).toBeEnabled();
+    await expect(page.locator('#flight-mode')).toHaveText('STABILIZE');
+    expect(model.calls.every(call => call.method === 'GET' && call.path.startsWith('/api/recordings'))).toBe(true);
     expect(await page.locator('#demo-welcome').evaluate(node => getComputedStyle(node).backdropFilter)).toContain('blur');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     if (viewport.width < 760) {
@@ -77,7 +79,8 @@ test('the welcome dialog keeps the console inert and supports keyboard dismissal
   await page.keyboard.press('Escape');
   await expect(page.locator('#demo-welcome')).toBeHidden();
   await expect(page.locator('#workspace')).toBeFocused();
-  expect(model.calls).toEqual([]);
+  await expect(page.locator('#replay-play')).toBeEnabled();
+  await expect(page.locator('#replay-cursor')).toHaveValue('0.5');
   await page.locator('#view-sessions').click();
   await expect(page.locator('#replay-play')).toBeEnabled();
   await expect(page.locator('#replay-cursor')).toHaveValue('0.5');
@@ -93,7 +96,8 @@ test('direct entry opens Observation and keeps archived replay, messages and ana
   for (const selector of ['#view-observation', '#view-control', '#view-messages', '#view-sessions', '#sources-button', '#global-recording']) {
     await expect(page.locator(selector)).toBeVisible();
   }
-  expect(model.calls).toEqual([]);
+  await expect(page.locator('#replay-play')).toBeEnabled();
+  await expect(page.locator('#flight-mode')).toHaveText('STABILIZE');
   await page.locator('#view-sessions').click();
   await expect(page.locator('#replay-play')).toBeEnabled();
   await expect(page.locator('#replay-cursor')).toHaveValue('0');
@@ -135,7 +139,8 @@ test('an unavailable demo can retry without falling back to live sources', async
   await page.locator('#demo-retry').click();
   await expect(page.locator('#demo-retry')).toBeHidden();
   await expect(page.locator('#demo-load-status')).toBeHidden();
-  expect(model.calls).toEqual([]);
+  await expect(page.locator('#replay-play')).toBeEnabled();
+  await expect(page.locator('#flight-mode')).toHaveText('STABILIZE');
   await page.locator('#view-sessions').click();
   await expect(page.locator('#replay-play')).toBeEnabled();
   expect(model.calls.every(call => call.method === 'GET' && call.path.startsWith('/api/recordings'))).toBe(true);
@@ -151,7 +156,7 @@ test('an invalid demo configuration never requests an arbitrary recording or a l
   expect(model.calls).toEqual([]);
 });
 
-test('late configuration and an interrupted archive load preserve the selected workspace', async ({ page, model }) => {
+test('late configuration and workspace changes during archive loading retain one recorded cursor', async ({ page, model }) => {
   await demoPages(page);
   const config = {};
   await page.route('**/api/demo-config', async route => {
@@ -176,7 +181,9 @@ test('late configuration and an interrupted archive load preserve the selected w
   await expect(page.locator('body')).toHaveAttribute('data-view', 'observation');
   await expect(page.locator('#workspace')).toBeVisible();
   await expect(page.locator('#camera-image')).toBeHidden();
-  expect(model.calls.some(call => call.path.endsWith('/replay'))).toBe(false);
+  await expect(page.locator('#replay-play')).toBeEnabled();
+  await expect(page.locator('#flight-mode')).toHaveText('STABILIZE');
+  expect(model.calls.some(call => call.path.endsWith('/replay'))).toBe(true);
 
   await page.locator('#view-sessions').click();
   await expect(page.locator('#replay-play')).toBeEnabled();
@@ -184,13 +191,13 @@ test('late configuration and an interrupted archive load preserve the selected w
   expect(model.calls.every(call => call.method === 'GET' && call.path.startsWith('/api/recordings'))).toBe(true);
 });
 
-test('all hosted workspaces remain explorable without inventing live data or enabling operations', async ({ page, model }) => {
+test('all hosted workspaces show only archived data and keep operations disabled', async ({ page, model }) => {
   await demoPages(page);
   await page.route('**/api/demo-config', route => route.fulfill({ json: { enabled: true, recording_id: ID } }));
   await page.goto('/demo');
   await expect(page.locator('#camera-image')).toBeHidden();
   await expect(page.locator('.vision-box')).toHaveCount(0);
-  await expect(page.locator('#flight-mode')).toHaveText('—');
+  await expect(page.locator('#flight-mode')).toHaveText('STABILIZE');
   await expect(page.locator('#vision-toggle')).toBeDisabled();
 
   await page.locator('#demo-button').click();
@@ -222,7 +229,7 @@ test('all hosted workspaces remain explorable without inventing live data or ena
   await expect(page.locator('#workspace')).toBeVisible();
   // More than two normal polling intervals would have reached state/frame/live APIs.
   await page.waitForTimeout(350);
-  expect(model.calls).toEqual([]);
+  expect(model.calls.every(call => call.method === 'GET' && call.path.startsWith('/api/recordings'))).toBe(true);
 });
 
 test('hosted source, capture and reception inspectors open while mutations stay disabled', async ({ page, model }) => {
