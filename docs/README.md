@@ -1,6 +1,6 @@
 # Documentation
 
-[Project overview](../README.md) · [Try a recorded flight](../README.md#try-a-recorded-flight) · [Run the tests](../README.md#verify-a-change)
+[Project overview](../README.md) · [Try ARGOS](https://argos.victormonnot.com/) · [Install ARGOS](../README.md#install-argos) · [Run the tests](../README.md#verify-a-change)
 
 Choose the part of ARGOS you want to use. Setup instructions, offline experiments
 and bench checks are grouped separately below.
@@ -9,7 +9,8 @@ and bench checks are grouped separately below.
 
 | I want to… | Start with |
 | --- | --- |
-| Explore ARGOS without hardware | [Recorded flight](../examples/demo-flight/README.md), then the [console guide](console.md) |
+| Explore ARGOS without hardware | [Online demo](https://argos.victormonnot.com/) or [replay a recording locally](../examples/demo-flight/README.md) |
+| Install ARGOS and connect my own sources | [Installation](../README.md#install-argos), then the [console guide](console.md) |
 | Fly in simulation | [SITL and Gazebo setup](sitl-observation.md) → [browser flight controls](web-control.md) → [visual framing](framing.md) |
 | Set up camera-based yaw assistance with a Pocket radio | [ARGOS FLY](argos-fly.md) and its [radio profile](edgetx-fly-profile.md) |
 | Understand why a selected person is lost | [Continuity diagnosis](continuity-diagnostics.md), then the [offline comparison and recovery tools](#vision-and-offline-experiments) |

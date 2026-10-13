@@ -6,12 +6,16 @@ do it by itself.
 I’m starting with one drone and simple missions. The goal is mission autonomy
 with either a single drone or a swarm, depending on what’s needed.
 
+**[Try ARGOS in your browser →](https://argos.victormonnot.com/)**
+
+Explore the console with a recorded simulation flight. No installation needed.
+
 [![Outdoor ARGOS test showing the drone, my laptop and radio, and the person detected in the drone’s camera](docs/images/outdoor-yaw-demo.jpg)](https://victormonnot.com/projects/argos/)
 
 *One step so far: ARGOS turns the drone to keep me centered in its camera image.
 I still control the rest of the flight.*
 
-**[Watch the demo and see the project timeline →](https://victormonnot.com/projects/argos/)**
+**[Flight videos and project timeline →](https://victormonnot.com/projects/argos/)**
 
 ## Where it is now
 
@@ -34,16 +38,13 @@ person when detections drop out, and making distance control work reliably.
 Moving the compute onboard and autonomous missions come later; the setup above
 still uses the ground computer and a pilot.
 
-## Try a recorded flight
+<a id="try-a-recorded-flight"></a>
 
-You can explore the interface without a drone or simulator. This repository
-includes a **36-second Gazebo/ArduPilot flight recording**, with camera images,
-detections, flight events and telemetry.
+## Install ARGOS
 
-![ARGOS replaying the included simulated flight, with camera, timeline and recorded flight data](docs/images/replay-demo.png)
-
-Clone the repository and install the replay dependencies. These commands are
-verified on **Ubuntu 24.04 with Python 3.12**; the package requires Python 3.11+.
+Install ARGOS locally to use your own camera or simulator and record sessions.
+You’ll need Git and Python 3.11+ with `venv` support. These commands are verified
+on **Ubuntu 24.04 with Python 3.12**.
 
 ```sh
 git clone https://github.com/victormonnot/argos.git
@@ -51,23 +52,20 @@ cd argos
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e '.[console,mavlink]'
-python -m argos.console --recordings-dir examples/demo-flight --port 8082
+python -m argos.console
 ```
 
-Open **http://127.0.0.1:8082 → Sessions → Recording 05aa147d**, then press **Play**.
-Scrub the timeline to see target selection, closer/farther requests and the
-return to manual control. Open **Measurements**, **MAVLink messages** or
-**Analysis** to inspect the recorded data. Stop the server with **Ctrl-C**.
+Open **http://127.0.0.1:8080**. The console starts with no sources connected.
+Choose a setup guide below to connect your camera, simulator or radio, including
+any extra dependencies it needs. Stop the server with **Ctrl-C**.
 
-This plays a completed simulation recording. It does not connect to hardware,
-and playback does not rerun the detector. The [demo guide](examples/demo-flight/README.md)
-has a short walkthrough, capture details and file verification instructions.
+To explore a recording locally, follow the
+[recorded-flight guide](examples/demo-flight/README.md).
 
 ## Hardware and simulation
 
-For your own sources, start an empty console with `python -m argos.console`
-and open **http://127.0.0.1:8080**. Live camera input uses Linux/V4L2; the
-simulator and radio workflows have their own dependencies and setup steps.
+Live camera input uses Linux/V4L2. The guides below cover source configuration,
+simulation and the radio setup.
 
 | What you want to do | Guide |
 | --- | --- |
@@ -83,8 +81,8 @@ The physical workflows are experiments with specific radio profiles and receiver
 checks. Apparent size is not a distance measurement in metres. Follow the
 relevant guide for setup, pilot takeover and current limits.
 
-**[All documentation →](docs/README.md)** — reading paths, hardware bench checks,
-offline experiments and technical references.
+See **[all documentation →](docs/README.md)** for reading paths, hardware bench
+checks, offline experiments and technical references.
 
 ## Development
 
