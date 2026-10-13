@@ -6,7 +6,7 @@ do it by itself.
 I’m starting with one drone and simple missions. The goal is mission autonomy
 with either a single drone or a swarm, depending on what’s needed.
 
-**[Try ARGOS in your browser →](https://argos.victormonnot.com/)**
+[![Try ARGOS in your browser, no installation needed](docs/images/try-argos.svg)](https://argos.victormonnot.com/)
 
 Explore the console with a recorded simulation flight. No installation needed.
 
