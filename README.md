@@ -36,11 +36,6 @@ still uses the ground computer and a pilot.
 
 ## Try a recorded flight
 
-**[Try ARGOS in your browser →](https://argos.victormonnot.com)** · Explore the
-console with the recorded camera, detections and telemetry in **Observation**.
-One playback cursor follows you across the screens. **Sessions** adds the full
-archive and analysis; live actions are visibly disabled in demo mode.
-
 You can explore the interface without a drone or simulator. This repository
 includes a **36-second Gazebo/ArduPilot flight recording**, with camera images,
 detections, flight events and telemetry.
@@ -67,14 +62,6 @@ return to manual control. Open **Measurements**, **MAVLink messages** or
 This plays a completed simulation recording. It does not connect to hardware,
 and playback does not rerun the detector. The [demo guide](examples/demo-flight/README.md)
 has a short walkthrough, capture details and file verification instructions.
-
-To present this recording to visitors, `python -m argos.console --demo` opens a
-console with a blurred **Try ARGOS** welcome overlay over **Observation**.
-Visitors can play, pause and seek the genuine recording across the real screens.
-Flight controls show recorded observations; their commands, live sources and new
-captures remain unavailable. **Recorded MAVLink** shows original messages up to
-the cursor, while **Sessions** includes the full archive and analysis. See the
-[hosting guide](deploy/README.md) for the container and Coolify setup.
 
 ## Hardware and simulation
 
