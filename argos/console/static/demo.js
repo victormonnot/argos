@@ -3,7 +3,7 @@
   "use strict";
   if (document.body.dataset.demo !== "true") return;
   const node = id => document.getElementById(id);
-  document.title = "ARGOS · Observation";
+  document.title = node("demo-welcome") ? "Try ARGOS | Interactive Demo" : "ARGOS · Observation";
   node("environment").textContent = "Demo mode";
   node("service-dot").hidden = true;
   node("service-status").textContent = "No vehicle connected";
@@ -89,7 +89,10 @@
     welcome.showModal();
     node("demo-enter").addEventListener("click", () => welcome.close());
     welcome.addEventListener("close", () => {
-      if (!welcome.open) node("workspace").focus({ preventScroll: true });
+      if (!welcome.open) {
+        document.title = `ARGOS · ${node("view-title").textContent.trim()}`;
+        node("workspace").focus({ preventScroll: true });
+      }
     });
   }
 

@@ -24,6 +24,7 @@ for (const viewport of [{ width: 1366, height: 850 }, { width: 390, height: 844 
     await expect(enter).toBeFocused();
     await expect(page.locator('#demo-welcome:modal')).toBeVisible();
     await expect(page.locator('#demo-limits')).toHaveText('Demo mode');
+    await expect(page).toHaveTitle('Try ARGOS | Interactive Demo');
     await expect(page.locator('body')).toHaveAttribute('data-view', 'observation');
     await expect(page.locator('#replay-play')).toBeEnabled();
     await expect(page.locator('#flight-mode')).toHaveText('STABILIZE');
@@ -40,6 +41,7 @@ for (const viewport of [{ width: 1366, height: 850 }, { width: 390, height: 844 
     const callsBeforeEntry = model.calls.length;
     await enter.click();
     await expect(page.locator('#demo-welcome')).toBeHidden();
+    await expect(page).toHaveTitle('ARGOS · Observation');
     await expect(page.locator('#workspace')).toBeFocused();
     expect(await page.locator('#workspace').evaluate(node => getComputedStyle(node).outlineStyle)).toBe('none');
     await expect(page.locator('#workspace')).toBeVisible();
@@ -78,10 +80,12 @@ test('the welcome dialog keeps the console inert and supports keyboard dismissal
   expect(await page.evaluate(() => document.activeElement === document.body || document.activeElement.closest('#demo-welcome') !== null)).toBe(true);
   await page.keyboard.press('Escape');
   await expect(page.locator('#demo-welcome')).toBeHidden();
+  await expect(page).toHaveTitle('ARGOS · Observation');
   await expect(page.locator('#workspace')).toBeFocused();
   await expect(page.locator('#replay-play')).toBeEnabled();
   await expect(page.locator('#replay-cursor')).toHaveValue('0.5');
   await page.locator('#view-sessions').click();
+  await expect(page).toHaveTitle('ARGOS · Sessions');
   await expect(page.locator('#replay-play')).toBeEnabled();
   await expect(page.locator('#replay-cursor')).toHaveValue('0.5');
   expect(model.calls.every(call => call.method === 'GET' && call.path.startsWith('/api/recordings'))).toBe(true);

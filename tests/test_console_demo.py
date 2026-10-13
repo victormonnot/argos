@@ -1,4 +1,6 @@
 """The public visitor surface reads archives without creating live services."""
+from html.parser import HTMLParser
+from io import BytesIO
 from pathlib import Path
 import sys
 
@@ -8,6 +10,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 pytest.importorskip("pymavlink")
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from argos.console import app as module
 from argos.console.__main__ import main
@@ -15,6 +18,35 @@ from argos.console.config import ConsoleConfig, default_demo_recordings_dir, def
 
 
 ID = "05aa147d371144c793c8f88ec3ef0509"
+
+
+class PageMetadata(HTMLParser):
+    def __init__(self, html):
+        super().__init__()
+        self.metas = {}
+        self.canonicals = []
+        self.titles = []
+        self.in_title = False
+        self.feed(html)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "meta":
+            key = attrs.get("property") or attrs.get("name")
+            self.metas.setdefault(key, []).append(attrs.get("content"))
+        elif tag == "link" and attrs.get("rel") == "canonical":
+            self.canonicals.append(attrs.get("href"))
+        elif tag == "title":
+            self.titles.append("")
+            self.in_title = True
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self.in_title = False
+
+    def handle_data(self, data):
+        if self.in_title:
+            self.titles[-1] += data
 
 
 @pytest.fixture
@@ -82,6 +114,7 @@ def test_demo_refuses_all_mutations_even_from_its_own_origin(client, method, pat
     "/api/state", "/api/frame.jpg", "/api/vision/frame.jpg", "/api/mavlink/messages",
     "/api/vision/yaw-assist/state", "/api/recordings/start", "/api/recordings/arbitrary",
     "/api/recordings/../state", "/api/recordings%2F..%2Fstate", "/openapi.json",
+    "/demo-head.html", "/static/demo-preview.jpg", "/other.jpg",
 ])
 def test_demo_exposes_no_live_or_unlisted_endpoint(client, path):
     assert client.get(path).status_code == 404
@@ -130,6 +163,13 @@ def test_local_default_remains_an_observation_console():
         html = client.get("/").text
         assert 'data-demo="true"' not in html
         assert 'id="demo-welcome"' not in html
+        metadata = PageMetadata(html)
+        assert [title.strip() for title in metadata.titles] == ["ARGOS · Observation"]
+        assert metadata.metas["description"] == ["ARGOS console for camera observation and MAVLink reception."]
+        assert not any(key and key.startswith(("og:", "twitter:")) for key in metadata.metas)
+        assert metadata.canonicals == []
+        assert client.get("/demo-preview.jpg").status_code == 404
+        assert client.head("/demo-preview.jpg").status_code == 404
         assert client.get("/api/state").status_code == 200
         assert client.get("/api/demo-config").json() == {"enabled": False, "recording_id": None}
         assert client.get("/demo").status_code == 404
@@ -152,6 +192,53 @@ def test_demo_welcome_overlays_the_real_console_and_direct_entry_skips_it(client
     assert client.get("/recorded-view.js").status_code == 200
     assert client.get("/demo.js").status_code == 200
     assert client.get("/demo.css").status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/", "/demo"])
+@pytest.mark.parametrize("hosts,base_url,canonical", [
+    (("try.argos.example", "alias.argos.example"), "http://alias.argos.example:8082", "https://try.argos.example/"),
+    ((), "http://localhost:8082", "http://localhost:8082/"),
+])
+def test_demo_serves_complete_link_metadata_without_javascript(path, hosts, base_url, canonical):
+    with TestClient(module.create_app(ConsoleConfig(demo=True, public_hosts=hosts)), base_url=base_url) as client:
+        response = client.get(path, headers={"X-Forwarded-Host": "untrusted.example"})
+    assert response.status_code == 200
+    metadata = PageMetadata(response.text)
+    title = "Try ARGOS | Interactive Demo"
+    description = "Explore the ARGOS interface directly in your browser."
+    alt = "Try ARGOS button over a blurred preview of the ARGOS console."
+    assert metadata.titles == [title]
+    assert metadata.canonicals == [canonical]
+    expected = {
+        "description": description,
+        "og:title": title, "og:description": description, "og:type": "website",
+        "og:url": canonical, "og:image": canonical + "demo-preview.jpg",
+        "og:image:type": "image/jpeg", "og:image:width": "1200", "og:image:height": "630",
+        "og:image:alt": alt,
+        "twitter:card": "summary_large_image", "twitter:title": title,
+        "twitter:description": description, "twitter:image": canonical + "demo-preview.jpg",
+        "twitter:image:alt": alt,
+    }
+    for name, content in expected.items():
+        assert metadata.metas[name] == [content]
+    assert "__DEMO_" not in response.text
+
+
+def test_demo_preview_is_a_public_jpeg_and_supports_head(client):
+    response = client.get("/demo-preview.jpg", headers={"Host": "try.argos.example"})
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    with Image.open(BytesIO(response.content)) as image:
+        image.load()
+        assert image.format == "JPEG"
+        assert image.size == (1200, 630)
+    head = client.head("/demo-preview.jpg")
+    assert head.status_code == 200
+    assert head.content == b""
+    assert head.headers["content-type"] == response.headers["content-type"]
+    assert int(head.headers["content-length"]) == len(response.content)
+    assert client.get("/demo-preview.jpg", headers={"Host": "unknown.example"}).status_code == 400
 
 
 def test_cli_preserves_loopback_default_and_requires_explicit_public_hosts(monkeypatch):

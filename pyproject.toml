@@ -30,7 +30,7 @@ build-backend = "setuptools.build_meta"
 include = ["argos*"]
 
 [tool.setuptools.package-data]
-"argos.console" = ["static/*.html", "static/*.css", "static/*.js",
+"argos.console" = ["static/*.html", "static/*.css", "static/*.js", "static/*.jpg",
                    "static/fonts/*.woff2", "static/fonts/*-OFL.txt", "static/fonts/README.md"]
 "argos.perception" = ["static/*.html"]
 "argos.perception._vendor" = ["README.md", "provenance.json"]

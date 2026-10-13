@@ -6,6 +6,7 @@ import os
 import re
 import stat
 from contextlib import asynccontextmanager
+from html import escape
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -37,7 +38,7 @@ FONT_FILES = frozenset({
 DEMO_ASSETS = frozenset({
     "/app.css", "/app.js", "/control.js", "/control.css", "/sessions.js", "/sessions.css",
     "/framing-report.js", "/live.js", "/live.css", "/analysis.js", "/analysis.css",
-    "/demo.css", "/demo.js", "/recorded-view.js",
+    "/demo.css", "/demo.js", "/recorded-view.js", "/demo-preview.jpg",
     *(f"/fonts/{name}" for name in FONT_FILES),
 })
 DEMO_READ_PATHS = DEMO_ASSETS | {"/", "/demo", "/api/demo-config"}
@@ -146,8 +147,14 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
             "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
         return response
 
-    async def demo_html(*, welcome=False):
+    async def demo_html(request, *, welcome=False):
         html = await asyncio.to_thread((STATIC / "index.html").read_text)
+        head = await asyncio.to_thread((STATIC / "demo-head.html").read_text)
+        origin = f"https://{config.public_hosts[0]}/" if config.public_hosts else str(request.base_url)
+        head = head.replace("__DEMO_URL__", escape(origin, quote=True))
+        head = head.replace("__DEMO_IMAGE__", escape(origin + "demo-preview.jpg", quote=True))
+        html = re.sub(r"<!-- page-metadata -->.*?<!-- /page-metadata -->",
+                      lambda _: head, html, count=1, flags=re.DOTALL)
         html = html.replace("<body ", '<body data-demo="true" ', 1)
         if welcome:
             overlay = await asyncio.to_thread((STATIC / "demo-welcome.html").read_text)
@@ -155,16 +162,22 @@ def create_app(config: ConsoleConfig | None = None, *, session=None, vision=None
         return HTMLResponse(html)
 
     @app.get("/")
-    async def index():
+    async def index(request: Request):
         if config.demo:
-            return await demo_html(welcome=True)
+            return await demo_html(request, welcome=True)
         return FileResponse(STATIC / "index.html", media_type="text/html")
 
     @app.get("/demo")
-    async def demo_console():
+    async def demo_console(request: Request):
         if not config.demo:
             raise HTTPException(404, "The public demo is not enabled")
-        return await demo_html()
+        return await demo_html(request)
+
+    @app.api_route("/demo-preview.jpg", methods=["GET", "HEAD"])
+    async def demo_preview():
+        if not config.demo:
+            raise HTTPException(404, "The public demo is not enabled")
+        return FileResponse(STATIC / "demo-preview.jpg", media_type="image/jpeg")
 
     @app.get("/api/demo-config")
     async def demo_config():

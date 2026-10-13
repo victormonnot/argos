@@ -57,7 +57,17 @@ def main():
                 raise RuntimeError("unconfigured vision returned an image")
             if client.get("/api/frame.jpg").status_code != 503:
                 raise RuntimeError("unconfigured console returned an image")
-    print(f"Installed ARGOS {metadata.version('argos')}: imports, web assets, comparison template, fonts and empty state OK")
+        demo_config = ConsoleConfig(demo=True, recordings_dir=Path(temporary))
+        with TestClient(create_app(demo_config)) as client:
+            page = client.get("/")
+            if (page.status_code != 200 or '<meta property="og:image"' not in page.text
+                    or "Try ARGOS | Interactive Demo" not in page.text):
+                raise RuntimeError("missing packaged demo link metadata")
+            preview = client.get("/demo-preview.jpg")
+            if (preview.status_code != 200 or preview.headers.get("content-type") != "image/jpeg"
+                    or not preview.content.startswith(b"\xff\xd8")):
+                raise RuntimeError("missing packaged demo preview image")
+    print(f"Installed ARGOS {metadata.version('argos')}: imports, web assets, comparison template, fonts, demo preview and empty state OK")
 
 
 if __name__ == "__main__":
