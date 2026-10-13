@@ -92,6 +92,61 @@ test('camera-only flight replay shares the cursor, pairs detections and emits no
   expect(model.calls.some(call => call.method === 'POST')).toBe(false);
 });
 
+for (const direction of ['next', 'previous']) {
+  test(`flight replay keeps the confirmed image while ${direction} waits for its snapshot and JPEG`, async ({ page, model }) => {
+    const mock = await installReplay(page, model);
+    const from = direction === 'next' ? 1.3 : 1.5, target = direction === 'next' ? 1.5 : 1.3;
+    const frame = target >= 1.5 ? 2 : 1;
+    await openFlight(page); await seek(page, from);
+    await expect(page.locator('#flight-replay-image')).toBeVisible();
+    await expect(page.locator('#flight-replay-frame-status')).toContainText(`frame ${frame === 2 ? 10 : 20}`);
+    await expect(page.locator(`#replay-${direction}`)).toBeEnabled();
+    const confirmed = () => page.evaluate(() => ({
+      image: document.querySelector('#flight-replay-image').getAttribute('src'),
+      boxes: document.querySelector('#flight-replay-boxes').innerHTML,
+      mode: document.querySelector('#flight-replay-mode').textContent,
+      status: document.querySelector('#flight-replay-frame-status').textContent,
+      time: document.querySelector('#replay-time').textContent,
+      cursor: document.querySelector('#replay-cursor').value,
+    }));
+    const before = await confirmed();
+    await page.evaluate(() => {
+      window.stepBlanks = [];
+      window.stepObserver = new MutationObserver(() => {
+        const image = document.querySelector('#flight-replay-image');
+        if (image.hidden || !image.getAttribute('src') || !document.querySelector('#flight-replay-placeholder').hidden) window.stepBlanks.push(true);
+      });
+      window.stepObserver.observe(document.querySelector('#flight-replay-camera'), { subtree: true, attributes: true, childList: true });
+    });
+    const snapshot = { frame: false, at: target }; mock.hold = snapshot;
+    await page.locator(`#replay-${direction}`).click();
+    await expect.poll(() => snapshot.requested).toBe(true);
+    await expect(page.locator('#flight-replay-image')).toBeVisible();
+    await expect(page.locator('#flight-replay-placeholder')).toBeHidden();
+    expect(await confirmed()).toEqual(before);
+    const jpeg = { frame: true, index: frame }; mock.hold = jpeg;
+    snapshot.release();
+    await expect.poll(() => jpeg.requested).toBe(true);
+    await expect(page.locator('#flight-replay-image')).toBeVisible();
+    await expect(page.locator('#flight-replay-placeholder')).toBeHidden();
+    expect(await confirmed()).toEqual(before);
+    jpeg.release();
+    await expect(page.locator('#flight-replay-frame-status')).toContainText(`frame ${frame * 10}`);
+    await expect(page.locator('#replay-cursor')).toHaveValue(String(target));
+    await expect(page.locator('#flight-replay-mode')).toHaveText(frame === 2 ? 'AltHold' : 'Stabilize');
+    await expect(page.locator('.flight-replay-box')).toHaveCount(frame === 2 ? 1 : 0);
+    await expect(page.locator('#flight-replay-placeholder')).toBeHidden();
+    const pixel = await page.locator('#flight-replay-image').evaluate(image => {
+      const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+      const context = canvas.getContext('2d'); context.drawImage(image, 0, 0, 1, 1);
+      return [...context.getImageData(0, 0, 1, 1).data];
+    });
+    expect(pixel[frame === 2 ? 2 : 0]).toBeGreaterThan(pixel[frame === 2 ? 0 : 2] * 2);
+    expect(await page.evaluate(() => { window.stepObserver.disconnect(); return window.stepBlanks; })).toEqual([]);
+    expect(mock.calls.every(call => call.method === 'GET')).toBe(true);
+  });
+}
+
 for (const frame of [false, true]) {
   test(`backward seeking rejects an old ${frame ? 'image' : 'snapshot'} response`, async ({ page, model }) => {
     const mock = await installReplay(page, model);

@@ -383,14 +383,18 @@
   }
 
   function clearVisual(message) {
-    visualSnapshot = null;
+    clearVisualDetails();
     const image = node("flight-replay-image");
     image.hidden = true; image.removeAttribute("src");
     if (imageURL) URL.revokeObjectURL(imageURL);
     imageURL = null;
-    node("flight-replay-boxes").replaceChildren();
     node("flight-replay-placeholder").hidden = false;
     text("flight-replay-placeholder", message);
+  }
+
+  function clearVisualDetails() {
+    visualSnapshot = null;
+    node("flight-replay-boxes").replaceChildren();
     text("flight-replay-frame-status", "");
     for (const name of ["mode", "armed", "control", "framing", "target", "reference", "response"]) text(`flight-replay-${name}`, "—");
     text("flight-replay-control-status", "No recorded control observation at this point.");
@@ -433,7 +437,10 @@
   }
 
   function renderVisual(value, url) {
-    clearVisual(value.frame ? "No recent recorded image at this time." : "No camera image recorded at this time.");
+    const previousURL = imageURL;
+    // A decoded replacement can take over without hiding the displayed image.
+    if (url && value.frame) clearVisualDetails();
+    else clearVisual(value.frame ? "No recent recorded image at this time." : "No camera image recorded at this time.");
     visualSnapshot = value;
     const frame = value.frame;
     if (url && frame) {
@@ -488,19 +495,28 @@
     }
     text("replay-cursor-status", playing ? "Replay running · recorded images and observations." : "Replay paused · recorded images and observations.");
     controls(false);
+    if (url && value.frame && previousURL && previousURL !== url) URL.revokeObjectURL(previousURL);
   }
 
-  async function seekVisual(offset, automatic = false) {
+  function displayCursor(offset) {
+    cursor = offset;
+    node("replay-cursor").value = String(cursor);
+    text("replay-time", `${numeric(cursor, " s")} / ${numeric(metadata.duration_s, " s")}`);
+  }
+
+  async function seekVisual(offset, automatic = false, keepFrame = false) {
     if (!automatic) pause();
     request?.abort();
     const token = ++epoch, id = selected, revision = metadata.revision, visualRevision = metadata.visual.revision;
     const target = clampTime(offset);
-    if (!automatic) {
+    const retained = keepFrame && imageURL && visualSnapshot;
+    if (!automatic && !retained) {
       cursor = target; node("replay-cursor").value = String(cursor);
       text("replay-time", `${numeric(cursor, " s")} / ${numeric(metadata.duration_s, " s")}`);
       clearVisual("Reading the recording at this point…");
     }
     controls(true);
+    if (retained) text("replay-cursor-status", "Loading recorded image…");
     text("replay-status", "");
     const controller = request = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
@@ -533,6 +549,7 @@
     } catch (error) {
       if (token !== epoch || !visible || !flightView()) return;
       pause(); clearVisual("Flight replay unavailable at this point. Move the cursor or reopen the recording to retry.");
+      if (retained) displayCursor(target);
       text("replay-status", error.name === "AbortError" ? "Flight replay did not respond in time." : error.message);
       controls(false);
     } finally {
@@ -542,17 +559,19 @@
     }
   }
 
-  async function seekRecorded(offset, automatic = false) {
+  async function seekRecorded(offset, automatic = false, keepFrame = false) {
     if (!automatic) pause();
     request?.abort();
     const token = ++epoch, id = selected, revision = metadata.revision;
     const target = clampTime(offset), pair = source;
-    if (!automatic) {
+    const retained = keepFrame && recordedPhase === "ready" && imageURL && visualSnapshot;
+    if (!automatic && !retained) {
       cursor = target; node("replay-cursor").value = String(cursor);
       text("replay-time", `${numeric(cursor, " s")} / ${numeric(metadata.duration_s, " s")}`);
       clearRecorded("Reading the recording at this point…");
     }
     controls(true);
+    if (retained) text("replay-cursor-status", "Loading recorded image…");
     const controller = request = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
     let candidateURL = null;
@@ -605,6 +624,7 @@
       controller.abort(); pause();
       recordedNeedsReopen = error.status === 409;
       const message = error.name === "AbortError" ? "The recording did not respond in time." : error.message;
+      if (retained) displayCursor(target);
       clearRecorded("Replay unavailable at this point. Move the cursor or retry.", "error", message);
       text("replay-status", message); controls(false);
     } finally {
@@ -614,10 +634,10 @@
     }
   }
 
-  async function seek(offset, automatic = false) {
+  async function seek(offset, automatic = false, keepFrame = false) {
     if (!cursorReady() || !replayActive()) return;
-    if (hostedDemo) return seekRecorded(offset, automatic);
-    if (flightView()) return seekVisual(offset, automatic);
+    if (hostedDemo) return seekRecorded(offset, automatic, keepFrame);
+    if (flightView()) return seekVisual(offset, automatic, keepFrame);
     if (!automatic) pause();
     request?.abort();
     const token = ++epoch;
@@ -879,7 +899,8 @@
   });
   for (const name of ["previous", "next"]) node(`replay-${name}`).addEventListener("click", () => {
     const target = hostedDemo || flightView() ? cursor + (name === "next" ? .2 : -.2) : snapshot?.[`${name}_at_s`];
-    if (finite(target)) void seek(target);
+    // Keep image, observations and their confirmed time together while stepping.
+    if (finite(target)) void seek(target, false, true);
   });
   node("replay-speed").addEventListener("change", () => {
     anchorAt = cursor; anchorTime = performance.now();

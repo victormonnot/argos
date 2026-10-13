@@ -148,6 +148,119 @@ test('recorded camera, telemetry and Sessions use one cursor without enabling fl
   readOnly(mock);
 });
 
+for (const direction of ['next', 'previous']) {
+  test(`hosted ${direction} keeps the confirmed image and measurements through snapshot and JPEG loading`, async ({ page, model }) => {
+    const mock = await installRecorded(page, model);
+    const from = direction === 'next' ? 1.3 : 1.5, target = direction === 'next' ? 1.5 : 1.3;
+    const frame = target >= 1.5 ? 2 : 1;
+    await openDemo(page); await seek(page, from);
+    await page.locator('#view-sessions').click();
+    await expect(page.locator('#flight-replay-frame-status')).toContainText(`frame ${frame === 2 ? 10 : 20}`);
+    await expect(page.locator(`#replay-${direction}`)).toBeEnabled();
+    const confirmed = () => page.evaluate(() => ({
+      image: document.querySelector('#flight-replay-image').getAttribute('src'),
+      boxes: document.querySelector('#flight-replay-boxes').innerHTML,
+      mode: document.querySelector('#flight-replay-mode').textContent,
+      status: document.querySelector('#flight-replay-frame-status').textContent,
+      time: document.querySelector('#replay-time').textContent,
+      cursor: document.querySelector('#replay-cursor').value,
+      observationImage: document.querySelector('#camera-image').getAttribute('src'),
+      observationBoxes: document.querySelector('#vision-layer').innerHTML,
+      observationMode: document.querySelector('#flight-mode').textContent,
+      measurementsMode: document.querySelector('#history-mode').textContent,
+    }));
+    const before = await confirmed();
+    await page.evaluate(() => {
+      window.stepBlanks = [];
+      window.stepObserver = new MutationObserver(() => {
+        const image = document.querySelector('#flight-replay-image');
+        if (image.hidden || !image.getAttribute('src') || !document.querySelector('#flight-replay-placeholder').hidden) window.stepBlanks.push(true);
+      });
+      window.stepObserver.observe(document.querySelector('#flight-replay-camera'), { subtree: true, attributes: true, childList: true });
+    });
+    const snapshot = { when: (pathname, query) => pathname.endsWith('/replay') && Number(query.get('at')) === target };
+    mock.hold = snapshot;
+    await page.locator(`#replay-${direction}`).click();
+    await expect.poll(() => snapshot.requested).toBe(true);
+    await expect(page.locator('#flight-replay-image')).toBeVisible();
+    await expect(page.locator('#flight-replay-placeholder')).toBeHidden();
+    expect(await confirmed()).toEqual(before);
+    const jpeg = { when: pathname => pathname.endsWith(`/frames/${frame}.jpg`) }; mock.hold = jpeg;
+    snapshot.release();
+    await expect.poll(() => jpeg.requested).toBe(true);
+    await expect(page.locator('#flight-replay-image')).toBeVisible();
+    await expect(page.locator('#flight-replay-placeholder')).toBeHidden();
+    expect(await confirmed()).toEqual(before);
+    jpeg.release();
+    await expect(page.locator('#flight-replay-frame-status')).toContainText(`frame ${frame * 10}`);
+    await expect(page.locator('#replay-cursor')).toHaveValue(String(target));
+    await expect(page.locator('#flight-replay-mode')).toHaveText(frame === 2 ? 'AltHold' : 'Stabilize');
+    await expect(page.locator('#history-mode')).toHaveText(frame === 2 ? 'ALT_HOLD' : 'STABILIZE');
+    await expect(page.locator('#flight-mode')).toHaveText(frame === 2 ? 'ALT_HOLD' : 'STABILIZE');
+    await expect(page.locator('.flight-replay-box')).toHaveCount(frame === 2 ? 1 : 0);
+    await expect(page.locator('.vision-box')).toHaveCount(frame === 2 ? 1 : 0);
+    const pixel = await page.locator('#flight-replay-image').evaluate(image => {
+      const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+      const context = canvas.getContext('2d'); context.drawImage(image, 0, 0, 1, 1);
+      return [...context.getImageData(0, 0, 1, 1).data];
+    });
+    expect(pixel[frame === 2 ? 2 : 0]).toBeGreaterThan(pixel[frame === 2 ? 0 : 2] * 2);
+    expect(await page.locator('#camera-image').getAttribute('src')).toBe(await page.locator('#flight-replay-image').getAttribute('src'));
+    expect(await page.evaluate(() => { window.stepObserver.disconnect(); return window.stepBlanks; })).toEqual([]);
+    readOnly(mock);
+  });
+}
+
+test('a delayed hosted next image cannot overwrite a newer slider seek', async ({ page, model }) => {
+  const mock = await installRecorded(page, model);
+  await openDemo(page); await seek(page, 1.3);
+  await page.locator('#view-sessions').click();
+  await expect(page.locator('#flight-replay-image')).toBeVisible();
+  await expect(page.locator('#replay-next')).toBeEnabled();
+  const hold = { when: pathname => pathname.endsWith('/frames/2.jpg') }; mock.hold = hold;
+  await page.locator('#replay-next').click();
+  await expect.poll(() => hold.requested).toBe(true);
+  await expect(page.locator('#flight-replay-image')).toBeVisible();
+  await expect(page.locator('#replay-cursor')).toHaveValue('1.3');
+  await seek(page, .5);
+  await expect(page.locator('#flight-replay-image')).toBeVisible();
+  await expect(page.locator('#replay-cursor')).toHaveValue('0.5');
+  hold.release();
+  await page.waitForTimeout(150);
+  await expect(page.locator('#replay-cursor')).toHaveValue('0.5');
+  await expect(page.locator('#flight-replay-mode')).toHaveText('Stabilize');
+  await expect(page.locator('#flight-mode')).toHaveText('STABILIZE');
+  await expect(page.locator('.flight-replay-box')).toHaveCount(0);
+  await expect(page.locator('.vision-box')).toHaveCount(0);
+  await expectRed(page, '#flight-replay-image');
+  readOnly(mock);
+});
+
+test('a failed hosted next image clears the retained frame and retries the requested time', async ({ page, model }) => {
+  const mock = await installRecorded(page, model);
+  await openDemo(page); await seek(page, 1.3);
+  await page.locator('#view-sessions').click();
+  await expect(page.locator('#flight-replay-image')).toBeVisible();
+  await expect(page.locator('#replay-next')).toBeEnabled();
+  mock.respond = pathname => pathname.endsWith('/frames/2.jpg') ? { status: 503, body: 'Image unavailable' } : null;
+  await page.locator('#replay-next').click();
+  await expect(page.locator('#replay-cursor-status')).toContainText('Replay unavailable');
+  await expect(page.locator('#flight-replay-image')).toBeHidden();
+  await expect(page.locator('#flight-replay-placeholder')).toBeVisible();
+  await expect(page.locator('.flight-replay-box')).toHaveCount(0);
+  await expect(page.locator('#camera-image')).toBeHidden();
+  await expect(page.locator('#flight-mode')).toHaveText('—');
+  await expect(page.locator('#replay-cursor')).toHaveValue('1.5');
+  mock.respond = null;
+  await page.locator('#demo-retry').click();
+  await expect(page.locator('#flight-replay-image')).toBeVisible();
+  await expect(page.locator('#replay-cursor')).toHaveValue('1.5');
+  await expect(page.locator('#flight-replay-frame-status')).toContainText('frame 20');
+  await expect(page.locator('#flight-mode')).toHaveText('ALT_HOLD');
+  await expect(page.locator('#replay-play')).toHaveText('Play');
+  readOnly(mock);
+});
+
 for (const frame of [false, true]) {
   test(`a delayed recorded ${frame ? 'JPEG' : 'snapshot'} cannot overwrite a backward seek`, async ({ page, model }) => {
     const mock = await installRecorded(page, model);
