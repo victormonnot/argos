@@ -102,6 +102,35 @@ test('Pause keeps the confirmed cursor when an automatic replay reply arrives la
   await expect(page.locator('#replay-next')).toBeEnabled();
 });
 
+test('changing measurement playback speed cancels a reply timed at the previous speed', async ({ page, model }) => {
+  await page.clock.install();
+  await open(page); await openArchive(page);
+  await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 100));
+  await page.locator('#replay-speed').selectOption('4');
+  await page.locator('#replay-play').click();
+  await expect(page.locator('#replay-measures')).toHaveAttribute('aria-busy', 'false');
+  const hold = { when: (path, query) => path.endsWith('/replay') && Number(query.get('at')) > 0 };
+  model.hold = hold;
+  await page.clock.runFor(100);
+  await expect.poll(() => hold.requested).toBe(true);
+  await expect(page.locator('#replay-cursor')).toHaveValue('0');
+  const canceled = [];
+  page.on('requestfailed', request => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith('/replay')) canceled.push(Number(url.searchParams.get('at')));
+  });
+  await page.locator('#replay-speed').selectOption('0.5');
+  await expect.poll(() => canceled).toContain(.4);
+  await expect(page.locator('#replay-measures')).toHaveAttribute('aria-busy', 'false');
+  hold.release();
+  await expect(page.locator('#replay-cursor')).toHaveValue('0');
+  await page.clock.runFor(100);
+  await expect(page.locator('#replay-cursor')).toHaveValue('0.05');
+  await expect(page.locator('#history-mode')).toHaveText('STABILIZE');
+  await page.locator('#replay-play').click();
+  expect(model.calls.some(call => call.method !== 'GET')).toBe(false);
+});
+
 test('late live reply from an old connection cannot replace the new connection', async ({ page, model }) => {
   await open(page);
   const hold = {when: path => path === '/api/mavlink/messages'};

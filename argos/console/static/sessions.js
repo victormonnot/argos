@@ -904,7 +904,7 @@
   });
   node("replay-speed").addEventListener("change", () => {
     anchorAt = cursor; anchorTime = performance.now();
-    if (hostedDemo && playing) {
+    if (playing) {
       // Discard any request timed at the old speed before advancing again.
       clearTimeout(timer);
       void seek(anchorAt, true);

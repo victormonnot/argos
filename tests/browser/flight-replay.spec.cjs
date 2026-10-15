@@ -148,6 +148,36 @@ for (const direction of ['next', 'previous']) {
 }
 
 for (const frame of [false, true]) {
+  test(`changing flight playback speed cancels a pending ${frame ? 'JPEG' : 'snapshot'} at the previous speed`, async ({ page, model }) => {
+    await page.clock.install();
+    const mock = await installReplay(page, model);
+    await openFlight(page);
+    await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 100));
+    await page.locator('#replay-speed').selectOption('4');
+    await page.locator('#replay-play').click();
+    await expect(page.locator('#recording-flight-view')).toHaveAttribute('aria-busy', 'false');
+    const hold = { frame, at: .4, index: 1 }; mock.hold = hold;
+    await page.clock.runFor(100);
+    await expect.poll(() => hold.requested).toBe(true);
+    await expect(page.locator('#replay-cursor')).toHaveValue('0');
+    const canceled = [];
+    page.on('requestfailed', request => canceled.push(new URL(request.url()).pathname));
+    await page.locator('#replay-speed').selectOption('0.5');
+    await expect.poll(() => canceled).toContain(`/api/recordings/${ID}/visual${frame ? '/frames/1.jpg' : ''}`);
+    await expect(page.locator('#recording-flight-view')).toHaveAttribute('aria-busy', 'false');
+    hold.release();
+    await expect(page.locator('#replay-cursor')).toHaveValue('0');
+    await page.clock.runFor(100);
+    await expect(page.locator('#replay-cursor')).toHaveValue('0.05');
+    await expect(page.locator('#flight-replay-image')).toBeVisible();
+    await redImage(page);
+    await page.locator('#replay-play').click();
+    expect(mock.calls.every(call => call.method === 'GET')).toBe(true);
+    expect(model.calls.some(call => call.method !== 'GET')).toBe(false);
+  });
+}
+
+for (const frame of [false, true]) {
   test(`backward seeking rejects an old ${frame ? 'image' : 'snapshot'} response`, async ({ page, model }) => {
     const mock = await installReplay(page, model);
     await openFlight(page);
