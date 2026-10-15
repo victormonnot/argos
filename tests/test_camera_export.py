@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 from PIL import Image
 import pytest
@@ -206,6 +207,42 @@ def test_success_publishes_video_and_complete_provenance(tmp_path, monkeypatch):
     assert saved["frames"][1]["received_at"] == rows[1]["received_at"]
     assert saved["output_sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
     assert not list(tmp_path.glob(".argos-camera-export-*"))
+
+
+@pytest.mark.parametrize("lookup", ["explicit_path", "relative_path_entry"])
+def test_relative_ffmpeg_runs_both_passes_from_export_directory(tmp_path, monkeypatch, lookup):
+    directory, _, _, _ = archive(tmp_path, times=(100.123456,))
+    tools = tmp_path / "local tools"
+    tools.mkdir()
+    executable = tools / "ffmpeg"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "from pathlib import Path\n"
+        "import sys\n"
+        "if sys.argv[-1] == '-':\n"
+        "    assert Path(sys.argv[sys.argv.index('-i') + 1]).read_bytes() == b'encoded video'\n"
+        "    print('#tb 0: 1/1000000')\n"
+        "    print('0, 0, 0, 1, 1, test-hash')\n"
+        "else:\n"
+        "    Path(sys.argv[-1]).write_bytes(b'encoded video')\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    if lookup == "relative_path_entry":
+        monkeypatch.setenv("PATH", "local tools")
+        ffmpeg = "ffmpeg"
+    else:
+        ffmpeg = "./local tools/ffmpeg"
+
+    output = tmp_path / "result.mp4"
+    result = export.export_camera(directory, output, ffmpeg=ffmpeg)
+
+    assert output.read_bytes() == b"encoded video"
+    assert result["frame_count"] == 1
+    assert result["video_duration_s"] == .000001
+    assert Path(result["encoding"]["ffmpeg"]).is_absolute()
+    assert json.loads(output.with_suffix(".mp4.json").read_text()) == result
 
 
 def test_modified_source_during_encode_prevents_publication(tmp_path, monkeypatch):

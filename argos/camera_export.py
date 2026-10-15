@@ -287,6 +287,8 @@ def export_camera(directory, output, *, ffmpeg="ffmpeg", allow_drops=False,
     executable = shutil.which(str(ffmpeg))
     if executable is None:
         raise ValueError("FFmpeg is not installed; provide an existing executable with --ffmpeg")
+    # Both passes run in the temporary directory; retain the caller's lookup.
+    executable = str(Path(executable).absolute())
     began = time.monotonic()
     with tempfile.TemporaryDirectory(prefix=".argos-camera-export-", dir=output.parent) as temporary:
         work = Path(temporary)
