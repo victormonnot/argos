@@ -347,6 +347,9 @@ values were rejected.
   and truncation stated explicitly. A period without reception does not prove
   packet loss or identify its cause.
 
+Choose **Apply** after editing the threshold. Switching views, hiding the browser
+tab or changing a filter keeps the edit pending until you apply it.
+
 A filter with no receptions retains a zero rate and unknown age. No rate can be
 calculated for a capture of zero duration. Curves are interval aggregates;
 **MAVLink messages** retains exact times and original frames for detailed

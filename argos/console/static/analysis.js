@@ -124,6 +124,7 @@
   let binIndex = 0;
   let queryKey = null;
   let menuKey = null;
+  let thresholdPending = false;
   let resizeFrame = null;
   const active = () => visible && Boolean(metadata) && !document.hidden;
 
@@ -303,10 +304,14 @@
     drawCharts();
   }
 
-  async function load(force = false) {
+  async function load(force = false, applyThreshold = false) {
     if (!active()) return;
     const selected = selection();
     if (!selected) { cancel(); clear("The threshold must be between 0.001 and 86,400 seconds."); return; }
+    if (thresholdPending && !applyThreshold) {
+      cancel(); clear("Apply the threshold to recalculate reception gaps."); return;
+    }
+    thresholdPending = false;
     const key = JSON.stringify([metadata.id, metadata.revision, selected]);
     if (!force && queryKey === key && (request || data)) return;
     cancel();
@@ -340,10 +345,10 @@
     }
   }
 
-  filters.addEventListener("submit", (event) => { event.preventDefault(); void load(); });
+  filters.addEventListener("submit", (event) => { event.preventDefault(); void load(false, true); });
   source.addEventListener("change", () => void load());
   type.addEventListener("change", () => void load());
-  threshold.addEventListener("input", () => { cancel(); clear(selection() ? "Apply the threshold to recalculate reception gaps." : "The threshold must be between 0.001 and 86,400 seconds."); });
+  threshold.addEventListener("input", () => { thresholdPending = true; cancel(); clear(selection() ? "Apply the threshold to recalculate reception gaps." : "The threshold must be between 0.001 and 86,400 seconds."); });
   retry.addEventListener("click", () => void load(true));
   cursor.addEventListener("input", () => { binIndex = Number(cursor.value); renderCursor(); });
   for (const spec of chartSpecs) spec.svg.addEventListener("pointermove", (event) => {
