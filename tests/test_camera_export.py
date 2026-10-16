@@ -96,6 +96,43 @@ def test_refuse_invalid_or_unfinalized_archives(tmp_path, mutation, message):
         extract(directory, tmp_path)
 
 
+@pytest.mark.parametrize("mutation, message", [
+    (lambda rows, data: data.update(reason=[]), "Invalid capture stop reason"),
+    (lambda rows, data: data.update(reason={}), "Invalid capture stop reason"),
+    (lambda rows, data: rows[0].update(source=[]), "Invalid frame source"),
+    (lambda rows, data: rows[0].update(source={}), "Invalid frame source"),
+    (lambda rows, data: data.update(started_at=10 ** 400), "Invalid started_at"),
+    (lambda rows, data: rows[0].update(received_at=10 ** 400), "Invalid received_at"),
+])
+def test_cli_reports_malformed_archive_without_publishing(tmp_path, monkeypatch, capsys, mutation, message):
+    directory, rows, manifest, _ = archive(tmp_path)
+    mutation(rows, manifest)
+    rewrite(directory, rows, manifest)
+    before = {path.name: path.read_bytes() for path in directory.iterdir()}
+    monkeypatch.setattr(export.shutil, "which", lambda _: "/test/ffmpeg")
+    monkeypatch.setattr(export, "_run", lambda *args, **kwargs: pytest.fail("invalid archive reached encoder"))
+    output = tmp_path / "result.mp4"
+
+    assert export.main([str(directory), str(output)]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith(f"Camera export failed: {message}")
+    assert not output.exists()
+    assert not output.with_suffix(".mp4.json").exists()
+    assert not list(tmp_path.glob(".argos-camera-export-*"))
+    assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
+
+
+def test_legacy_null_stop_reason_is_accepted(tmp_path):
+    directory, rows, manifest, _ = archive(tmp_path)
+    manifest["reason"] = None
+    rewrite(directory, rows, manifest)
+    result = extract(directory, tmp_path)
+    assert len(result["frames"]) == len(rows)
+    assert result["manifest"]["reason"] is None
+
+
 def test_reject_duplicate_receive_times_without_silently_dropping_frames(tmp_path):
     directory, _, _, _ = archive(tmp_path, times=(100.1, 100.1, 100.2))
     with pytest.raises(ValueError, match="microsecond"):

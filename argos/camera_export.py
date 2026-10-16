@@ -39,8 +39,12 @@ def _integer(value, name, minimum=0, maximum=None):
 
 
 def _number(value, name):
-    if (isinstance(value, bool) or not isinstance(value, (int, float))
-            or not math.isfinite(value) or value < 0):
+    try:
+        finite = (not isinstance(value, bool) and isinstance(value, (int, float))
+                  and math.isfinite(value))
+    except OverflowError:
+        finite = False
+    if not finite or value < 0:
         raise ValueError(f"Invalid {name}: expected a finite nonnegative time")
     return value
 
@@ -121,7 +125,10 @@ def extract_archive(directory, destination, *, allow_drops=False, gap_threshold_
     _same(manifest.get("index"), INDEX_NAME, "index name")
     drops = sum(_integer(manifest.get(key), key) for key in DROP_FIELDS)
     _same(manifest.get("dropped_frames"), drops, "dropped_frames")
-    bounded_stop = manifest.get("reason") in {"duration_limit", "size_limit", "frame_limit"}
+    reason = manifest.get("reason")
+    if reason is not None and not isinstance(reason, str):
+        raise ValueError("Invalid capture stop reason")
+    bounded_stop = reason in {"duration_limit", "size_limit", "frame_limit"}
     _same(manifest.get("complete"), drops == 0 and not bounded_stop, "complete flag")
     if (drops or bounded_stop) and not allow_drops:
         raise ValueError("Archive reports lost frames or a capture limit; inspect it and use --allow-drops explicitly")
@@ -151,7 +158,7 @@ def extract_archive(directory, destination, *, allow_drops=False, gap_threshold_
             height = _integer(row.get("height"), "height", 1, MAX_DIMENSION)
             if width * height > MAX_PIXELS:
                 raise ValueError("Frame exceeds pixel bound")
-            if (row.get("source") not in {"device", "gazebo"}
+            if (not isinstance(row.get("source"), str) or row["source"] not in {"device", "gazebo"}
                     or not isinstance(row.get("endpoint"), str) or len(row["endpoint"]) > 1024
                     or not isinstance(row.get("source_id"), str)
                     or not 1 <= len(row["source_id"]) <= 64):
