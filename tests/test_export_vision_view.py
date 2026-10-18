@@ -1,8 +1,10 @@
 """Local visual export publishes only complete, source-bound offline reports."""
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import io
 import json
 from pathlib import Path
+from threading import Event, current_thread
 from types import SimpleNamespace
 
 from PIL import Image
@@ -150,6 +152,61 @@ def test_nonempty_destination_is_never_overwritten(tmp_path, loaded):
     with pytest.raises(ValueError, match="new or empty"):
         exporter.export_view(loaded.comparison_directory, output)
     assert (output / "index.html").read_text() == "existing view"
+
+
+@pytest.mark.parametrize("winner_state", ["building", "complete"])
+def test_concurrent_export_cannot_damage_the_destination_owner(tmp_path, loaded, monkeypatch, capsys, winner_state):
+    output = tmp_path / "view"
+    output.mkdir()
+    checked, resume = Event(), Event()
+    create_output = exporter.create_output
+
+    def delayed_check(*args):
+        directory = create_output(*args)
+        if current_thread().name.startswith("delayed-export"):
+            checked.set()
+            assert resume.wait(5)
+        return directory
+
+    monkeypatch.setattr(exporter, "create_output", delayed_check)
+
+    def files():
+        return {path.relative_to(output): path.read_bytes()
+                for path in output.rglob("*") if path.is_file()}
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="delayed-export") as pool:
+        losing = pool.submit(exporter.main, ["--comparison-dir", str(loaded.comparison_directory),
+                                             "--output-dir", str(output)])
+        try:
+            assert checked.wait(5)
+
+            def finish_loser():
+                before = files()
+                assert json.loads((output / "manifest.json").read_text())["state"] == winner_state
+                resume.set()
+                assert losing.result(timeout=5) == 1
+                assert files() == before
+
+            if winner_state == "building":
+                def read_frame(row):
+                    if row["index"] == 6:
+                        finish_loser()
+                    return jpeg()
+                loaded.read_frame = read_frame
+            exporter.export_view(loaded.comparison_directory, output)
+            if winner_state == "complete":
+                finish_loser()
+        finally:
+            resume.set()
+
+    assert (output / "index.html").is_file()
+    assert not (output / "index.html.partial").exists()
+    assert json.loads((output / "manifest.json").read_text())["state"] == "complete"
+    assert loaded.calls == ["verified"]
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("Visual export failed:")
+    assert "Traceback" not in captured.err
 
 
 def test_temporary_root_cannot_bypass_input_directory_protection(tmp_path, loaded, monkeypatch):

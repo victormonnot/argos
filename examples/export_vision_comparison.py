@@ -74,6 +74,10 @@ def export_view(comparison_dir, output_dir=None, *, recordings_dir=None):
                 "validator_sha256": hashlib.sha256(files("argos.perception").joinpath(
                     "comparison_export.py").read_bytes()).hexdigest(),
                 "images": []}
+    # Claim the directory before any write or failure cleanup can affect another
+    # export that passed the same empty-directory check. Keep the claim on disk.
+    with (output / "manifest.json").open("x", encoding="utf-8"):
+        pass
     try:
         write_manifest(output, manifest)
         (output / "images").mkdir()
