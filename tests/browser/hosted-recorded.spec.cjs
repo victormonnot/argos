@@ -148,6 +148,31 @@ test('recorded camera, telemetry and Sessions use one cursor without enabling fl
   readOnly(mock);
 });
 
+test('hosted flight event buttons retain keyboard focus as shared playback advances', async ({ page, model }) => {
+  await page.clock.install();
+  const mock = await installRecorded(page, model);
+  await openDemo(page);
+  await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 100));
+  await seek(page, 1.3); await page.clock.runFor(70);
+  await expect(page.locator('#replay-play')).toBeEnabled();
+  await page.locator('#view-sessions').click();
+  await page.locator('#replay-play').click();
+  await expect(page.locator('#replay-transport')).toHaveAttribute('aria-busy', 'false');
+  const event = page.locator('#flight-replay-events button').first();
+  await event.focus();
+  for (const at of [1.4, 1.5]) {
+    await page.clock.runFor(100);
+    await expect.poll(async () => Number(await page.locator('#replay-cursor').inputValue())).toBeCloseTo(at);
+    await expect(event).toBeFocused();
+  }
+  await expect(page.locator('#flight-replay-events button')).toHaveCount(2);
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#replay-cursor')).toHaveValue('0.1');
+  await expect(page.locator('#replay-play')).toHaveText('Play');
+  await expect(page.locator('#flight-replay-events button')).toHaveCount(1);
+  readOnly(mock);
+});
+
 for (const direction of ['next', 'previous']) {
   test(`hosted ${direction} keeps the confirmed image and measurements through snapshot and JPEG loading`, async ({ page, model }) => {
     const mock = await installRecorded(page, model);

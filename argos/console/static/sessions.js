@@ -32,6 +32,7 @@
   let messagesOffset = 0;
   let messagesPage = null;
   let visualSnapshot = null;
+  let visualEventRows = [];
   let imageURL = null;
   let recordedPhase = "loading";
   let recordedError = "";
@@ -384,6 +385,13 @@
 
   function clearVisual(message) {
     clearVisualDetails();
+    visualEventRows = [];
+    text("flight-replay-events-status", "");
+    node("flight-replay-events").replaceChildren();
+    clearVisualImage(message);
+  }
+
+  function clearVisualImage(message) {
     const image = node("flight-replay-image");
     image.hidden = true; image.removeAttribute("src");
     if (imageURL) URL.revokeObjectURL(imageURL);
@@ -398,8 +406,6 @@
     text("flight-replay-frame-status", "");
     for (const name of ["mode", "armed", "control", "framing", "target", "reference", "response"]) text(`flight-replay-${name}`, "—");
     text("flight-replay-control-status", "No recorded control observation at this point.");
-    text("flight-replay-events-status", "");
-    node("flight-replay-events").replaceChildren();
   }
 
   function validVisual(value, id, revision, visualRevision, at) {
@@ -439,8 +445,8 @@
   function renderVisual(value, url) {
     const previousURL = imageURL;
     // A decoded replacement can take over without hiding the displayed image.
-    if (url && value.frame) clearVisualDetails();
-    else clearVisual(value.frame ? "No recent recorded image at this time." : "No camera image recorded at this time.");
+    clearVisualDetails();
+    if (!url || !value.frame) clearVisualImage(value.frame ? "No recent recorded image at this time." : "No camera image recorded at this time.");
     visualSnapshot = value;
     const frame = value.frame;
     if (url && frame) {
@@ -478,8 +484,19 @@
         : value.state === "gap" || controlAge > .35 ? "Recording gap · stale observation at the cursor" : "Recorded service observation";
       text("flight-replay-control-status", `${controlStatus}${finite(controlAge) ? ` · age ${numeric(controlAge, " s")}` : ""}. Requests and observations do not prove an action was executed.${typeof control.interruption?.reason === "string" ? ` ${control.interruption.reason}` : ""}`);
     }
+    renderVisualEvents(value);
+    text("replay-cursor-status", playing ? "Replay running · recorded images and observations." : "Replay paused · recorded images and observations.");
+    controls(false);
+    if (url && value.frame && previousURL && previousURL !== url) URL.revokeObjectURL(previousURL);
+  }
+
+  function renderVisualEvents(value) {
     text("flight-replay-events-status", value.events.length ? `${Number.isSafeInteger(value.events_count) && value.events_count > value.events.length ? `Latest ${value.events.length} of ${number.format(value.events_count)} events at the cursor. ` : ""}Recorded requests and state changes · select an event to seek.` : "No flight events recorded at this point.");
-    for (const event of value.events) {
+    const remaining = visualEventRows.slice();
+    visualEventRows = value.events.map(event => {
+      const key = JSON.stringify([event.index, event.at_s, event.kind, event.detail, event.status]);
+      const match = remaining.findIndex(item => item.key === key);
+      if (match >= 0) return remaining.splice(match, 1)[0];
       const row = document.createElement("li"), button = document.createElement("button");
       button.type = "button";
       const at = document.createElement("span"), name = document.createElement("span"), detail = document.createElement("span");
@@ -491,11 +508,16 @@
       button.append(at, name, detail);
       button.addEventListener("click", () => { void seek(event.at_s); });
       row.dataset.position = event.at_s <= cursor ? "past" : "future";
-      row.append(button); node("flight-replay-events").append(row);
+      row.append(button);
+      return { key, row };
+    });
+    // Keep unchanged buttons attached so playback cannot discard keyboard focus.
+    // Remove expired events first, including the oldest part of a rolling window.
+    for (const { row } of remaining) row.remove();
+    const list = node("flight-replay-events");
+    for (const [index, { row }] of visualEventRows.entries()) {
+      if (list.children[index] !== row) list.insertBefore(row, list.children[index] || null);
     }
-    text("replay-cursor-status", playing ? "Replay running · recorded images and observations." : "Replay paused · recorded images and observations.");
-    controls(false);
-    if (url && value.frame && previousURL && previousURL !== url) URL.revokeObjectURL(previousURL);
   }
 
   function displayCursor(offset) {

@@ -92,6 +92,80 @@ test('camera-only flight replay shares the cursor, pairs detections and emits no
   expect(model.calls.some(call => call.method === 'POST')).toBe(false);
 });
 
+for (const imageState of ['recent', 'stale', 'missing']) {
+  test(`flight event buttons keep keyboard focus during playback with ${imageState} images`, async ({ page, model }) => {
+    await page.clock.install();
+    const mock = await installReplay(page, model);
+    mock.frameState = imageState === 'stale' ? 'stale' : 'recent';
+    mock.noFrame = imageState === 'missing';
+    await openFlight(page);
+    await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 100));
+    await seek(page, 1.3); await page.clock.runFor(70);
+    await expect(page.locator('#recording-flight-view')).toHaveAttribute('aria-busy', 'false');
+    await page.locator('#replay-play').click();
+    await expect(page.locator('#recording-flight-view')).toHaveAttribute('aria-busy', 'false');
+    const event = page.locator('#flight-replay-events button').first();
+    await event.focus();
+    for (const at of [1.4, 1.5]) {
+      await page.clock.runFor(100);
+      await expect.poll(async () => Number(await page.locator('#replay-cursor').inputValue())).toBeCloseTo(at);
+      await expect(event).toBeFocused();
+    }
+    await expect(page.locator('#flight-replay-events button')).toHaveCount(2);
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#replay-cursor')).toHaveValue('0.1');
+    await expect(page.locator('#replay-play')).toHaveText('Play');
+    await expect(page.locator('#flight-replay-events button')).toHaveCount(1);
+    await seek(page, 0); await page.clock.runFor(70);
+    await expect(page.locator('#recording-flight-view')).toHaveAttribute('aria-busy', 'false');
+    await expect(page.locator('#flight-replay-events button')).toHaveCount(0);
+    expect(mock.calls.every(call => call.method === 'GET')).toBe(true);
+  });
+}
+
+test('a rolling flight event window retains focus on an event still included', async ({ page, model }) => {
+  await page.clock.install();
+  const mock = await installReplay(page, model);
+  const events = Array.from({ length: 6 }, (_, i) => ({
+    index: i + 1, at_s: (i + 1) / 10, kind: 'reception', detail: `Observation ${i + 1}`, status: 'sampled',
+  }));
+  mock.override = value => { value.events = events.filter(event => event.at_s <= value.at_s).slice(-2); };
+  await openFlight(page);
+  await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 100));
+  await seek(page, .5); await page.clock.runFor(70);
+  await expect(page.locator('#recording-flight-view')).toHaveAttribute('aria-busy', 'false');
+  await page.locator('#replay-play').click();
+  await expect(page.locator('#recording-flight-view')).toHaveAttribute('aria-busy', 'false');
+  const event = page.getByRole('button', { name: /Observation 5/ });
+  await event.focus();
+  await page.clock.runFor(100);
+  await expect(page.locator('#flight-replay-events button').first()).toContainText('Observation 5');
+  await expect(page.locator('#flight-replay-events button').last()).toContainText('Observation 6');
+  await expect(event).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#replay-cursor')).toHaveValue('0.5');
+  await expect(page.locator('#flight-replay-events')).not.toContainText('Observation 6');
+});
+
+test('reopening a recording or rejecting a visual response clears its previous event buttons', async ({ page, model }) => {
+  const mock = await installReplay(page, model);
+  await openFlight(page); await seek(page, 2);
+  await expect(page.locator('#flight-replay-events button')).toHaveCount(2);
+  const hold = { when: path => path === `/api/recordings/${ID}` }; model.hold = hold;
+  await page.locator(`#archive-list button[data-id="${ID}"]`).click();
+  await expect.poll(() => hold.requested).toBe(true);
+  await expect(page.locator('#flight-replay-events button')).toHaveCount(0);
+  hold.release();
+  await expect(page.locator('#replay-play')).toBeEnabled();
+  await seek(page, 2);
+  await expect(page.locator('#flight-replay-events button')).toHaveCount(2);
+  mock.override = value => { value.visual_revision = 'd'.repeat(64); };
+  await page.locator('#replay-next').click();
+  await expect(page.locator('#replay-status')).toHaveText('Invalid flight replay response.');
+  await expect(page.locator('#flight-replay-events button')).toHaveCount(0);
+  await expect(page.locator('#flight-replay-image')).toBeHidden();
+});
+
 for (const direction of ['next', 'previous']) {
   test(`flight replay keeps the confirmed image while ${direction} waits for its snapshot and JPEG`, async ({ page, model }) => {
     const mock = await installReplay(page, model);
